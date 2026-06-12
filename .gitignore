@@ -1,6 +1,9 @@
 # Build output.
 /dist/
 /web/dist/
+# Go embed mirror — populated by dev/tools/build, except for .gitkeep.
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep
 
 # Node tooling.
 /node_modules/

@@ -43,11 +43,15 @@ done
 # Order matters: cheap, format-style checks first; tests and build last.
 STEPS=(
   "format          dev/tools/verify-format"
+  "go-format       dev/tools/verify-go-format"
   "lint-js         dev/tools/lint-js"
   "lint-css        dev/tools/lint-css"
   "verify-html     dev/tools/verify-html"
+  "go-vet          dev/tools/go-vet"
   "test            dev/tools/test-unit"
   "build           dev/tools/build"
+  "go-build        dev/tools/go-build"
+  "go-test         dev/tools/go-test"
 )
 
 failures=()

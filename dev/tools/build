@@ -26,9 +26,23 @@ cd "$(repo_root)"
 rm -rf dist
 mkdir -p dist
 
+# The Go embed target lives in internal/webui/dist/ (next to webui.go
+# so the //go:embed directive can reach it — Go embed forbids parent-
+# directory paths). Keep the top-level dist/ for the standalone
+# release tarball; mirror into internal/webui/dist/ for `go build`.
+rm -rf internal/webui/dist
+mkdir -p internal/webui/dist
+# Always recreate the gitkeep — `rm -rf` removed it above and the
+# directory must be tracked for fresh clones.
+cat > internal/webui/dist/.gitkeep <<'EOF'
+# Populated by dev/tools/build. See internal/webui/webui.go for the embed.
+EOF
+
 if [[ -d web ]] && [[ -n "$(ls -A web 2>/dev/null)" ]]; then
   cp -R web/. dist/
+  cp -R web/. internal/webui/dist/
   echo "▸ built dist/ from web/ ($(find dist -type f | wc -l | tr -d ' ') files)"
+  echo "▸ mirrored into internal/webui/dist/ for go:embed"
 else
   echo "▸ web/ is empty — dist/ created but no assets copied (pre-phase-A state)"
 fi

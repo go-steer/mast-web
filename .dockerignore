@@ -1,0 +1,23 @@
+# Build output and caches the Dockerfile rebuilds anyway.
+dist/
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+node_modules/
+
+# Docs + repo metadata not needed in the image build.
+docs/
+*.md
+LICENSE
+.git/
+.github/
+.claude/
+.editorconfig
+.eslintrc*
+.prettier*
+.stylelint*
+.htmlhintrc
+eslint.config.js
+Makefile
+
+# Test fixtures and CI scaffolding.
+**/*_test.go

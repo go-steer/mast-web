@@ -1,0 +1,36 @@
+# Build output.
+/dist/
+/web/dist/
+
+# Node tooling.
+/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# Hugo build output.
+/docs/site/public/
+/docs/site/resources/_gen/
+
+# AI assistant working state — never committed to this repo.
+.claude/
+
+# Per-user .agents/ state.
+/.agents/sessions/
+/.agents/logs/
+
+# Local environment overrides.
+.env
+.env.local
+.env.*.local
+
+# Editor / IDE noise.
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Personal working notes — kept on disk but not in version control.
+TODO.md

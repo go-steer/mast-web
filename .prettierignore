@@ -1,0 +1,5 @@
+dist/
+node_modules/
+docs/site/public/
+docs/site/resources/
+web/wasm_exec.js

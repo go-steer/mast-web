@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Local development server for mast-web.
+#
+# Serves web/ on :8000 via Python's built-in HTTP server. Pair with a
+# backend agent running with --attach-listen — for example:
+#
+#   # Terminal 1: backend
+#   core-agent --attach-listen :7777 --session-db
+#
+#   # Terminal 2: this script
+#   make dev
+#
+# Browse to http://localhost:8000 and point the UI at http://localhost:7777.
+#
+# Why Python? Zero Go dependency in this repo. Once phase C ships and
+# mast embeds the assets via go:embed, the backend serves the UI on the
+# same port and this dev server is only used during local iteration.
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+PORT="${PORT:-8000}"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "dev: python3 not found on PATH" >&2
+  echo "Install Python 3 or override PORT and serve web/ with any static HTTP server." >&2
+  exit 1
+fi
+
+if [[ ! -d web ]] || [[ -z "$(ls -A web 2>/dev/null)" ]]; then
+  echo "dev: web/ is empty (pre-phase-A) — nothing to serve yet" >&2
+  exit 1
+fi
+
+echo "▸ mast-web dev server on http://localhost:${PORT} (serving web/)"
+cd web
+exec python3 -m http.server "$PORT"

@@ -2,6 +2,7 @@
   "name": "mast-web",
   "version": "0.0.0-dev",
   "private": true,
+  "type": "module",
   "description": "Operator-facing web UI for mast and any attach-mode-compatible core-agent variant.",
   "license": "Apache-2.0",
   "repository": {

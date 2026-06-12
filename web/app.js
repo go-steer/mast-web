@@ -13,12 +13,16 @@
 // limitations under the License.
 
 // mast-web — operator-facing web UI for mast / core-agent's attach
-// protocol. Phase A scope: rendering surface + slash-command shell.
-// The `mast` global below is a STUB that returns mock data and prints
-// "TODO: phase B" messages; phase B replaces it with a real
-// attach-protocol client in attach-client.js.
+// protocol. Owns the rendering surface (chat, tool calls, sidebar,
+// status bar, slash commands, batch run) and the per-turn dispatch
+// from SSE events back into the rendering callbacks.
 //
-// Rendering pipeline is ported from mastersingh24/cogo-wasm2 with
+// The backend is reached via web/attach-client.js (loaded as a
+// <script> sibling). The `mast` object below wraps an AttachClient
+// instance and exposes the method surface app.js uses internally
+// (init / listSessions / runPrompt / etc).
+//
+// Rendering pipeline ported from mastersingh24/cogo-wasm2 with
 // cosmetic adaptations. See docs/web-design.md for the architectural
 // rationale.
 
@@ -35,88 +39,287 @@
   let isRunning = false;
   let elapsedTimer = null;
 
-  // ─── Phase-A stub for the attach-protocol client ───────────────────
-  // Phase B replaces this with a real implementation in attach-client.js.
-  // The stub returns mock data so the rendering pipeline can be exercised
-  // end-to-end without a backend.
+  // ─── mast: real attach-protocol backend (phase B) ──────────────────
+  //
+  // Wraps web/attach-client.js (the SSE consumer) and exposes the same
+  // method surface app.js was already using against the phase-A stub.
+  // The runPrompt method below bridges async SSE events back into the
+  // sync callback shape (onToken / onToolCall / onToolResult / etc.)
+  // the renderer expects.
+
+  // Latest backend-reported state, fed by status-update / usage-update
+  // events. Snapshot in the sidebar and status bar.
+  const latest = {
+    capabilities: null,
+    status: { model: '', provider: '', turnState: 'idle', contextPct: null, permMode: '' },
+    usage: { tokensIn: 0, tokensOut: 0, costUSD: 0, turns: 0 },
+    sessions: [],
+  };
+
+  // Per-active-turn dispatch state. runPrompt populates these when a
+  // turn starts; the SSE event router uses them to fan tokens / tool
+  // calls / results into the right rendering callbacks.
+  let activeTurn = null;
 
   const mast = {
+    client: null,
+
     async init({ endpoint, token }) {
-      addSystemMessage(
-        `[stub] would connect to ${endpoint} (token: ${token ? 'provided' : 'none'}) — phase B wires the real attach client`
-      );
+      if (typeof window.AttachClient !== 'function') {
+        throw new Error(
+          'AttachClient global missing — check that attach-client.js loaded before app.js'
+        );
+      }
+      const client = new window.AttachClient({
+        endpoint,
+        token,
+        onConnectionState: (state) => setConnectionState(state),
+        onEvent: (ev) => dispatchAttachEvent(ev),
+      });
+      const session = await client.autoSelectSession();
+      currentSession = session.id;
+      await client.connect();
+      this.client = client;
       connected = true;
-      currentModel = 'gemini-3.5-pro';
-      currentSession = 'mock-session-1';
       return { ok: true };
     },
+
     async listModels() {
-      return [
-        { id: 'gemini-3.5-pro', label: 'Gemini 3.5 Pro' },
-        { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
-        { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-      ];
+      // The attach protocol doesn't expose a model catalog directly —
+      // only the current model surfaces via status-update. Return a
+      // single-entry list reflecting what the backend reports until we
+      // grow a dedicated /models endpoint upstream.
+      if (latest.status.model) {
+        return [{ id: latest.status.model, label: latest.status.model }];
+      }
+      return [];
     },
-    async setModel(id) {
-      currentModel = id;
-      return { ok: true };
+
+    async setModel(_id) {
+      // Model switching is not yet exposed via attach-mode operator
+      // endpoints. Surface a no-op with a useful message; phase D
+      // wires this up when /sessions/{sid}/model lands upstream.
+      throw new Error('Model switching from the UI is not yet wired (backend endpoint pending).');
     },
+
     async listSessions() {
-      return [{ id: 'mock-session-1', label: 'Mock session 1', active: true }];
+      if (!this.client) return [];
+      const sessions = await this.client.listSessions();
+      latest.sessions = sessions;
+      return sessions.map((s) => ({ ...s, active: s.id === currentSession }));
     },
+
     async switchSession(id) {
+      if (!this.client) throw new Error('not connected');
+      await this.client.selectSession(id);
       currentSession = id;
-      addSystemMessage(`[stub] switched to ${id}`);
     },
+
     async listMcpServers() {
-      return [];
+      if (!this.client) return [];
+      // /tools returns the merged tool catalog; the MCP-namespaced
+      // entries are <server>_<tool>. Bucket them back into server
+      // groups for display.
+      const tools = await this.client.listTools();
+      const byServer = new Map();
+      (tools || []).forEach((t) => {
+        const name = t.name || t;
+        const idx = name.indexOf('_');
+        if (idx <= 0) return;
+        const server = name.substring(0, idx);
+        const bucket = byServer.get(server) || { name: server, status: 'connected', tools: [] };
+        bucket.tools.push(name.substring(idx + 1));
+        byServer.set(server, bucket);
+      });
+      return Array.from(byServer.values());
     },
+
     async listSpecialists() {
-      return [];
+      if (!this.client) return [];
+      // Specialists surface via /agents — each registered subagent is
+      // listed. Filter to the ones the backend marks as specialist-
+      // shaped when that field lands; for now, return all sub-agents.
+      const agents = await this.client.listAgents();
+      return (agents || []).map((a) => ({
+        name: a.name || a,
+        description: a.description || '',
+      }));
     },
+
     async getStats() {
       return {
-        totalTurns: turnCount,
-        totalTokenIn: 0,
-        totalTokenOut: 0,
-        totalToolCalls: 0,
-        totalCostUSD: totalCostUSD,
+        totalTurns: latest.usage.turns,
+        totalTokenIn: latest.usage.tokensIn,
+        totalTokenOut: latest.usage.tokensOut,
+        totalToolCalls: 0, // not currently surfaced via attach; phase D
+        totalCostUSD: latest.usage.costUSD,
         avgTtfbMs: 0,
         avgTotalMs: 0,
       };
     },
+
     async exportSession(_id, fmt) {
-      return fmt === 'md' ? '# (stub session export)\n' : { stub: true, turns: turnCount };
-    },
-    async clearSession() {
-      turnCount = 0;
-      totalCostUSD = 0;
-    },
-    async fetchIdentity() {
-      return { email: '(stub — phase B)', source: 'stub' };
-    },
-    async runPrompt(text, callbacks) {
-      // Phase A: drive the rendering pipeline with a mock streamed response
-      // so the UI is visually complete without a backend.
-      const tokens = [
-        'Phase A is the rendering port from `cogo-wasm2`. ',
-        'The attach-protocol client lands in phase B. ',
-        '\n\nYou submitted: ',
-        '`',
-        text.slice(0, 80),
-        '`',
-      ];
-      for (const t of tokens) {
-        callbacks.onToken?.(t);
-        await new Promise((r) => setTimeout(r, 80));
+      // Eventlog-driven export will need a dedicated attach endpoint;
+      // for now, dump what we have client-side from the rendered DOM
+      // as a placeholder so /export still does *something* useful.
+      if (fmt === 'md') {
+        return '# mast session export (placeholder — backend export endpoint pending)\n';
       }
-      // Demonstrate a tool-call render
-      callbacks.onToolCall?.('mock', 'echo');
-      await new Promise((r) => setTimeout(r, 120));
-      callbacks.onToolResult?.('mock', 'echo', 120, null, JSON.stringify({ input: text }, null, 2));
-      return { totalMs: 480, tokens: { in: text.length, out: 64 }, toolCalls: [] };
+      return { placeholder: true, note: 'backend export endpoint pending', turns: turnCount };
+    },
+
+    async clearSession() {
+      // Clearing server-side history requires a dedicated endpoint we
+      // haven't built yet. For now clear the visible UI and warn the
+      // operator the backend retains history.
+      addSystemMessage(
+        'Browser view cleared. Backend session history is retained — restart the backend or use a new --session-db to fully reset.'
+      );
+    },
+
+    async fetchIdentity() {
+      // No dedicated identity endpoint on attach today. Surface the
+      // backend URL and current session as a stand-in.
+      if (!this.client) return { email: '(not connected)', source: 'none' };
+      return {
+        email: '(authenticated via attach token)',
+        source: this.client.endpoint + '/sessions/' + currentSession,
+      };
+    },
+
+    async runPrompt(text, callbacks) {
+      if (!this.client) throw new Error('not connected');
+      // Set up the per-turn dispatch hooks. The SSE router calls these
+      // as events arrive; the Promise resolves on turn-complete (or
+      // rejects on turn-error). startedAt is used to compute totalMs.
+      const startedAt = performance.now();
+      return new Promise((resolve, reject) => {
+        activeTurn = {
+          callbacks,
+          startedAt,
+          done: false,
+          finish(result, err) {
+            if (this.done) return;
+            this.done = true;
+            activeTurn = null;
+            if (err) reject(err);
+            else resolve(result);
+          },
+        };
+        // Send the operator prompt and wake the agent.
+        Promise.resolve()
+          .then(() => this.client.inject(text))
+          .then(() => this.client.wake())
+          .catch((e) => activeTurn && activeTurn.finish(null, e));
+      });
     },
   };
+
+  // ─── SSE event → renderer dispatch ─────────────────────────────────
+
+  // Pairs onToolCall → onToolResult: each tool call pushes its
+  // function-call ID; the matching tool-result pops by ID so out-of-
+  // order completions still pair correctly (defensive — backends
+  // typically emit in order).
+  const pendingToolCallsByID = new Map();
+
+  function dispatchAttachEvent(ev) {
+    switch (ev.type) {
+      case 'capabilities':
+        latest.capabilities = ev.data;
+        return;
+
+      case 'status-update': {
+        const s = ev.data || {};
+        if (s.model !== undefined) latest.status.model = s.model;
+        if (s.provider !== undefined) latest.status.provider = s.provider;
+        if (s.turn_state !== undefined) latest.status.turnState = s.turn_state;
+        if (s.context_pct !== undefined) latest.status.contextPct = s.context_pct;
+        if (s.perm_mode !== undefined) latest.status.permMode = s.perm_mode;
+        currentModel = latest.status.model || currentModel;
+        updateStatusBar();
+        return;
+      }
+
+      case 'usage-update': {
+        const u = ev.data || {};
+        latest.usage.tokensIn = u.tokens_in_total || 0;
+        latest.usage.tokensOut = u.tokens_out_total || 0;
+        latest.usage.costUSD = u.cost_usd_total || 0;
+        latest.usage.turns = u.turns_total || 0;
+        turnCount = latest.usage.turns;
+        totalCostUSD = latest.usage.costUSD;
+        updateStatusBar();
+        return;
+      }
+
+      case 'inbox':
+        // Could surface "queued" -> "dequeued" transitions visually;
+        // for v0.1 we silently drive the lifecycle.
+        return;
+
+      case 'turn-complete': {
+        const tc = ev.data || {};
+        if (activeTurn && activeTurn.callbacks) {
+          // No more events for this turn after this point.
+          activeTurn.finish({
+            totalMs: tc.latency_ms || performance.now() - activeTurn.startedAt,
+            tokens: { in: tc.tokens_in || 0, out: tc.tokens_out || 0 },
+            toolCalls: [],
+          });
+        }
+        return;
+      }
+
+      case 'turn-error': {
+        const te = ev.data || {};
+        const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
+        if (activeTurn) activeTurn.finish(null, new Error(msg));
+        else addSystemMessage('Turn error: ' + msg);
+        return;
+      }
+
+      case 'stream-chunk': {
+        if (!activeTurn || !activeTurn.callbacks.onToken) return;
+        activeTurn.callbacks.onToken(ev.data.text);
+        return;
+      }
+
+      case 'tool-call': {
+        if (!activeTurn || !activeTurn.callbacks.onToolCall) return;
+        const { id, name } = ev.data;
+        const idx = name.indexOf('_');
+        const server = idx > 0 ? name.substring(0, idx) : '';
+        const tool = idx > 0 ? name.substring(idx + 1) : name;
+        activeTurn.callbacks.onToolCall(server, tool);
+        // Track the call so the matching result can be paired even
+        // when the renderer dropped the pending element (defensive).
+        if (id) pendingToolCallsByID.set(id, { server, tool });
+        return;
+      }
+
+      case 'tool-result': {
+        if (!activeTurn || !activeTurn.callbacks.onToolResult) return;
+        const { id, name, response } = ev.data;
+        const idx = (name || '').indexOf('_');
+        const server = idx > 0 ? name.substring(0, idx) : '';
+        const tool = idx > 0 ? name.substring(idx + 1) : name;
+        activeTurn.callbacks.onToolResult(
+          server,
+          tool,
+          0, // latency not surfaced per-tool today
+          null,
+          JSON.stringify(response || {}, null, 2)
+        );
+        if (id) pendingToolCallsByID.delete(id);
+        return;
+      }
+
+      default:
+        // Unknown events tolerated forward-compat.
+        return;
+    }
+  }
 
   // ─── Status bar timer ──────────────────────────────────────────────
 

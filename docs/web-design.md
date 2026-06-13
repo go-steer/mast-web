@@ -1,6 +1,6 @@
 # mast-web: design
 
-**Status:** draft, 2026-06-11. Migrated from `core-agent/docs/mast/web-design.md` on 2026-06-12 as part of mast-web repo init. Companion to [fork-design.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/fork-design.md) (which specifies `mast` as the lean-fork project) and [positioning.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/positioning.md) (the thesis). This doc covers `mast`'s web-based interactive surface — the operator-facing UI that replaces the embedded terminal TUI in the lean fork's scope.
+**Status:** draft, 2026-06-13. Migrated from `core-agent/docs/mast/web-design.md` on 2026-06-12 as part of mast-web repo init. Substantively revised 2026-06-13: dropped "go:embed into the agent binary" as the *default* deployment shape — the actual answer is a spectrum of four operator-selectable options (hosted SPA, container image, agent `--ui` flag, self-host tarball). Companion to [fork-design.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/fork-design.md) (which specifies `mast` as the lean-fork project) and [positioning.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/positioning.md) (the thesis). This doc covers `mast`'s web-based interactive surface — the operator-facing UI that replaces the embedded terminal TUI in the lean fork's scope.
 
 ## Why a web UI (not a terminal TUI)
 
@@ -19,10 +19,10 @@ The terminal-TUI use case (developer iterating on agent design locally) is genui
 
 ## Architectural pattern: thin client over attach mode
 
-Mast already publishes its agent state via `pkg/attach/` (HTTP/SSE, with auth via bearer token / mTLS / Cloud Run IAM / Google ID tokens). `mast-web` is a thin client over that same protocol — no new server-side machinery required.
+Mast already publishes its agent state via `pkg/attach/` (HTTP/SSE, with auth via bearer token / mTLS / Cloud Run IAM / Google ID tokens). `mast-web` is a thin client over that same protocol — no new server-side machinery required on the agent side.
 
 ```
-┌──────────────┐   WebSocket/SSE    ┌──────────────────────┐    HTTP/MCP    ┌──────────────────┐
+┌──────────────┐   SSE / POST       ┌──────────────────────┐    HTTP/MCP    ┌──────────────────┐
 │  mast-web    │ ◄────────────────► │  mast (Cloud Run /   │ ◄────────────► │  Vertex / MCP    │
 │  (browser)   │   attach protocol  │  K8s / daemon)       │                │  servers / K8s   │
 │              │                    │                      │                │                  │
@@ -39,6 +39,10 @@ Mast already publishes its agent state via `pkg/attach/` (HTTP/SSE, with auth vi
 **What this is *not*:** the cogo-wasm2 pattern (agent loop in browser via WASM, thin auth proxy on backend). That pattern fits cogo's job — browser-based exploratory tool, per-user isolation, no persistent backend. It's structurally wrong for mast, where the *value* is the persistent backend agent with audit log, multi-operator sessions, and tool execution that requires backend context.
 
 Cogo-wasm2 is a peer architecture for a different job, not a template to copy wholesale. But — see "What we reuse" — its rendering surface ports directly.
+
+### Where `mast-web` runs is a separate question from *what* it is
+
+The architectural pattern above (browser-as-thin-client over the attach protocol) is invariant. What changes between deployment shapes is **where the static assets live** and **whether something between the browser and the backend proxies the API calls**. See the "Deployment options" section below for the four supported shapes.
 
 ## What we reuse from cogo-wasm2
 
@@ -68,41 +72,95 @@ Concrete reusable assets (measured 2026-06-11 against `../cogo-wasm2`):
 |---|---|---|
 | Language | **Vanilla JS** for v0.1 (TypeScript optional later) | Cogo-wasm2 is vanilla JS and that worked. Adding a build pipeline (TS, bundler) on day one trades simplicity for future-proofing we don't yet need. Revisit at v0.5 if app.js exceeds ~3000 LOC. |
 | Framework | **None** (vanilla DOM + small helpers) for v0.1 | Cogo-wasm2 demonstrated that ~1000 LOC of vanilla JS handles a non-trivial agent UI. A framework (React/Svelte/Vue) adds build complexity for marginal gain at this scope. Reconsider if state management becomes hairy (multi-session, branching, etc.). |
-| Build pipeline | **None / minimal** for v0.1 | Static assets served directly. No bundler, no transpiler, no Node toolchain. Cogo-wasm2's `make build-wasm` is the only build step; mast-web doesn't need even that. |
+| Build pipeline | **None / minimal** for v0.1 | Static assets served directly. No bundler, no transpiler. The "build" is `cp -R web/. dist/` plus a mirror into `internal/webui/dist/` for the Go server's `go:embed`. |
 | Connection transport | **SSE for events, fetch for requests** (v0.1); evaluate WebSocket later | Mast's `pkg/attach/` already publishes SSE per protocol v1.1.0 (`975c89c`). Reusing the existing channel is the lowest-effort path. WebSocket bidirectional may be worth it for the operator-input path, but SSE + POST works for v0.1. |
-| Asset hosting | **Static assets served by mast itself** (or sibling Cloud Run service for prod) | Mast's HTTP server can serve `/web/*` statics. For prod, a separate Cloud Run service hosting the static assets behind IAP is cleaner (CDN-cacheable, no impact on agent process). |
-| Auth | **Reuse attach-mode auth paths** (bearer token, mTLS, Google ID token, IAP) | Already implemented in `pkg/attach/`. No new auth model in mast-web. |
+| Static-server impl (container option) | **Tiny Go binary** (`cmd/mast-web-server/`, stdlib-only, ~200 LOC) | nginx/Caddy adds ops complexity, config files, and a CVE treadmill for what's effectively `http.FileServer` + `httputil.ReverseProxy`. A purpose-built ~200 LOC Go binary lets us add mast-specific affordances (server-side token injection, same-origin proxying with `FlushInterval=-1` for SSE) without configuration. |
+| Container base image | **`gcr.io/distroless/static:nonroot`** | ~10MB final image, no shell / no package manager / nonroot by default. Matches core-agent's image conventions. |
+| Auth | **Reuse attach-mode auth paths** (bearer token, mTLS, Google ID token, IAP) | Already implemented in `pkg/attach/`. No new auth model in mast-web. Container's optional `BACKEND_TOKEN` injection lets operators run a "shared backend, single auth" setup where the SPA carries no auth at all. |
 | Markdown / syntax highlight | **`marked@12` + `marked-highlight@2` + `highlight.js@11` via CDN** | Cogo-wasm2 uses these; they work. No reason to swap. |
 
 ## Repo placement
 
-**Recommendation: `github.com/go-steer/mast-web`** (separate repo).
+**Resolved 2026-06-12:** [`github.com/go-steer/mast-web`](https://github.com/go-steer/mast-web), separate repo.
 
 Rationale:
-- Different toolchain (web assets vs Go binary). Coupling them in one repo means CI changes for one affect the other.
-- Different release cadence likely (web UI iteration faster than agent core).
+- Different toolchain (web assets + a small Go binary in `cmd/mast-web-server/` vs core-agent's much larger Go module). Coupling them in one repo means CI changes for one affect the other.
+- Different release cadence (web UI iteration faster than agent core).
 - Different reviewer pool (frontend + backend skills overlap but aren't identical).
 - Cogo-wasm2 is its own repo and that worked.
 
-Alternative: `mast/web/` subdirectory. Simpler ops (one repo) but couples builds and release. Reject for now.
+The repo holds three things:
+1. The SPA source under `web/` (HTML/CSS/JS).
+2. A small Go static-file server under `cmd/mast-web-server/` that bundles the SPA and optionally reverse-proxies attach calls. This is what powers the container deployment.
+3. The Hugo documentation site under `docs/site/`.
 
-The mast Go binary serves `mast-web` static assets via embedded files (`go:embed`) at build time — so end users `go install mast` and get the web UI for free, without managing two artifacts. This is the same pattern Hugo and other Go projects use. The separate repo holds the *source*; the binary embeds the *built* assets.
+## Deployment options
+
+`mast-web` supports four deployment shapes that compose with the same SPA assets. Operators pick whichever fits their environment; the SPA itself is identical across all four.
+
+| Option | What it is | Best for | Status |
+|---|---|---|---|
+| **Hosted SPA** | `mast-web` deployed once to GitHub Pages at `go-steer.github.io/mast-web/app/`; operators visit the URL and configure their backend on first run | "Just let me try mast" — zero setup | Planned (sibling docs.yml extension) |
+| **Container image** | `ghcr.io/go-steer/mast-web:vX.Y.Z` — distroless image, ~10MB, embeds SPA + tiny Go static-file server + optional reverse-proxy to backend | Production K8s / Cloud Run / Docker Compose | Shipped (PR #4) |
+| **Agent `--ui` flag** | Opt-in flag on `core-agent` / `mast`; the agent serves the SPA at `/ui/*` on its existing attach listener, using a pinned mast-web release embedded via `go:embed` at agent build time | Single-binary deploys, air-gapped, local-dev iteration | Planned (PR against core-agent) |
+| **Tarball + self-host** | Download `mast-web-vX.Y.Z.tar.gz` from the GitHub release; serve `dist/` with any static host (nginx, Caddy, S3, etc.) | Custom CDN, strict hosting requirements, branded rebrand | Shipped (PR #3) |
+
+### Two architectural sub-shapes
+
+Across the four options, the browser ↔ backend communication takes one of two forms:
+
+**A. Same-origin (recommended for production):** the static assets and the attach API appear under the same origin. Either because:
+- The container image is configured with `BACKEND_URL`, so it reverse-proxies `<API_PREFIX>/*` to the backend
+- The agent's `--ui` flag serves the SPA from the same listener as its attach endpoint
+- The operator's own reverse proxy (in front of self-hosted tarball) routes both
+
+```
+┌──────────┐   same-origin    ┌──────────────┐   HTTP/SSE   ┌──────────────┐
+│  browser │ ◄───────────────►│  proxy /     │ ◄──────────► │  attach API  │
+│          │   /attach/*      │  agent / CDN │              │  (backend)   │
+└──────────┘                  └──────────────┘              └──────────────┘
+```
+
+Pro: **no CORS configuration on the backend at all.** The SPA fetches via relative paths; the browser sees one origin.
+
+**B. Cross-origin (for hosted-SPA-direct or split deployments):** the SPA loads from one origin (GitHub Pages), the attach API lives on another (the backend's URL). Requires the backend to allow the SPA's origin via CORS headers.
+
+```
+┌──────────┐   cross-origin   ┌──────────────────┐
+│  browser │ ◄───────────────►│  attach API      │
+│  (hosted │   HTTPS + CORS   │  (mast / core-   │
+│   SPA)   │                  │  agent backend)  │
+└──────────┘                  └──────────────────┘
+```
+
+Pro: lowest deployment friction for the operator (just visit a URL).
+Con: backend needs CORS allow-listing per origin; operators with strict CORS policies can't use this shape.
+
+### How the same SPA serves both sub-shapes
+
+The SPA's first-run modal prompts for backend endpoint + auth token. The endpoint can be:
+- A same-origin relative path (e.g. `/attach` when behind the container's proxy or the agent's `--ui` route)
+- A full URL pointing at a different origin (cross-origin direct connection)
+
+`web/attach-client.js` doesn't care which — it sends the configured paths verbatim.
 
 ## Phasing
 
-**Phases A+B+C can start before the mast fork lands.** The attach protocol they consume already exists in core-agent's `pkg/attach/` (HTTP/SSE typed events per protocol v1.1.0, shipped in `975c89c`). mast-web doesn't care which binary serves the attach endpoint — same protocol, same client. Build mast-web against `core-agent --attach-listen :7777` today; when mast forks and ships, flip the endpoint pointer (and the `go:embed` target in phase C). Zero code change on the mast-web side.
+**Phases A+B+C can start before the mast fork lands.** The attach protocol they consume already exists in core-agent's `pkg/attach/` (HTTP/SSE typed events per protocol v1.1.0, shipped in `975c89c`). mast-web doesn't care which binary serves the attach endpoint — same protocol, same client. Build mast-web against `core-agent --attach-listen :7777` today; when mast forks and ships, flip the endpoint pointer. Zero code change on the mast-web side.
 
 This decouples mast-web's calendar from the fork-design's trigger condition (#158-#161 + shared-memory stack landing in core-agent). Frontend work proceeds in parallel with backend work; different files, zero merge conflicts.
 
-| Phase | Scope | Effort | Gated by fork? |
-|---|---|---|---|
-| **Phase A — port cogo-wasm2 rendering surface** | New `go-steer/mast-web` repo. Port index.html (rename, cosmetic), styles.css (rebrand to mast palette), app.js (keep rendering, stub WASM-coupling layer with placeholder). Serve statics from a local dev server pointed at a mock attach endpoint. | ~1-2 weeks | **No.** |
-| **Phase B — attach-protocol client** | Replace stubs with real SSE connection + POST for input. Auth handshake. Event-stream parsing (mapping `pkg/attach/`'s typed SSE events to UI updates). Wire chat send / receive / tool-call render to a live core-agent backend; flip endpoint to mast at fork time. | ~1-2 weeks | **No.** Surfaces protocol gaps now while they're cheap to fix on a single repo. |
-| **Phase C — `go:embed` integration** | Wire the agent binary's HTTP server to serve `mast-web`'s built assets via `go:embed`. Operator runs the binary, browses to `:7777/ui`, gets the full web UI without separate deployment. Initially embedded into `core-agent` if landed pre-fork; flips to `mast` at fork time (mechanically identical). | ~2-3 days | **Partially.** The mechanism works pre-fork; the binary-name flip happens at fork time. |
-| **Phase D — mast-specific UI** | Multi-session sidebar. Plan-first plan rendering. Watchdog alert surface (consumes issue #159's in-band routing). Cost-ceiling indicators. Audit-log viewer (consumes audit-derived-memory work). | ~2-3 weeks | **Yes — feature-blocked.** Depends on multi-session deployment (v2.4), plan-first gate UX, watchdog→model routing (#159), shared-memory implementation. These sit after the fork in phase 3. |
-| **Phase E — production hosting story** | Docs + example for hosting mast-web behind IAP/Cloud Run for production deployments where the operator UI shouldn't be served by the agent process itself. | ~1 week | **No.** Can land alongside Phase C. |
+| Phase | Scope | Status |
+|---|---|---|
+| **Phase A — port cogo-wasm2 rendering surface** | New `go-steer/mast-web` repo. Port index.html (rename, cosmetic), styles.css (rebrand to mast palette), app.js (keep rendering, stub WASM-coupling layer with placeholder). Serve statics from a local dev server pointed at a mock attach endpoint. | [PR #1](https://github.com/go-steer/mast-web/pull/1) open |
+| **Phase B — attach-protocol client** | Replace stubs with real SSE connection + POST for input. Auth handshake. Event-stream parsing (mapping `pkg/attach/`'s typed SSE events to UI updates). Wire chat send / receive / tool-call render to a live core-agent backend; flip endpoint to mast at fork time. | [PR #2](https://github.com/go-steer/mast-web/pull/2) open, stacked on #1 |
+| **Phase C — tarball release pipeline** | Tag-triggered `release.yml` that builds `dist/`, packages as `mast-web-vX.Y.Z.tar.gz` + sha256, attaches to a GitHub Release. Foundation for both the container image and any self-host deployment. | [PR #3](https://github.com/go-steer/mast-web/pull/3) open, stacked on #2 |
+| **Phase C+ — container image** | `cmd/mast-web-server/` Go static-file server + Dockerfile (distroless/static, multi-arch) + `release.yml` image push to `ghcr.io/go-steer/mast-web`. Optional `BACKEND_URL` reverse-proxy eliminates CORS. | [PR #4](https://github.com/go-steer/mast-web/pull/4) open, stacked on #3 |
+| **Phase C++ — hosted SPA deploy** | `docs.yml` (or sibling workflow) deploys built `dist/` to GitHub Pages at `go-steer.github.io/mast-web/app/`. Operators visit the URL, point at their backend on first run. | Planned (small follow-up after #4) |
+| **Phase C★ — agent `--ui` flag** | Add `--ui` flag to core-agent (later mast). Same-listener `/ui/*` route serving mast-web assets embedded via `go:embed` (or override via `--ui-dir` for local-dev iteration). Pinned mast-web version via `.mast-web-version` file. | Planned (PR against `go-steer/core-agent`) |
+| **Phase D — mast-specific UI** | Multi-session sidebar. Plan-first plan rendering. Watchdog alert surface (consumes core-agent issue #159's in-band routing). Cost-ceiling indicators. Audit-log viewer (consumes audit-derived-memory work). | Feature-blocked on the post-fork roadmap |
 
-Total estimate: ~6-9 weeks for a production-ready mast-web. Phases A+B+C+E (functional UI + production hosting) is ~4-5 weeks and unblocked today; Phase D adds the mast-specific polish as its underlying features ship.
+Phase C, C+, C++, and C★ are all **independent deployment-shape work**; they all consume the SPA built in Phase A+B. Operators pick whichever fits their environment — see "Deployment options" above.
 
 ### Side effects of starting before the fork
 
@@ -119,17 +177,18 @@ Total estimate: ~6-9 weeks for a production-ready mast-web. Phases A+B+C+E (func
 
 1. **TypeScript at the v0.1 cutover, or stay vanilla JS until pain forces the issue?** Bias: stay vanilla. Add TS only when type errors become an actual debugging cost.
 2. **Framework adoption trigger.** What size / complexity of app.js justifies React/Svelte? Cogo-wasm2 sits at ~1000 LOC vanilla and is fine. Mast-web with multi-session + plan-first + watchdog UI may reach ~2500-3000 LOC; that's the rough decision point.
-3. **Hosting model for production.** Does mast-web ship as embedded statics only (one binary, simple), or as a separately-deployed sibling Cloud Run service (cleaner separation, scales independently)? Bias: support both, default to embedded for ease, document the separate-service pattern for ops teams that want it.
-4. **Does mast-web get its own auth model, or strictly inherit attach mode's?** Bias: strictly inherit. No new auth surface to maintain.
-5. **Slash command surface alignment.** Cogo-wasm2 has `/help /model /mcp /stats /batch /export /clear /whoami /wipe`. Mast's needs differ — some commands map cleanly (`/help`, `/model`, `/mcp`, `/stats`), some need rethinking (`/wipe` server-side vs browser-side), some are mast-specific (`/sessions`, `/plan-status`, `/cost`, `/reset-ceiling`). Worth a dedicated audit before phase B.
-6. **Does `core-agent` get its own forked-from-cogo-wasm2 web UI for symmetry**, or does it stay terminal-TUI-first? Probably the latter — core-agent's audience (cogo-shaped experimentation, dev iteration) values the terminal more. But worth confirming.
+3. **Slash command surface alignment.** Cogo-wasm2 has `/help /model /mcp /stats /batch /export /clear /whoami /wipe`. Mast's needs differ — some commands map cleanly (`/help`, `/model`, `/mcp`, `/stats`), some need rethinking (`/wipe` server-side vs browser-side), some are mast-specific (`/sessions`, `/plan-status`, `/cost`, `/reset-ceiling`). Worth a dedicated audit before phase D.
+4. **Does `core-agent` get its own forked-from-cogo-wasm2 web UI for symmetry**, or does it stay terminal-TUI-first?** Probably the latter — core-agent's audience (cogo-shaped experimentation, dev iteration) values the terminal more. But: under the container-image deployment, the same mast-web container works against either backend, so "symmetry" is partly automatic.
+5. **Default in `mast-web-server` for `BACKEND_TOKEN` shape.** Single shared token (simplest) vs OIDC/JWT exchange (production-grade)? Bias: single shared token for v0.1; document upgrade to OIDC for ops teams that need per-user identity. Real answer depends on multi-tenant timeline from the mast fork.
+6. **`.mast-web-version` pin format and bump cadence in core-agent.** Plain version string in a top-level file? `mast-web-version.txt`? Embedded in `go.mod` somehow? Bias: simple top-level file; bumping mast-web is then a 1-line PR + CI run.
 
 ## Out of scope
 
 - WASM-anything. Mast-web is plain HTML/CSS/JS. No Go-compiled-to-WASM agent loop; the agent lives on the backend.
 - Cross-frame messaging / browser extension surface. If someone wants mast embedded in another product later, that's a separate design.
 - Mobile-native apps. Mobile-via-browser-responsive is the v0.1 mobile story.
-- Self-hostable static-asset CDN configuration. Operators host wherever they host static assets; mast-web doesn't prescribe.
+- Server-side rendering (SSR). The SPA is operator-facing and authenticated; SEO isn't relevant.
+- Plugin / extension API in the SPA. Customization happens by forking the repo and serving your own build (the tarball or container path). Adding a plugin runtime would balloon mast-web's scope.
 
 ## Related
 

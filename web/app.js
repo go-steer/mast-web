@@ -115,10 +115,16 @@
     },
 
     async setModel(_id) {
-      // Model switching is not yet exposed via attach-mode operator
-      // endpoints. Surface a no-op with a useful message; phase D
-      // wires this up when /sessions/{sid}/model lands upstream.
-      throw new Error('Model switching from the UI is not yet wired (backend endpoint pending).');
+      // Verified 2026-07-20: no model-switch endpoint exists in
+      // core-agent (grep of pkg/attach/handlers_operator.go). The
+      // current model is server-driven via status-update events. A
+      // server-side POST /sessions/{app}/{sid}/model endpoint is a
+      // v0.3.0 item (needs SwitchModelProvider capability interface
+      // on the agent side); see mast-web plan doc §8.4.
+      throw new Error(
+        'Model switching requires a server-side endpoint that does not exist yet. ' +
+          'Tracked as a v0.3.0 item.'
+      );
     },
 
     async listSessions() {
@@ -166,43 +172,120 @@
     },
 
     async getStats() {
+      // Real numbers straight from the state fed by usage-update
+      // events. byModel + lastTurn come from the v1.2.0 alignment in
+      // PR 1 (last_turn is authoritative per-turn cost with cache
+      // attribution; by_model powers per-model breakdown).
+      const perModel = Object.entries(latest.usage.byModel || {})
+        .map(([model, m]) => ({
+          model,
+          tokensIn: m.tokensIn,
+          tokensOut: m.tokensOut,
+          costUSD: m.costUSD,
+          turns: m.turns,
+        }))
+        // Sort by descending cost, tie-break by descending output
+        // tokens, then model name — same ordering as core-tui's
+        // /stats renderer (slash_builtin.go:802-884).
+        .sort(
+          (a, b) =>
+            b.costUSD - a.costUSD || b.tokensOut - a.tokensOut || a.model.localeCompare(b.model)
+        );
       return {
         totalTurns: latest.usage.turns,
         totalTokenIn: latest.usage.tokensIn,
         totalTokenOut: latest.usage.tokensOut,
-        totalToolCalls: 0, // not currently surfaced via attach; phase D
         totalCostUSD: latest.usage.costUSD,
-        avgTtfbMs: 0,
-        avgTotalMs: 0,
+        // Per-turn breakdown for the "last turn" row. Only included
+        // when we've received a usage-update.last_turn (v1.1.1+).
+        lastTurn: latest.usage.lastTurn,
+        // Per-model breakdown; empty array when the backend only
+        // emits totals (byModel absent or single model).
+        byModel: perModel,
+        // totalToolCalls / avgTtfbMs / avgTotalMs deliberately omitted
+        // — attach doesn't surface these today. If future spec adds
+        // them, add here.
       };
     },
 
     async exportSession(_id, fmt) {
-      // Eventlog-driven export will need a dedicated attach endpoint;
-      // for now, dump what we have client-side from the rendered DOM
-      // as a placeholder so /export still does *something* useful.
+      // Client-side export of the rendered transcript. Reads message
+      // rows from the DOM (each .message has classes indicating role
+      // and a text payload) and packages them + connection metadata.
+      // Server-side JSONL export of the full eventlog is a v0.3.0
+      // item (needs a dedicated attach endpoint reading pkg/audit).
+      const rows = [];
+      document.querySelectorAll('#output-area .message').forEach((el) => {
+        const role = el.classList.contains('user')
+          ? 'user'
+          : el.classList.contains('assistant')
+            ? 'assistant'
+            : el.classList.contains('system')
+              ? 'system'
+              : 'unknown';
+        // For assistant messages, prefer the raw markdown source we
+        // stashed on data-source (renderer keeps it for reflow); fall
+        // back to textContent otherwise.
+        const text = el.dataset && el.dataset.source ? el.dataset.source : el.textContent;
+        rows.push({ role, text: (text || '').trim() });
+      });
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        endpoint: this.client ? this.client.endpoint : null,
+        sessionId: currentSession || null,
+        turns: turnCount,
+        totalCostUSD: latest.usage.costUSD,
+        messages: rows,
+      };
       if (fmt === 'md') {
-        return '# mast session export (placeholder — backend export endpoint pending)\n';
+        // Simple markdown transcript for humans.
+        const md = [
+          '# mast session export',
+          '',
+          `- Session: \`${currentSession || '(none)'}\``,
+          `- Endpoint: ${this.client ? this.client.endpoint : '(not connected)'}`,
+          `- Turns: ${turnCount}`,
+          `- Cost: $${latest.usage.costUSD.toFixed(6)}`,
+          `- Exported: ${payload.exportedAt}`,
+          '',
+          '---',
+          '',
+          ...rows.map((r) => `**${r.role}:**\n\n${r.text}\n`),
+        ].join('\n');
+        return md;
       }
-      return { placeholder: true, note: 'backend export endpoint pending', turns: turnCount };
+      return payload;
     },
 
     async clearSession() {
-      // Clearing server-side history requires a dedicated endpoint we
-      // haven't built yet. For now clear the visible UI and warn the
-      // operator the backend retains history.
+      // View-only clear. To hard-delete the server-side session, use
+      // the per-row "Delete" button in the sidebar (POST /sessions +
+      // DELETE /sessions/{app}/{sid} were wired in this PR — see the
+      // deleteSession method below).
+      const output = document.getElementById('output-area');
+      if (output) output.innerHTML = '';
       addSystemMessage(
-        'Browser view cleared. Backend session history is retained — restart the backend or use a new --session-db to fully reset.'
+        'Browser view cleared. Server-side session state is untouched — use the sidebar delete button to remove the session on the backend.'
       );
     },
 
     async fetchIdentity() {
-      // No dedicated identity endpoint on attach today. Surface the
-      // backend URL and current session as a stand-in.
+      // v0.2.0 placeholder. Real caller identity ships in PR 4 via
+      // capabilities.caller_id (from the first frame) with GET
+      // /whoami as the canonical fallback. Both delivered by
+      // sibling core-agent PR (core-agent#329, spec v1.3.0).
+      // Until then, surface a best-effort description so the sidebar
+      // doesn't render an empty slot.
       if (!this.client) return { email: '(not connected)', source: 'none' };
+      // If the backend has advertised capabilities.caller_id (rare
+      // today; ships properly in v1.3.0), prefer it.
+      const caps = this.client.capabilities;
+      if (caps && caps.caller_id) {
+        return { email: caps.caller_id, source: caps.server || 'attach' };
+      }
       return {
-        email: '(authenticated via attach token)',
-        source: this.client.endpoint + '/sessions/' + currentSession,
+        email: '(identity pending — server v1.3.0 will advertise via /whoami)',
+        source: this.client.endpoint,
       };
     },
 

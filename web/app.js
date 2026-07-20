@@ -1262,6 +1262,7 @@
     '/clear': cmdClear,
     '/whoami': cmdWhoami,
     '/endpoint': cmdEndpoint,
+    '/attach': cmdAttach,
   };
 
   async function handleSlashCommand(input) {
@@ -1280,6 +1281,7 @@
   function cmdHelp() {
     const helpText = [
       '/help              — Show this help',
+      '/attach <url> [<token>] [<sid>]  — Switch to a different backend daemon',
       '/model [name]      — List or switch model',
       '/sessions [list|switch <id>]  — Manage sessions',
       '/mcp list          — Show MCP servers (backend-configured; read-only)',
@@ -1465,6 +1467,80 @@
 
   function cmdEndpoint() {
     document.getElementById('setup-modal').classList.add('open');
+  }
+
+  // /attach <url> [<token>] — cross-daemon switch. Disconnects the
+  // current client + prompter, reconnects to a different backend, and
+  // stores the new endpoint in localStorage so a reload sticks. This
+  // is the minimum-viable form of cross-daemon /attach for v0.2.0 —
+  // one daemon at a time. Full multi-daemon session fan-out (with
+  // GET /peers-driven auto-discovery) is a v0.3.0+ item that grows
+  // this into a real peer-picker.
+  //
+  // Optional third arg: an initial session ID to select on the new
+  // backend. Empty falls through to the default autoSelectSession()
+  // behavior (first session in the list).
+  async function cmdAttach(args) {
+    const url = args[0];
+    if (!url) {
+      addSystemMessage(
+        'Usage: /attach <url> [<token>] [<sid>]  —  switch to a different backend daemon'
+      );
+      return;
+    }
+    // Basic URL sanity — reject anything that doesn't look like an
+    // http(s):// URL to catch typos before we try to fetch.
+    if (!/^https?:\/\//i.test(url)) {
+      addSystemMessage(`/attach: expected http:// or https:// URL, got "${url}"`);
+      return;
+    }
+    const token = args[1] || '';
+    const initialSid = args[2] || '';
+
+    addSystemMessage(`Attaching to ${url}${initialSid ? ' (session ' + initialSid + ')' : ''}...`);
+
+    // Tear down the current client + prompter first so we don't leak
+    // an SSE stream after switching backends.
+    try {
+      if (mast.prompter) {
+        mast.prompter.disconnect();
+        mast.prompter = null;
+      }
+      if (mast.client && typeof mast.client.disconnect === 'function') {
+        mast.client.disconnect();
+      }
+      mast.client = null;
+      connected = false;
+      setConnectionState('disconnected');
+      // Clear the transcript view; a new backend means an unrelated
+      // context and the outgoing session's messages shouldn't linger.
+      clearTranscriptView();
+    } catch (e) {
+      // Best-effort teardown; log and continue with the reconnect.
+      console.warn('cmdAttach teardown:', e);
+    }
+
+    // Persist the new config so a page reload sticks. Same shape the
+    // setup modal writes (getStoredConfig / setStoredConfig).
+    try {
+      setStoredConfig({ endpoint: url, token, sessionId: initialSid || null });
+    } catch (e) {
+      console.warn('cmdAttach persist:', e);
+    }
+
+    // Reconnect to the new backend. If an initialSid was provided,
+    // select it explicitly rather than falling to the first session.
+    try {
+      await connectToBackend(url, token);
+      if (initialSid && mast.client) {
+        clearTranscriptView();
+        await mast.switchSession(initialSid);
+        refreshAllSidebar();
+      }
+      addSystemMessage(`Attached to ${url}.`);
+    } catch (e) {
+      addSystemMessage('/attach failed: ' + (e.message || e));
+    }
   }
 
   // ─── Batch run ─────────────────────────────────────────────────────

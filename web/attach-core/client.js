@@ -358,8 +358,45 @@ window.AttachClient = (function () {
       return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/wake', body);
     }
 
+    // POST /sessions/{sid}/interrupt — cancels the current in-flight
+    // turn (if any). Returns a structured shape rather than raw JSON
+    // so UI code can distinguish:
+    //   { ok: true, interrupted: 'yes' }              — active turn cancelled
+    //   { ok: true, interrupted: 'nothing-in-flight'} — 200 + X-Interrupted
+    //                                                   header (session idle)
+    //   { ok: false, unsupported: true }              — 412 (agent has no
+    //                                                   InterruptProvider
+    //                                                   capability). UI should
+    //                                                   disable the Stop button.
+    // Other errors propagate as thrown Error / PermanentStreamError.
     async interrupt() {
-      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/interrupt', {});
+      const path = '/sessions/' + encodeURIComponent(this.sessionId) + '/interrupt';
+      const r = await fetch(this.endpoint + path, {
+        method: 'POST',
+        headers: { ...this._headers(), 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (r.status === 412) {
+        // Agent doesn't implement InterruptProvider. Not an error
+        // condition — just tells the caller to hide the affordance.
+        return { ok: false, unsupported: true };
+      }
+      if (!r.ok) {
+        const text = await r.text();
+        const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
+      }
+      // X-Interrupted: nothing-in-flight (a v1.1.0+ signal) tells us
+      // the session was already idle; the button press is a no-op
+      // that should give brief feedback but not surface an error.
+      const flag = r.headers.get('X-Interrupted') || '';
+      return {
+        ok: true,
+        interrupted: flag === 'nothing-in-flight' ? 'nothing-in-flight' : 'yes',
+      };
     }
 
     // ─── Read-only inspection ───────────────────────────────────────

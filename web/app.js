@@ -82,6 +82,7 @@
 
   const mast = {
     client: null,
+    prompter: null,
 
     async init({ endpoint, token }) {
       if (typeof window.AttachClient !== 'function') {
@@ -100,6 +101,13 @@
       await client.connect();
       this.client = client;
       connected = true;
+
+      // Open the perms/stream subscription in parallel with the main
+      // event stream. If the agent has no PromptBrokerProvider the
+      // server 501s on subscribe; Prompter classifies that as
+      // terminal and quietly stays disconnected.
+      openPromptStream(endpoint, token, session.id);
+
       return { ok: true };
     },
 
@@ -147,6 +155,10 @@
       if (!this.client) throw new Error('not connected');
       await this.client.selectSession(id);
       currentSession = id;
+      // Restart the perms stream against the new session — prompts are
+      // per-session, so a stale subscription against the outgoing sid
+      // would never fire for prompts on the new one.
+      openPromptStream(this.client.endpoint, this.client.token, id);
     },
 
     // v0.2.0: real create/delete via POST /sessions + DELETE
@@ -1031,6 +1043,11 @@
 
     isRunning = true;
     document.getElementById('send-btn').disabled = true;
+    // Show the Stop button while a turn is in flight (hidden by
+    // default; interrupt handler restores hidden state on finally).
+    // If the backend has previously reported 412 (agent doesn't
+    // support InterruptProvider), the button stays hidden throughout.
+    showStopButton();
     addMessage('user', text);
 
     startElapsedTimer();
@@ -1088,6 +1105,146 @@
       pendingToolEls.length = 0;
       isRunning = false;
       document.getElementById('send-btn').disabled = false;
+      hideStopButton();
+    }
+  }
+
+  // ─── Perms stream + modal ─────────────────────────────────────────
+  //
+  // A second SSE subscription — /sessions/{sid}/perms/stream — carries
+  // permission prompts. Each frame opens the perms modal with the
+  // prompt's tool / detail; the operator's Allow / Deny click POSTs
+  // to /perms/respond with the frame ID + a wire-stable decision
+  // string. 501 from the subscribe means the agent lacks the
+  // PromptBrokerProvider capability; Prompter classifies as terminal.
+
+  function openPromptStream(endpoint, token, sessionId) {
+    if (mast.prompter) {
+      mast.prompter.disconnect();
+      mast.prompter = null;
+    }
+    if (!window.AttachCorePrompter || !window.AttachCorePrompter.Prompter) return;
+    const p = new window.AttachCorePrompter.Prompter({
+      endpoint,
+      token,
+      sessionId,
+      onPrompt: (frame) => showPermsModal(frame),
+      onTerminal: () => {
+        addSystemMessage(
+          'Perms stream unavailable — agent does not support interactive prompts or the stream permanently failed.'
+        );
+      },
+    });
+    p.connect();
+    mast.prompter = p;
+  }
+
+  // Currently-open prompt frame. Buttons read this to know which ID
+  // to respond with; overwriting means the newer prompt wins the
+  // modal (rare but possible if the operator ignores a prompt long
+  // enough for the agent to fire another).
+  let currentPromptFrame = null;
+
+  function showPermsModal(frame) {
+    if (!frame || !frame.id) return;
+    currentPromptFrame = frame;
+    const overlay = document.getElementById('perms-modal');
+    const title = document.getElementById('perms-modal-title');
+    const body = document.getElementById('perms-modal-body');
+    const scope = document.getElementById('perms-modal-scope');
+    if (!overlay) return;
+    // Reset the scope checkbox on every open — sticky state across
+    // prompts is a footgun (an operator ticks it once and forgets).
+    if (scope) scope.checked = false;
+    if (title) {
+      title.textContent = 'Permission request — ' + (frame.tool || frame.kind || 'tool');
+    }
+    if (body) {
+      const parts = [];
+      if (frame.detail) parts.push(escapeHtml(frame.detail));
+      if (frame.verb)
+        parts.push(
+          '<div style="margin-top:8px"><strong>Verb:</strong> ' + escapeHtml(frame.verb) + '</div>'
+        );
+      if (frame.access)
+        parts.push('<div><strong>Access:</strong> ' + escapeHtml(frame.access) + '</div>');
+      if (frame.source)
+        parts.push(
+          '<div style="color:var(--text-dim);margin-top:8px;font-size:11px">Source: ' +
+            escapeHtml(frame.source) +
+            '</div>'
+        );
+      body.innerHTML = parts.join('') || '<em>No further detail provided.</em>';
+    }
+    overlay.classList.add('open');
+  }
+
+  function closePermsModal() {
+    const overlay = document.getElementById('perms-modal');
+    if (overlay) overlay.classList.remove('open');
+    currentPromptFrame = null;
+  }
+
+  async function respondToPrompt(baseDecision) {
+    const frame = currentPromptFrame;
+    if (!frame || !mast.prompter) return;
+    const scope = document.getElementById('perms-modal-scope');
+    // Wire-stable decision strings from core-agent/pkg/attach/prompter.go's
+    // DecisionFromWire mapping. Scope checkbox upgrades allow-once →
+    // allow-session-tool (skip prompts for this tool for the session).
+    let decision = baseDecision;
+    if (baseDecision === 'allow-once' && scope && scope.checked) {
+      decision = 'allow-session-tool';
+    }
+    closePermsModal();
+    try {
+      await mast.prompter.respond(frame.id, decision);
+    } catch (e) {
+      addSystemMessage('perms respond failed: ' + (e.message || e));
+    }
+  }
+
+  // ─── Stop / interrupt ─────────────────────────────────────────────
+  //
+  // The Stop button is hidden by default and only shown while a turn
+  // is in flight. If a call to /interrupt returns unsupported=true
+  // (backend agent has no InterruptProvider), we remember that per
+  // session so subsequent turns skip the affordance entirely.
+
+  const interruptUnsupportedForSession = new Set();
+
+  function showStopButton() {
+    if (interruptUnsupportedForSession.has(currentSession)) return;
+    const btn = document.getElementById('stop-btn');
+    if (btn) btn.hidden = false;
+  }
+
+  function hideStopButton() {
+    const btn = document.getElementById('stop-btn');
+    if (btn) btn.hidden = true;
+  }
+
+  async function handleStopClick() {
+    if (!connected || !mast.client) return;
+    const btn = document.getElementById('stop-btn');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await mast.client.interrupt();
+      if (r.ok && r.interrupted === 'nothing-in-flight') {
+        addSystemMessage('Nothing in flight to interrupt.');
+      } else if (r.ok) {
+        addSystemMessage('Turn interrupted.');
+      } else if (r.unsupported) {
+        interruptUnsupportedForSession.add(currentSession);
+        addSystemMessage(
+          'This agent does not support interruption (no InterruptProvider). Stop button hidden for this session.'
+        );
+        hideStopButton();
+      }
+    } catch (e) {
+      addSystemMessage('interrupt failed: ' + (e.message || e));
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -1105,6 +1262,7 @@
     '/clear': cmdClear,
     '/whoami': cmdWhoami,
     '/endpoint': cmdEndpoint,
+    '/attach': cmdAttach,
   };
 
   async function handleSlashCommand(input) {
@@ -1123,6 +1281,7 @@
   function cmdHelp() {
     const helpText = [
       '/help              — Show this help',
+      '/attach <url> [<token>] [<sid>]  — Switch to a different backend daemon',
       '/model [name]      — List or switch model',
       '/sessions [list|switch <id>]  — Manage sessions',
       '/mcp list          — Show MCP servers (backend-configured; read-only)',
@@ -1310,6 +1469,80 @@
     document.getElementById('setup-modal').classList.add('open');
   }
 
+  // /attach <url> [<token>] — cross-daemon switch. Disconnects the
+  // current client + prompter, reconnects to a different backend, and
+  // stores the new endpoint in localStorage so a reload sticks. This
+  // is the minimum-viable form of cross-daemon /attach for v0.2.0 —
+  // one daemon at a time. Full multi-daemon session fan-out (with
+  // GET /peers-driven auto-discovery) is a v0.3.0+ item that grows
+  // this into a real peer-picker.
+  //
+  // Optional third arg: an initial session ID to select on the new
+  // backend. Empty falls through to the default autoSelectSession()
+  // behavior (first session in the list).
+  async function cmdAttach(args) {
+    const url = args[0];
+    if (!url) {
+      addSystemMessage(
+        'Usage: /attach <url> [<token>] [<sid>]  —  switch to a different backend daemon'
+      );
+      return;
+    }
+    // Basic URL sanity — reject anything that doesn't look like an
+    // http(s):// URL to catch typos before we try to fetch.
+    if (!/^https?:\/\//i.test(url)) {
+      addSystemMessage(`/attach: expected http:// or https:// URL, got "${url}"`);
+      return;
+    }
+    const token = args[1] || '';
+    const initialSid = args[2] || '';
+
+    addSystemMessage(`Attaching to ${url}${initialSid ? ' (session ' + initialSid + ')' : ''}...`);
+
+    // Tear down the current client + prompter first so we don't leak
+    // an SSE stream after switching backends.
+    try {
+      if (mast.prompter) {
+        mast.prompter.disconnect();
+        mast.prompter = null;
+      }
+      if (mast.client && typeof mast.client.disconnect === 'function') {
+        mast.client.disconnect();
+      }
+      mast.client = null;
+      connected = false;
+      setConnectionState('disconnected');
+      // Clear the transcript view; a new backend means an unrelated
+      // context and the outgoing session's messages shouldn't linger.
+      clearTranscriptView();
+    } catch (e) {
+      // Best-effort teardown; log and continue with the reconnect.
+      console.warn('cmdAttach teardown:', e);
+    }
+
+    // Persist the new config so a page reload sticks. Same shape the
+    // setup modal writes (getStoredConfig / setStoredConfig).
+    try {
+      setStoredConfig({ endpoint: url, token, sessionId: initialSid || null });
+    } catch (e) {
+      console.warn('cmdAttach persist:', e);
+    }
+
+    // Reconnect to the new backend. If an initialSid was provided,
+    // select it explicitly rather than falling to the first session.
+    try {
+      await connectToBackend(url, token);
+      if (initialSid && mast.client) {
+        clearTranscriptView();
+        await mast.switchSession(initialSid);
+        refreshAllSidebar();
+      }
+      addSystemMessage(`Attached to ${url}.`);
+    } catch (e) {
+      addSystemMessage('/attach failed: ' + (e.message || e));
+    }
+  }
+
   // ─── Batch run ─────────────────────────────────────────────────────
 
   let batchData = [];
@@ -1488,6 +1721,15 @@
     submitPrompt(promptInput.value);
     promptInput.value = '';
     promptInput.style.height = 'auto';
+  });
+
+  document.getElementById('stop-btn').addEventListener('click', handleStopClick);
+
+  document.getElementById('perms-modal-allow').addEventListener('click', () => {
+    respondToPrompt('allow-once');
+  });
+  document.getElementById('perms-modal-deny').addEventListener('click', () => {
+    respondToPrompt('deny');
   });
 
   document.getElementById('model-select').addEventListener('change', async (e) => {

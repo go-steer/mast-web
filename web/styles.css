@@ -798,6 +798,31 @@ body {
   cursor: not-allowed;
 }
 
+/* Stop button — cancels the in-flight turn. Only visible when a
+   turn is running (JS toggles hidden). Distinct color from Send so
+   operators don't misclick. */
+#stop-btn {
+  background: var(--red, #c62828);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-left: 6px;
+}
+
+#stop-btn:hover {
+  filter: brightness(1.1);
+}
+
+#stop-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Status bar */
 #status-bar {
   height: 26px;

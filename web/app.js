@@ -130,6 +130,15 @@
     async listSessions() {
       if (!this.client) return [];
       const sessions = await this.client.listSessions();
+      // Sort by last_touched_at desc so most-recently-active shows
+      // first (matches the operator's mental model + core-tui's
+      // session-picker ordering). Sessions without a timestamp
+      // (older backends) sink to the bottom.
+      sessions.sort((a, b) => {
+        const at = a.lastTouchedAt ? Date.parse(a.lastTouchedAt) : 0;
+        const bt = b.lastTouchedAt ? Date.parse(b.lastTouchedAt) : 0;
+        return bt - at;
+      });
       latest.sessions = sessions;
       return sessions.map((s) => ({ ...s, active: s.id === currentSession }));
     },
@@ -138,6 +147,33 @@
       if (!this.client) throw new Error('not connected');
       await this.client.selectSession(id);
       currentSession = id;
+    },
+
+    // v0.2.0: real create/delete via POST /sessions + DELETE
+    // /sessions/{app}/{sid}. Both endpoints landed in core-agent
+    // pkg/attach/handlers_create_session.go + handlers_delete_session.go.
+    async createSession() {
+      if (!this.client) throw new Error('not connected');
+      const s = await this.client.createSession();
+      return s;
+    },
+
+    async deleteSession(id) {
+      if (!this.client) throw new Error('not connected');
+      // Look up the app for this sid from the last listSessions() so
+      // we can use the qualified path (safer than the shortcut which
+      // 409s on multi-tenant collisions).
+      const found = latest.sessions.find((s) => s.id === id);
+      if (!found) throw new Error(`session ${id} not in the local list — reload the sidebar first`);
+      if (id === 'default') {
+        // Server would 403 anyway; guard client-side for a nicer
+        // error and to avoid the pointless round trip.
+        throw new Error('the bootstrap `default` session cannot be deleted');
+      }
+      await this.client.deleteSession(found.app, id);
+      // Drop it from our snapshot so the sidebar re-renders without
+      // waiting on the next list poll.
+      latest.sessions = latest.sessions.filter((s) => s.id !== id);
     },
 
     async listMcpServers() {
@@ -818,14 +854,48 @@
         const item = document.createElement('div');
         item.className = 'server-item';
         if (s.active) item.classList.add('active');
+
+        // Name + status badge. status is 'active' or 'idle' (v1.1.0+);
+        // idle sessions are lazy-resumed on attach.
         const info = document.createElement('div');
-        info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span>`;
-        item.appendChild(info);
-        item.onclick = async () => {
-          await mast.switchSession(s.id);
-          updateSessionList();
-          updateStatusBar();
+        const statusText = s.status === 'idle' ? 'idle' : '';
+        const badge = statusText
+          ? `<span class="status ${escapeHtml(s.status)}" title="lazy-resumes on attach">${escapeHtml(statusText)}</span>`
+          : '';
+        info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span> ${badge}`;
+        info.style.cursor = 'pointer';
+        info.onclick = async () => {
+          try {
+            await mast.switchSession(s.id);
+            updateSessionList();
+            updateStatusBar();
+          } catch (e) {
+            addSystemMessage('switch failed: ' + (e.message || e));
+          }
         };
+        item.appendChild(info);
+
+        // Delete button — guard the bootstrap `default` sid client-side
+        // (server 403s anyway, but the message is nicer this way).
+        if (s.id !== 'default') {
+          const del = document.createElement('button');
+          del.className = 'remove-btn';
+          del.textContent = '×';
+          del.title = 'Delete session';
+          del.onclick = async (evt) => {
+            evt.stopPropagation();
+            if (!window.confirm(`Delete session "${s.id}"? This cannot be undone.`)) return;
+            try {
+              await mast.deleteSession(s.id);
+              addSystemMessage(`Deleted session ${s.id}.`);
+              updateSessionList();
+            } catch (e) {
+              addSystemMessage('delete failed: ' + (e.message || e));
+            }
+          };
+          item.appendChild(del);
+        }
+
         container.appendChild(item);
       });
     } catch {
@@ -1432,7 +1502,27 @@
 
   // ─── Sidebar buttons ───────────────────────────────────────────────
 
-  document.getElementById('new-session-btn').addEventListener('click', () => cmdClear());
+  document.getElementById('new-session-btn').addEventListener('click', async () => {
+    // v0.2.0: real server-side creation via POST /sessions. Falls back
+    // to a friendly message on 501 (daemon without SessionFactory) or
+    // 401 (anonymous caller). The client-side stub used to just clear
+    // the DOM; that lives under /clear now.
+    if (!connected) {
+      addSystemMessage('Not connected. Open the setup modal and connect first.');
+      return;
+    }
+    try {
+      const s = await mast.createSession();
+      addSystemMessage(`Created session ${s.id} (owner: ${s.user || '(unknown)'}).`);
+      // Immediately switch to the newly-created session so the operator
+      // can start interacting with it.
+      await mast.switchSession(s.id);
+      updateSessionList();
+      updateStatusBar();
+    } catch (e) {
+      addSystemMessage('create session failed: ' + (e.message || e));
+    }
+  });
   document.getElementById('export-btn').addEventListener('click', () => cmdExport([]));
 
   // ─── Connection lifecycle ──────────────────────────────────────────

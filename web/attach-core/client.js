@@ -134,13 +134,57 @@ window.AttachClient = (function () {
 
     async listSessions() {
       const out = await this._get('/sessions');
+      // v1.1.0+: response also carries `status` ('active'|'idle') and
+      // `last_touched_at` (ISO string). Expose both so the sidebar
+      // can render an idle badge + sort by recency.
       return (out.sessions || []).map((s) => ({
         id: s.session_id,
         app: s.app_name,
         user: s.user_id,
         hasEventLog: !!s.has_event_log,
+        status: s.status || 'active',
+        lastTouchedAt: s.last_touched_at || null,
         label: s.session_id,
       }));
+    }
+
+    // ─── Session create / delete (new in v0.2.0) ────────────────────
+
+    // POST /sessions — creates an owned session for the authenticated
+    // caller. Returns { app, user, sessionID, url }. Throws:
+    //   401 → authenticated caller required (no anon sessions)
+    //   409 → sid collision (factory generator bug)
+    //   501 → daemon has no SessionFactory configured
+    // See core-agent pkg/attach/handlers_create_session.go.
+    async createSession() {
+      const res = await this._post('/sessions', {});
+      return {
+        id: res.sessionID || res.session_id || '',
+        app: res.app || res.app_name || '',
+        user: res.user || res.user_id || '',
+        url: res.url || '',
+      };
+    }
+
+    // DELETE /sessions/{app}/{sid} — hard-deletes a session. 204 on
+    // success; 403 on the bootstrap `default` session; SessionAdmin
+    // required. All SSE subscribers see channel-close EOF.
+    // See core-agent pkg/attach/handlers_delete_session.go.
+    async deleteSession(app, sid) {
+      const path = '/sessions/' + encodeURIComponent(app) + '/' + encodeURIComponent(sid);
+      const r = await fetch(this.endpoint + path, {
+        method: 'DELETE',
+        headers: this._headers(),
+      });
+      if (!r.ok && r.status !== 204) {
+        const text = await r.text();
+        const msg = `DELETE ${path} → HTTP ${r.status}: ${text}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
+      }
+      return true;
     }
 
     async selectSession(sessionId) {

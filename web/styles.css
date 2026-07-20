@@ -200,6 +200,13 @@ body {
   animation: thinking-pulse 1.4s ease-in-out infinite;
 }
 
+/* Idle status — server-side eviction has moved the session out of the
+   in-memory registry. Still selectable; lazy-resumes on attach. */
+.server-item .status.idle {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 .server-item .remove-btn {
   background: none;
   border: none;

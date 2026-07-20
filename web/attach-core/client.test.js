@@ -119,6 +119,138 @@ describe('AttachClient', () => {
     });
   });
 
+  describe('session lifecycle', () => {
+    it('createSession POSTs to /sessions and normalizes the response', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              app: 'core-agent',
+              user: 'alice@example.com',
+              sessionID: 'sess-abc',
+              url: 'https://example/sessions/core-agent/sess-abc',
+            })
+          ),
+      });
+      const s = await client.createSession();
+      expect(s).toEqual({
+        id: 'sess-abc',
+        app: 'core-agent',
+        user: 'alice@example.com',
+        url: 'https://example/sessions/core-agent/sess-abc',
+      });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://example/sessions',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('createSession surfaces a 501 as a plain Error (no SessionFactory)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 501,
+        text: () => Promise.resolve('not supported'),
+      });
+      let err;
+      try {
+        await client.createSession();
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(AttachClient.PermanentStreamError);
+    });
+
+    it('createSession surfaces a 401 as a PermanentStreamError (anonymous)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('unauthorized'),
+      });
+      await expect(client.createSession()).rejects.toBeInstanceOf(
+        AttachClient.PermanentStreamError
+      );
+    });
+
+    it('deleteSession DELETEs the qualified path', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 204, text: () => '' });
+      await client.deleteSession('core-agent', 'sess-abc');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://example/sessions/core-agent/sess-abc',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+
+    it('deleteSession surfaces 403 as a permanent error (bootstrap default guard)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: () => Promise.resolve('cannot delete bootstrap session'),
+      });
+      await expect(client.deleteSession('core-agent', 'default')).rejects.toBeInstanceOf(
+        AttachClient.PermanentStreamError
+      );
+    });
+
+    it('listSessions parses status + last_touched_at fields (v1.1.0+)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            sessions: [
+              {
+                app_name: 'core-agent',
+                user_id: 'alice',
+                session_id: 's1',
+                has_event_log: true,
+                status: 'active',
+                last_touched_at: '2026-07-20T12:00:00Z',
+              },
+              {
+                app_name: 'core-agent',
+                user_id: 'alice',
+                session_id: 's2',
+                has_event_log: true,
+                status: 'idle',
+                last_touched_at: '2026-07-19T12:00:00Z',
+              },
+            ],
+          }),
+      });
+      const sessions = await client.listSessions();
+      expect(sessions).toHaveLength(2);
+      expect(sessions[0].status).toBe('active');
+      expect(sessions[0].lastTouchedAt).toBe('2026-07-20T12:00:00Z');
+      expect(sessions[1].status).toBe('idle');
+    });
+
+    it('listSessions defaults status to "active" when server omits it (back-compat)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            sessions: [
+              { app_name: 'core-agent', user_id: 'alice', session_id: 's1', has_event_log: true },
+            ],
+          }),
+      });
+      const sessions = await client.listSessions();
+      expect(sessions[0].status).toBe('active');
+      expect(sessions[0].lastTouchedAt).toBeNull();
+    });
+  });
+
   describe('capabilities frame caching', () => {
     it('captures the first capabilities frame into client.capabilities', () => {
       const events = [];

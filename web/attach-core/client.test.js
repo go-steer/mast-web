@@ -26,19 +26,21 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Load the three attach-core modules in order into jsdom's window
-// global — same order as index.html. errors.js and protocol.js set
-// window.AttachCoreErrors / window.AttachCoreProtocol; client.js reads
+// Load the four attach-core modules in order into jsdom's window
+// global — same order as index.html. errors / protocol / replay each
+// set their respective window.AttachCore* namespace; client.js reads
 // them at IIFE-init.
 const here = dirname(fileURLToPath(import.meta.url));
 const srcErrors = readFileSync(join(here, 'errors.js'), 'utf8');
 const srcProtocol = readFileSync(join(here, 'protocol.js'), 'utf8');
+const srcReplay = readFileSync(join(here, 'replay.js'), 'utf8');
 const srcClient = readFileSync(join(here, 'client.js'), 'utf8');
 
 function loadAttachClient() {
   const load = (s) => new Function('window', s)(globalThis);
   load(srcErrors);
   load(srcProtocol);
+  load(srcReplay);
   load(srcClient);
   return globalThis.AttachClient;
 }
@@ -49,6 +51,7 @@ describe('AttachClient', () => {
     delete globalThis.AttachClient;
     delete globalThis.AttachCoreErrors;
     delete globalThis.AttachCoreProtocol;
+    delete globalThis.AttachCoreReplay;
     AttachClient = loadAttachClient();
   });
 
@@ -328,6 +331,7 @@ describe('AttachClient', () => {
           type: 'stream-chunk',
           data: { text: 'hello', partial: true, author: 'assistant' },
           gen: 0,
+          replay: false,
         },
       ]);
     });
@@ -350,6 +354,7 @@ describe('AttachClient', () => {
           type: 'tool-call',
           data: { id: 'c1', name: 'fs_read', args: { path: '/x' } },
           gen: 0,
+          replay: false,
         },
       ]);
     });
@@ -442,6 +447,7 @@ describe('AttachClient', () => {
         type: 'tool-call',
         data: { id: 'c1', name: 'fs_read', args: { path: '/x' } },
         gen: 0,
+        replay: false,
       });
     });
 

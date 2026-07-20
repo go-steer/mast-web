@@ -19,6 +19,7 @@
 // Depends on sibling modules (loaded ahead of this file in index.html):
 //   attach-core/errors.js    — PermanentStreamError
 //   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
+//   attach-core/replay.js    — ReplayFilter (attach cutoff)
 //
 // Endpoints consumed (all under <endpoint>):
 //   GET  /sessions                         → list sessions
@@ -59,14 +60,15 @@ window.AttachClient = (function () {
   'use strict';
 
   // Dependencies loaded from sibling modules; index.html loads
-  // errors.js + protocol.js before this file.
+  // errors.js + protocol.js + replay.js before this file.
   const PermanentStreamError =
     (window.AttachCoreErrors && window.AttachCoreErrors.PermanentStreamError) || null;
   const fanoutAgentFrame =
     (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
-  if (!PermanentStreamError || !fanoutAgentFrame) {
+  const ReplayFilter = (window.AttachCoreReplay && window.AttachCoreReplay.ReplayFilter) || null;
+  if (!PermanentStreamError || !fanoutAgentFrame || !ReplayFilter) {
     throw new Error(
-      'attach-core/client.js: missing dependencies — errors.js and protocol.js must load first'
+      'attach-core/client.js: missing dependencies — errors.js, protocol.js, and replay.js must load first'
     );
   }
 
@@ -224,6 +226,11 @@ window.AttachClient = (function () {
       // stream (still draining after the operator hit switch mid-
       // response) get dropped by consumer-side gen checks.
       this.sessionGen += 1;
+      // Fresh replay filter per connection. The server may re-stream
+      // the full eventlog before switching to live tail; frames with
+      // Timestamp < (connectedAt - grace) are classified as replay
+      // and consumers suppress them from the transcript view.
+      this._replayFilter = new ReplayFilter({});
       this.onConnectionState('connecting');
       // EventSource doesn't support custom headers, so when auth is
       // needed we tunnel the token as a URL query param. The server
@@ -280,7 +287,10 @@ window.AttachClient = (function () {
       // ADK session.Event. Decompose into typed signals the renderer
       // expects (token / toolCall / toolResult). Each fanned-out
       // sub-event is tagged with the stream generation so post-switch
-      // stragglers can be dropped by consumers.
+      // stragglers can be dropped by consumers, and with `replay:
+      // true` when the server-provided Timestamp puts it before the
+      // connection cutoff (broadcaster replay flood suppression).
+      const replayFilter = this._replayFilter;
       this._sse.addEventListener('agent', (e) => {
         let frame = null;
         try {
@@ -288,7 +298,9 @@ window.AttachClient = (function () {
         } catch {
           return;
         }
-        this._fanoutAgentFrame(frame, streamGen);
+        const ts = ReplayFilter.extractAgentFrameTimestamp(frame);
+        const isReplay = replayFilter ? replayFilter.isReplay(ts) : false;
+        this._fanoutAgentFrame(frame, streamGen, isReplay);
       });
 
       // The default `message` event fires when the server sends a frame
@@ -314,14 +326,23 @@ window.AttachClient = (function () {
       this.onConnectionState('disconnected');
     }
 
-    _fanoutAgentFrame(frame, gen) {
+    _fanoutAgentFrame(frame, gen, replay) {
       // Delegate to the pure helper in attach-core/protocol.js so the
       // conformance harness can exercise the same code without wiring
-      // up a client. this.onEvent is the emit callback. Tag each
-      // fanned-out sub-event with the stream gen so consumers can
-      // drop stale post-switch stragglers.
+      // up a client. this.onEvent is the emit callback.
+      //
+      // Every fanned-out sub-event is tagged with:
+      //   gen    — stream generation at emit-time (see connect()).
+      //            Consumers drop mismatched gens to prevent stale-
+      //            event bleed after a switch.
+      //   replay — true when the source frame's server timestamp puts
+      //            it before the connection cutoff (broadcaster
+      //            replay-flood). Consumers suppress replay events
+      //            from the transcript view but still update
+      //            aggregate state (usage totals, etc.).
       const g = typeof gen === 'number' ? gen : this.sessionGen;
-      fanoutAgentFrame(frame, (e) => this.onEvent({ ...e, gen: g }));
+      const r = replay === true;
+      fanoutAgentFrame(frame, (e) => this.onEvent({ ...e, gen: g, replay: r }));
     }
 
     // ─── Operator input ─────────────────────────────────────────────

@@ -480,12 +480,16 @@
       }
 
       case 'stream-chunk': {
+        // Suppress replay-flood tokens from the transcript. Aggregate
+        // state (usage etc.) isn't affected by stream-chunk anyway.
+        if (ev.replay) return;
         if (!activeTurn || !activeTurn.callbacks.onToken) return;
         activeTurn.callbacks.onToken(ev.data.text);
         return;
       }
 
       case 'tool-call': {
+        if (ev.replay) return; // historical tool call, not for this session's view
         if (!activeTurn || !activeTurn.callbacks.onToolCall) return;
         const { id, name } = ev.data;
         const idx = name.indexOf('_');
@@ -499,6 +503,7 @@
       }
 
       case 'tool-result': {
+        if (ev.replay) return; // historical tool result, not for this session's view
         if (!activeTurn || !activeTurn.callbacks.onToolResult) return;
         const { id, name, response, latencyMs } = ev.data;
         const idx = (name || '').indexOf('_');

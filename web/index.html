@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mast-web</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css"
+    />
+  </head>
+  <body>
+    <div id="sidebar">
+      <div class="sidebar-logo" aria-label="mast">
+        <span class="logo-mark">⟨m⟩</span><span class="logo-name">ast</span
+        ><span class="logo-cursor"></span>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Backend</h3>
+        <div id="backend-info">Not connected</div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Model</h3>
+        <select id="model-select"></select>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Sessions</h3>
+        <div id="session-list"></div>
+        <button class="sidebar-btn" id="new-session-btn">New Session</button>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>MCP Servers</h3>
+        <div id="server-list"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Specialists</h3>
+        <div id="specialist-list"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Identity</h3>
+        <div id="identity-info">Not connected</div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Actions</h3>
+        <button class="sidebar-btn" id="export-btn">Export Session</button>
+      </div>
+    </div>
+
+    <div id="main">
+      <div id="output-area">
+        <div class="message system">
+          Welcome to mast-web. Type a prompt or use /help for commands.
+        </div>
+      </div>
+
+      <div id="batch-panel">
+        <div class="batch-header">
+          <h3>Batch Run</h3>
+          <button
+            id="batch-close"
+            style="
+              background: none;
+              border: none;
+              color: var(--text-dim);
+              cursor: pointer;
+              font-size: 18px;
+            "
+          >
+            &times;
+          </button>
+        </div>
+        <textarea id="batch-input" placeholder="Enter prompts, one per line..."></textarea>
+        <div class="batch-actions">
+          <button id="batch-run-btn">Run Batch</button>
+          <button id="batch-export-btn">Export CSV</button>
+        </div>
+        <div id="batch-results"></div>
+      </div>
+
+      <div id="input-area">
+        <textarea id="prompt-input" placeholder="Enter a prompt or /command..." rows="1"></textarea>
+        <button id="send-btn">Send</button>
+      </div>
+
+      <div id="status-bar">
+        <span class="status-item" id="status-connection">⬤ disconnected</span>
+        <span class="status-item" id="status-model">Model: —</span>
+        <span class="status-item" id="status-session">Session: —</span>
+        <span class="status-item" id="status-turns">Turns: 0</span>
+        <span class="status-item" id="status-cost">$0.00</span>
+        <span class="status-item" id="status-elapsed"
+          >⏱ <span id="status-elapsed-value">—</span></span
+        >
+        <span class="status-item powered-by"> attach protocol · core-agent / mast </span>
+      </div>
+    </div>
+
+    <!-- First-run setup modal -->
+    <div class="modal-overlay" id="setup-modal">
+      <div class="modal">
+        <h2>mast-web Setup</h2>
+        <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px">
+          Connect to a running <code>core-agent</code> or <code>mast</code> backend with
+          <code>--attach-listen</code> enabled. See
+          <a href="https://github.com/go-steer/mast-web#quickstart">quickstart</a> for the backend
+          command.
+        </p>
+        <label for="setup-endpoint">Backend endpoint</label>
+        <input
+          id="setup-endpoint"
+          placeholder="http://localhost:7777"
+          value="http://localhost:7777"
+        />
+        <label for="setup-token">Auth token</label>
+        <input
+          id="setup-token"
+          type="password"
+          placeholder="bearer token from --attach-token-env"
+        />
+        <label for="setup-token-source">
+          <small style="color: var(--text-dim)">
+            The backend prints this on startup when <code>--attach-token-env</code> is set. Leave
+            blank for unauthenticated dev backends.
+          </small>
+        </label>
+        <div class="btn-row">
+          <button class="btn-primary" id="setup-save">Connect</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Markdown + syntax highlighting from CDN. Pinned major versions.   -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked-highlight@2/lib/index.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

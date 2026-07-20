@@ -1031,6 +1031,11 @@
 
     isRunning = true;
     document.getElementById('send-btn').disabled = true;
+    // Show the Stop button while a turn is in flight (hidden by
+    // default; interrupt handler restores hidden state on finally).
+    // If the backend has previously reported 412 (agent doesn't
+    // support InterruptProvider), the button stays hidden throughout.
+    showStopButton();
     addMessage('user', text);
 
     startElapsedTimer();
@@ -1088,6 +1093,51 @@
       pendingToolEls.length = 0;
       isRunning = false;
       document.getElementById('send-btn').disabled = false;
+      hideStopButton();
+    }
+  }
+
+  // ─── Stop / interrupt ─────────────────────────────────────────────
+  //
+  // The Stop button is hidden by default and only shown while a turn
+  // is in flight. If a call to /interrupt returns unsupported=true
+  // (backend agent has no InterruptProvider), we remember that per
+  // session so subsequent turns skip the affordance entirely.
+
+  const interruptUnsupportedForSession = new Set();
+
+  function showStopButton() {
+    if (interruptUnsupportedForSession.has(currentSession)) return;
+    const btn = document.getElementById('stop-btn');
+    if (btn) btn.hidden = false;
+  }
+
+  function hideStopButton() {
+    const btn = document.getElementById('stop-btn');
+    if (btn) btn.hidden = true;
+  }
+
+  async function handleStopClick() {
+    if (!connected || !mast.client) return;
+    const btn = document.getElementById('stop-btn');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await mast.client.interrupt();
+      if (r.ok && r.interrupted === 'nothing-in-flight') {
+        addSystemMessage('Nothing in flight to interrupt.');
+      } else if (r.ok) {
+        addSystemMessage('Turn interrupted.');
+      } else if (r.unsupported) {
+        interruptUnsupportedForSession.add(currentSession);
+        addSystemMessage(
+          'This agent does not support interruption (no InterruptProvider). Stop button hidden for this session.'
+        );
+        hideStopButton();
+      }
+    } catch (e) {
+      addSystemMessage('interrupt failed: ' + (e.message || e));
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -1489,6 +1539,8 @@
     promptInput.value = '';
     promptInput.style.height = 'auto';
   });
+
+  document.getElementById('stop-btn').addEventListener('click', handleStopClick);
 
   document.getElementById('model-select').addEventListener('change', async (e) => {
     if (!connected) return;

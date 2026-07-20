@@ -267,6 +267,69 @@ describe('AttachClient', () => {
       expect(events[0].gen).toBe(2);
     });
 
+    it('interrupt returns { ok: true, interrupted: "yes" } on 200 with no header', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(''),
+        headers: { get: () => null },
+      });
+      const r = await client.interrupt();
+      expect(r).toEqual({ ok: true, interrupted: 'yes' });
+    });
+
+    it('interrupt returns "nothing-in-flight" when X-Interrupted header is set', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(''),
+        headers: { get: (name) => (name === 'X-Interrupted' ? 'nothing-in-flight' : null) },
+      });
+      const r = await client.interrupt();
+      expect(r).toEqual({ ok: true, interrupted: 'nothing-in-flight' });
+    });
+
+    it('interrupt returns { ok: false, unsupported: true } on 412 (no InterruptProvider)', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 412,
+        text: () => Promise.resolve('interrupt not supported'),
+        headers: { get: () => null },
+      });
+      const r = await client.interrupt();
+      expect(r).toEqual({ ok: false, unsupported: true });
+    });
+
+    it('interrupt propagates 404 as PermanentStreamError', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve('session gone'),
+        headers: { get: () => null },
+      });
+      await expect(client.interrupt()).rejects.toBeInstanceOf(AttachClient.PermanentStreamError);
+    });
+
     it('listSessions defaults status to "active" when server omits it (back-compat)', async () => {
       const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
       globalThis.fetch = vi.fn().mockResolvedValue({

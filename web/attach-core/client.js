@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AttachClient — JavaScript consumer of mast / core-agent's attach
-// protocol (HTTP/SSE per spec v1.2.0). Replaces the phase-A mock
-// `mast` object in app.js with a real backend connection.
+// attach-core/client — JavaScript consumer of mast / core-agent's
+// attach protocol (HTTP/SSE per spec v1.2.0). Replaces the phase-A
+// mock `mast` object in app.js with a real backend connection.
+//
+// Depends on sibling modules (loaded ahead of this file in index.html):
+//   attach-core/errors.js    — PermanentStreamError
+//   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
 //
 // Endpoints consumed (all under <endpoint>):
 //   GET  /sessions                         → list sessions
@@ -54,18 +58,16 @@
 window.AttachClient = (function () {
   'use strict';
 
-  // Thrown by _get/_post on HTTP 404/401/403 — statuses that mean the
-  // session is gone or auth is revoked. Consumers should stop the
-  // reconnect loop and surface a terminal banner rather than retrying.
-  class PermanentStreamError extends Error {
-    constructor(message, status) {
-      super(message);
-      this.name = 'PermanentStreamError';
-      this.status = status;
-    }
-    static isPermanentStatus(status) {
-      return status === 401 || status === 403 || status === 404;
-    }
+  // Dependencies loaded from sibling modules; index.html loads
+  // errors.js + protocol.js before this file.
+  const PermanentStreamError =
+    (window.AttachCoreErrors && window.AttachCoreErrors.PermanentStreamError) || null;
+  const fanoutAgentFrame =
+    (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
+  if (!PermanentStreamError || !fanoutAgentFrame) {
+    throw new Error(
+      'attach-core/client.js: missing dependencies — errors.js and protocol.js must load first'
+    );
   }
 
   class AttachClient {
@@ -252,57 +254,10 @@ window.AttachClient = (function () {
     }
 
     _fanoutAgentFrame(frame) {
-      if (!frame || !frame.event) return;
-      const ev = frame.event;
-      const content = ev.Content || ev.content;
-      if (!content || !content.parts) return;
-
-      for (const part of content.parts) {
-        // Streamed text chunk.
-        if (typeof part.text === 'string' && part.text.length > 0) {
-          this.onEvent({
-            type: 'stream-chunk',
-            data: {
-              text: part.text,
-              partial: !!(ev.Partial || ev.partial),
-              author: ev.Author || ev.author || '',
-            },
-          });
-          continue;
-        }
-        // Function call (tool invocation).
-        const fc = part.functionCall || part.function_call || part.FunctionCall;
-        if (fc) {
-          this.onEvent({
-            type: 'tool-call',
-            data: {
-              id: fc.id || fc.ID || '',
-              name: fc.name || fc.Name || '',
-              args: fc.args || fc.Args || {},
-            },
-          });
-          continue;
-        }
-        // Function response (tool result).
-        const fr = part.functionResponse || part.function_response || part.FunctionResponse;
-        if (fr) {
-          const response = fr.response || fr.Response || {};
-          // v1.2.0: latency_ms rides as a sidecar key in the response
-          // map (ADK constraint — tool.Run can't set CustomMetadata).
-          // Browser JSON decode makes it a Number; accept absent or 0.
-          const latencyMs = typeof response.latency_ms === 'number' ? response.latency_ms : 0;
-          this.onEvent({
-            type: 'tool-result',
-            data: {
-              id: fr.id || fr.ID || '',
-              name: fr.name || fr.Name || '',
-              response,
-              latencyMs,
-            },
-          });
-          continue;
-        }
-      }
+      // Delegate to the pure helper in attach-core/protocol.js so the
+      // conformance harness can exercise the same code without wiring
+      // up a client. this.onEvent is the emit callback.
+      fanoutAgentFrame(frame, (e) => this.onEvent(e));
     }
 
     // ─── Operator input ─────────────────────────────────────────────
@@ -339,8 +294,9 @@ window.AttachClient = (function () {
     }
   }
 
-  // Expose the error class as a static on the constructor so callers
-  // can do `err instanceof AttachClient.PermanentStreamError`.
+  // Re-export the error class as a static on the constructor so
+  // callers can do `err instanceof AttachClient.PermanentStreamError`
+  // without pulling in window.AttachCoreErrors directly.
   AttachClient.PermanentStreamError = PermanentStreamError;
 
   return AttachClient;

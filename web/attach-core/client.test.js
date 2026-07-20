@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Unit tests for web/attach-client.js — spec v1.2.0 alignment.
+// Unit tests for web/attach-core/client.js — spec v1.2.0 alignment.
 //
 // Covers:
 //   1. PermanentStreamError classification on HTTP 404/401/403
 //   2. capabilities frame caching
-//   3. tool-result latency_ms sidecar extraction from response map
+//   3. tool-result latency_ms sidecar extraction (via protocol.js)
 //   4. Legacy `agent` frame demux into stream-chunk / tool-call / tool-result
 //   5. Both float64 (browser) and int64-shaped latency values
 
@@ -26,13 +26,20 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Load attach-client.js as a script into jsdom's window global. The
-// file sets window.AttachClient = ... in an IIFE.
+// Load the three attach-core modules in order into jsdom's window
+// global — same order as index.html. errors.js and protocol.js set
+// window.AttachCoreErrors / window.AttachCoreProtocol; client.js reads
+// them at IIFE-init.
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(join(here, 'attach-client.js'), 'utf8');
+const srcErrors = readFileSync(join(here, 'errors.js'), 'utf8');
+const srcProtocol = readFileSync(join(here, 'protocol.js'), 'utf8');
+const srcClient = readFileSync(join(here, 'client.js'), 'utf8');
 
 function loadAttachClient() {
-  new Function('window', src)(globalThis);
+  const load = (s) => new Function('window', s)(globalThis);
+  load(srcErrors);
+  load(srcProtocol);
+  load(srcClient);
   return globalThis.AttachClient;
 }
 
@@ -40,6 +47,8 @@ describe('AttachClient', () => {
   let AttachClient;
   beforeEach(() => {
     delete globalThis.AttachClient;
+    delete globalThis.AttachCoreErrors;
+    delete globalThis.AttachCoreProtocol;
     AttachClient = loadAttachClient();
   });
 

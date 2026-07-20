@@ -60,6 +60,26 @@ make dev
 # 3. Browse to http://localhost:8000 and connect to http://localhost:7777
 ```
 
+## Deployment options
+
+Four ways to deploy mast-web, in increasing order of operator control:
+
+| Path | Command | Best for |
+|---|---|---|
+| **Hosted SPA** | Visit `https://go-steer.github.io/mast-web/app/` *(coming soon)* | "Just let me try mast" |
+| **Container image** | `docker run -p 8080:8080 -e BACKEND_URL=http://core-agent:7777 ghcr.io/go-steer/mast-web:latest` | Production K8s / Cloud Run / Docker Compose |
+| **Agent `--ui` flag** *(planned)* | `core-agent --attach-listen :7777 --ui` then visit `:7777/ui/` | Single-binary deploys, air-gapped, local dev |
+| **Tarball + your own host** | `tar -xzf mast-web-v0.1.0.tar.gz && nginx -s reload` | Custom CDN, strict hosting requirements |
+
+The container image bundles a tiny Go static-file server with the SPA and optionally **proxies attach calls to a configured backend** — eliminating CORS as a concern because the browser only ever talks to same-origin URLs. Configuration via env vars:
+
+| Env | Default | Purpose |
+|---|---|---|
+| `LISTEN` | `:8080` | Bind address |
+| `BACKEND_URL` | — | Optional reverse-proxy target; SPA hits `/attach/*` same-origin |
+| `API_PREFIX` | `/attach` | URL prefix routed to the backend proxy |
+| `BACKEND_TOKEN` | — | If set, the server injects `Authorization: Bearer <token>` into proxied requests; SPA carries no auth |
+
 ---
 
 ## Project layout

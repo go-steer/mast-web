@@ -33,6 +33,7 @@ permissions:
 
 env:
   NODE_VERSION: '20'
+  GO_VERSION: '1.26'
 
 # Each job below is a thin wrapper over a script under
 # dev/ci/presubmits/. The same script is what `dev/tools/ci` runs
@@ -79,3 +80,46 @@ jobs:
         run: dev/ci/presubmits/lint-css
       - name: HTMLHint
         run: dev/ci/presubmits/verify-html
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+      - name: Format
+        run: dev/ci/presubmits/verify-go-format
+      - name: Vet
+        run: dev/ci/presubmits/go-vet
+      - name: Build
+        run: dev/ci/presubmits/go-build
+      - name: Test
+        run: dev/ci/presubmits/go-test
+
+  image:
+    name: image (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Docker build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: mast-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke run
+        run: |
+          docker run --rm -d --name mast-web-smoke -p 8080:8080 mast-web:ci
+          sleep 2
+          curl -fsS http://localhost:8080/healthz | grep -q '^ok$'
+          docker logs mast-web-smoke
+          docker rm -f mast-web-smoke

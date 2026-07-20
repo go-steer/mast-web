@@ -52,3 +52,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "docs-only change — no web assets to lint"
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no Go to build"
+
+  image:
+    name: image (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no image to build"

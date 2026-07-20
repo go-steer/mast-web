@@ -1,0 +1,114 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Release
+
+# Builds the static asset bundle and attaches it as a GitHub Release
+# on every `v*.*.*` tag push. The published `dist.tar.gz` archive is
+# what downstream agent binaries (core-agent, later mast) consume via
+# go:embed in phase C of docs/web-bootstrap.md.
+#
+# Manual republish (e.g. for a tag pushed before this workflow existed):
+# use the workflow_dispatch entrypoint with the tag input.
+#
+# The release is *not* signed (no cosign yet) — mast-web ships static
+# HTML/CSS/JS only, no binary attack surface, so the GitHub Release
+# integrity guarantees (HTTPS + commit SHA in metadata) are adequate
+# for the threat model. Revisit if assets ever start carrying
+# runtime-execution implications.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.0). Empty = use the current ref.'
+        required: false
+
+# Cancel superseded runs (e.g. when a tag is re-pushed during dev).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # release jobs should always finish once started
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Honor a manually-supplied tag for workflow_dispatch runs;
+          # default to whatever ref triggered the workflow otherwise.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Verify CI passes on the release ref
+        # Belt-and-suspenders: don't ship a tag that wouldn't pass CI.
+        # The same scripts run in .github/workflows/ci.yml.
+        run: dev/tools/ci
+
+      - name: Build dist/
+        run: dev/ci/presubmits/build
+
+      - name: Resolve tag name
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.tag }}" ]]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # github.ref is like refs/tags/vX.Y.Z; strip the prefix.
+            echo "name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package dist/ as tarball
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          tar -czf "mast-web-${tag}.tar.gz" -C dist .
+          sha256sum "mast-web-${tag}.tar.gz" > "mast-web-${tag}.tar.gz.sha256"
+          ls -la mast-web-*.tar.gz*
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          # `gh release create` is idempotent-ish via `--target` + clobber via
+          # `gh release upload --clobber`. Create-if-missing then upload.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "mast-web $tag — static asset bundle.
+
+              The downloadable \`mast-web-${tag}.tar.gz\` is the canonical artifact for downstream agent binaries (core-agent, mast) to fetch and embed via \`go:embed\`. SHA256 in the companion \`.sha256\` file.
+
+              See [\`docs/web-design.md\`](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) for how the embedding works in phase C."
+          fi
+          gh release upload "$tag" \
+            "mast-web-${tag}.tar.gz" \
+            "mast-web-${tag}.tar.gz.sha256" \
+            --clobber

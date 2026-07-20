@@ -80,6 +80,226 @@
   // calls / results into the right rendering callbacks.
   let activeTurn = null;
 
+  // ─── Capability manifest (v1.4.0+) ────────────────────────────────
+  //
+  // The capabilities first-frame (and optional status-update.capabilities
+  // hot-merge) carries four fields the UI keys off:
+  //   features       — { multi_session, mcp, specialists, ... } flags
+  //                    that gate sidebar sections and affordances
+  //   slash_commands — server-advertised slash commands; merged with
+  //                    the client-side local set
+  //   agent          — { name, description, model, provider, url, version }
+  //                    that populates the "Connected to X" header slot
+  //   caller_id      — display hint for the identity slot (real
+  //                    lookup goes through /whoami)
+  //
+  // Feature-flag defaults when a flag is absent: assume enabled
+  // (back-compat with pre-v1.4.0 servers that don't advertise).
+  // Unknown feature flags are tolerated silently — forward-compat.
+  //
+  // Static metadata table for known server-side slash commands. Server
+  // advertises which are available via capabilities.slash_commands;
+  // the client renders known names with the pretty display below
+  // and falls through to a generic entry for unknown names ("server-
+  // advertised; no local help").
+  const SERVER_SLASH_METADATA = {
+    compact: {
+      signature: '/compact [focus]',
+      summary: 'Ask the agent to compact its context',
+    },
+    done: {
+      signature: '/done [note]',
+      summary: 'Checkpoint the current thread',
+    },
+    btw: {
+      signature: '/btw <side-query>',
+      summary: 'Ask a side question without disturbing the main turn',
+    },
+    subagent: {
+      signature: '/subagent <spec>',
+      summary: 'Dispatch a subagent',
+    },
+    replan: {
+      signature: '/replan',
+      summary: 'Ask the agent to replan the current task',
+    },
+    federate: {
+      signature: '/federate <peer>',
+      summary: 'Hand off to a peer agent (mast-specific)',
+    },
+  };
+
+  function isFeatureEnabled(name) {
+    const features = latest.capabilities && latest.capabilities.features;
+    // Absent features map: assume all-on (pre-v1.4.0 server).
+    if (!features || typeof features !== 'object') return true;
+    // Absent flag: assume on (forward-compat with a client that
+    // knows about more flags than the server advertises).
+    if (!(name in features)) return true;
+    return !!features[name];
+  }
+
+  function mergeCapabilities(base, patch) {
+    // Shallow merge with a small twist: `features` is deep-merged
+    // (so a status-update flipping a single flag doesn't clobber
+    // the rest of the map). Other fields replace.
+    const out = { ...(base || {}), ...(patch || {}) };
+    if ((base && base.features) || (patch && patch.features)) {
+      out.features = { ...(base && base.features), ...(patch && patch.features) };
+    }
+    return out;
+  }
+
+  function applyCapabilities(caps) {
+    if (!caps) return;
+    updateAgentInfo(caps.agent, caps.server);
+    updateIdentityFromCapabilities(caps.caller_id);
+    applyFeatureGating(caps.features);
+    if (Array.isArray(caps.slash_commands)) {
+      applyServerSlashCommands(caps.slash_commands);
+    }
+    applyObserverMode(caps.features);
+  }
+
+  // Observer mode — when features.observer_mode is true, the operator
+  // is attached to a session someone (or something) else is driving.
+  // Show a persistent banner so an operator doesn't type into a
+  // read-only stream. Full observer-mode support (turn-complete-
+  // driven assistant-footer stamping when no activeTurn exists,
+  // per coretuiremote's StampLatestAssistantFooter pattern) is a
+  // v0.3.0 chunk — needs the turn dispatch to accept externally-
+  // driven turns, which requires refactoring the activeTurn /
+  // runPrompt binding. Deferred; banner is the visible bit today.
+  function applyObserverMode(features) {
+    const isObserver = !!(features && features.observer_mode === true);
+    let banner = document.getElementById('observer-banner');
+    if (!isObserver) {
+      if (banner) banner.remove();
+      return;
+    }
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'observer-banner';
+      banner.className = 'message system';
+      banner.style.borderLeft = '3px solid var(--brand-yellow, #f0b429)';
+      banner.style.background = 'var(--bg-elevated, rgba(240,180,41,0.06))';
+      const main = document.getElementById('output-area');
+      if (main) main.insertBefore(banner, main.firstChild);
+    }
+    banner.textContent =
+      'Attached as observer — this session is being driven elsewhere. Your prompts will be queued but full observer-mode footer support ships in a later version.';
+  }
+
+  function updateAgentInfo(agent, serverName) {
+    const info = document.getElementById('agent-info');
+    if (!info) return;
+    if (!agent || typeof agent !== 'object') {
+      info.hidden = true;
+      info.textContent = '';
+    } else {
+      // "mast v0.1.0-dev (gemini-2.5-pro via vertex)"
+      const parts = [];
+      if (agent.name) parts.push(escapeHtml(agent.name));
+      if (agent.version)
+        parts.push('<span style="color:var(--text-dim)">' + escapeHtml(agent.version) + '</span>');
+      const model = agent.model ? escapeHtml(agent.model) : '';
+      const provider = agent.provider ? escapeHtml(agent.provider) : '';
+      const modelBits = [model, provider ? 'via ' + provider : ''].filter(Boolean).join(' ');
+      info.innerHTML =
+        parts.join(' ') +
+        (modelBits
+          ? '<div style="font-size:11px;color:var(--text-dim)">' + modelBits + '</div>'
+          : '') +
+        (agent.description
+          ? '<div style="font-size:11px;color:var(--text-dim);margin-top:4px">' +
+            escapeHtml(agent.description) +
+            '</div>'
+          : '');
+      info.hidden = false;
+    }
+    // Status-bar "powered by" slot — collapse to just the agent name
+    // when we have one, else "attach protocol · <server>".
+    const status = document.getElementById('status-agent');
+    if (status) {
+      if (agent && agent.name) {
+        status.textContent = agent.name + (agent.model ? ' · ' + agent.model : '');
+      } else if (serverName) {
+        status.textContent = 'attach protocol · ' + serverName;
+      } else {
+        status.textContent = 'attach protocol';
+      }
+    }
+  }
+
+  function updateIdentityFromCapabilities(callerID) {
+    const el = document.getElementById('identity-info');
+    if (!el) return;
+    if (callerID) {
+      el.textContent = callerID;
+      // Fire /whoami in the background to enrich with proxy_by /
+      // source. Absorb errors — the caller_id display is enough.
+      if (mast.client && typeof mast.client.whoami === 'function') {
+        mast.client.whoami().then(
+          (w) => renderIdentity(w),
+          () => {}
+        );
+      }
+    }
+  }
+
+  function renderIdentity(whoami) {
+    const el = document.getElementById('identity-info');
+    if (!el || !whoami || !whoami.identity) return;
+    // "alice@example.com" or "alice@example.com via bot-service (proxied)"
+    let line = escapeHtml(whoami.identity);
+    if (whoami.proxy_by) {
+      line +=
+        ' <span style="color:var(--text-dim);font-size:11px">via ' +
+        escapeHtml(whoami.proxy_by) +
+        '</span>';
+    }
+    if (whoami.source && whoami.source !== 'bearer') {
+      // Bearer is the common case; only annotate when it's not.
+      line +=
+        ' <span style="color:var(--text-dim);font-size:11px">(' +
+        escapeHtml(whoami.source) +
+        ')</span>';
+    }
+    if (whoami.admin) {
+      line += ' <span style="color:var(--brand-yellow);font-size:10px">admin</span>';
+    }
+    el.innerHTML = line;
+  }
+
+  function applyFeatureGating(_features) {
+    // Hide sidebar sections whose backing feature is explicitly false.
+    // Mapping: feature flag → sidebar section id.
+    const gates = {
+      mcp: 'section-mcp',
+      specialists: 'section-specialists',
+      multi_session: 'section-sessions',
+    };
+    for (const [flag, sectionID] of Object.entries(gates)) {
+      const el = document.getElementById(sectionID);
+      if (!el) continue;
+      el.hidden = !isFeatureEnabled(flag);
+    }
+    // Stop button visibility is also gated dynamically per-session
+    // by interruptUnsupportedForSession + turn state, but feature-
+    // flag gating suppresses it entirely when interrupt=false.
+    if (!isFeatureEnabled('interrupt')) {
+      const stop = document.getElementById('stop-btn');
+      if (stop) stop.hidden = true;
+    }
+  }
+
+  function applyServerSlashCommands(names) {
+    // Server-advertised commands are stored for the /help output +
+    // future autocomplete palette. Dispatch is handled generically
+    // via cmdServerSlash — the router doesn't need a static entry.
+    latest.serverSlashCommands = names.slice();
+  }
+
   const mast = {
     client: null,
     prompter: null,
@@ -388,6 +608,7 @@
     switch (ev.type) {
       case 'capabilities':
         latest.capabilities = ev.data;
+        applyCapabilities(latest.capabilities);
         return;
 
       case 'status-update': {
@@ -398,6 +619,15 @@
         if (s.context_pct !== undefined) latest.status.contextPct = s.context_pct;
         if (s.perm_mode !== undefined) latest.status.permMode = s.perm_mode;
         currentModel = latest.status.model || currentModel;
+        // v1.4.0: status-update may carry an optional `capabilities`
+        // merge for hot changes (e.g. MCP server registers mid-
+        // session and features.mcp flips true). Merge into stored
+        // capabilities; re-apply UI. No producer emits this yet as
+        // of core-agent#344, but consumers wire the merge path once.
+        if (s.capabilities && typeof s.capabilities === 'object') {
+          latest.capabilities = mergeCapabilities(latest.capabilities, s.capabilities);
+          applyCapabilities(latest.capabilities);
+        }
         updateStatusBar();
         return;
       }
@@ -609,6 +839,19 @@
 
   function addSystemMessage(text) {
     addMessage('system', text);
+  }
+
+  // Insert a system message whose body is pre-rendered HTML. Used by
+  // the generic server-slash dispatcher so responses can flow through
+  // SlashRender's markdown / json / text renderers. Contents come
+  // from SlashRender, which HTML-escapes its inputs — do NOT feed
+  // arbitrary user or server strings here without sanitization.
+  function addSystemMessageHTML(html) {
+    const div = document.createElement('div');
+    div.className = 'message system';
+    div.innerHTML = html;
+    outputArea.appendChild(div);
+    outputArea.scrollTop = outputArea.scrollHeight;
   }
 
   function addTurnFooter(result) {
@@ -995,7 +1238,16 @@
   }
 
   async function fetchIdentity() {
+    // v1.4.0 path: identity is populated from capabilities.caller_id
+    // + a background /whoami enrichment (see applyCapabilities +
+    // updateIdentityFromCapabilities / renderIdentity). This function
+    // is the fallback for older backends that don't advertise
+    // caller_id — it uses the legacy mast.fetchIdentity() which
+    // itself now prefers capabilities.caller_id when present but
+    // falls back to a placeholder otherwise.
     try {
+      // Skip if capabilities already delivered the identity.
+      if (latest.capabilities && latest.capabilities.caller_id) return;
       const info = await mast.fetchIdentity();
       document.getElementById('identity-info').textContent = info.email || 'Unknown';
     } catch {
@@ -1269,17 +1521,58 @@
     const parts = input.split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1);
+    // Client-side local commands take priority (they own /help,
+    // /endpoint, /attach — no server round trip). Otherwise fall
+    // through to server-advertised commands if the backend has
+    // published a slash_commands list on the capabilities frame.
     for (const [prefix, handler] of Object.entries(slashCommands)) {
       if (cmd === prefix || cmd.startsWith(prefix + ' ')) {
         await handler(args, input);
         return;
       }
     }
+    const bare = cmd.replace(/^\//, '');
+    const serverNames = (latest.capabilities && latest.capabilities.slash_commands) || [];
+    if (serverNames.includes(bare)) {
+      await cmdServerSlash(bare, args);
+      return;
+    }
     addSystemMessage('Unknown command: ' + cmd + '. Type /help for available commands.');
   }
 
+  // Generic dispatcher for any server-advertised slash command that
+  // doesn't have a bespoke client-side handler. POSTs to the
+  // canonical /sessions/{sid}/slash/<name> endpoint, dispatches the
+  // response body through the shared slash-render module (registered
+  // renderers: text / markdown / json; unknown _render → json).
+  async function cmdServerSlash(name, args) {
+    if (!connected || !mast.client) {
+      addSystemMessage('Not connected to a backend');
+      return;
+    }
+    try {
+      // Server slash endpoints accept arbitrary JSON bodies; for a
+      // generic dispatcher we just pass through the raw args string
+      // (best we can do without per-command schemas — that's the
+      // v0.3.0 schema-driven work).
+      const body = args.length > 0 ? { args: args.join(' ') } : {};
+      const path =
+        '/sessions/' + encodeURIComponent(currentSession) + '/slash/' + encodeURIComponent(name);
+      const res = await mast.client._post(path, body);
+      if (window.SlashRender && typeof window.SlashRender.renderSlashResponse === 'function') {
+        const html = window.SlashRender.renderSlashResponse(res);
+        // Render as a system message with the rendered HTML inlined.
+        addSystemMessageHTML(html);
+      } else {
+        addSystemMessage(JSON.stringify(res, null, 2));
+      }
+    } catch (e) {
+      addSystemMessage('/' + name + ' failed: ' + (e.message || e));
+    }
+  }
+
   function cmdHelp() {
-    const helpText = [
+    const localCommands = [
       '/help              — Show this help',
       '/attach <url> [<token>] [<sid>]  — Switch to a different backend daemon',
       '/model [name]      — List or switch model',
@@ -1292,7 +1585,24 @@
       '/clear             — Clear current session messages',
       '/whoami            — Show backend identity',
       '/endpoint          — Reconfigure backend endpoint',
-    ].join('\n');
+    ];
+    // Merge server-advertised slash commands from capabilities.slash_commands.
+    // Known names get pretty display from SERVER_SLASH_METADATA; unknown names
+    // render generically ("no local help — server-advertised") so a new
+    // command appearing server-side is discoverable even before the client
+    // learns to render it richly.
+    const serverNames = (latest.capabilities && latest.capabilities.slash_commands) || [];
+    const serverLines = serverNames.map((name) => {
+      const meta = SERVER_SLASH_METADATA[name];
+      if (meta) {
+        return `${meta.signature.padEnd(18)} — ${meta.summary}`;
+      }
+      return `/${name.padEnd(17)} — (server-advertised; no local help)`;
+    });
+    let helpText = localCommands.join('\n');
+    if (serverLines.length > 0) {
+      helpText += '\n\nServer-advertised:\n' + serverLines.join('\n');
+    }
     addSystemMessage(helpText);
   }
 

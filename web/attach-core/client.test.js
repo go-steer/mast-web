@@ -315,6 +315,58 @@ describe('AttachClient', () => {
       expect(r).toEqual({ ok: false, unsupported: true });
     });
 
+    it('whoami GETs /whoami and returns the response verbatim (v1.4.0)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            identity: 'alice@example.com',
+            admin: false,
+            source: 'bearer',
+            proxy_by: '',
+          }),
+      });
+      const w = await client.whoami();
+      expect(w).toEqual({
+        identity: 'alice@example.com',
+        admin: false,
+        source: 'bearer',
+        proxy_by: '',
+      });
+      const [url] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe('https://example/whoami');
+    });
+
+    it('whoami surfaces proxy_by field when set (X-Asserted-Caller path)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            identity: 'alice@example.com',
+            admin: false,
+            source: 'asserted',
+            proxy_by: 'bot-service@example.com',
+          }),
+      });
+      const w = await client.whoami();
+      expect(w.source).toBe('asserted');
+      expect(w.proxy_by).toBe('bot-service@example.com');
+    });
+
+    it('whoami propagates 401 as PermanentStreamError (unauthenticated)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('unauthorized'),
+      });
+      await expect(client.whoami()).rejects.toBeInstanceOf(AttachClient.PermanentStreamError);
+    });
+
     it('interrupt propagates 404 as PermanentStreamError', async () => {
       const client = new AttachClient({
         endpoint: 'https://example',

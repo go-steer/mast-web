@@ -1,6 +1,6 @@
 # mast-web: bootstrap plan
 
-**Status:** draft, 2026-06-12. Migrated from `core-agent/docs/mast/web-bootstrap.md` on 2026-06-12 as part of mast-web repo init. The repo-init portion of this plan has been executed (you are reading the result); phases A, B, C remain. Companion to [web-design.md](./web-design.md) (the architecture), which stays evergreen.
+**Status:** executed, 2026-07-20. Migrated from `core-agent/docs/mast/web-bootstrap.md` on 2026-06-12 as part of mast-web repo init. All bootstrap phases (repo init, A, B, C+) have shipped; the doc is preserved as an archival record of what was planned and executed rather than as an active plan. Live v0.2 catch-up work is tracked in [`v0.2-catch-up-plan.md`](./v0.2-catch-up-plan.md). References to "after the fork" or "not yet" throughout this doc reflect the situation as of 2026-06-12, not today; see [`../README.md`](./README.md) for current mast-repo status (docs-only pre-code-fork). Companion to [web-design.md](./web-design.md) (the architecture), which stays evergreen.
 
 ## Current state (as of 2026-06-12 repo init)
 
@@ -228,8 +228,8 @@ The four mast docs currently live in core-agent's `docs/mast/`. When mast-web (a
 |---|---|---|
 | [web-design.md](./web-design.md) | `~/projects/core-agent/docs/mast/web-design.md` (here, today) | `~/projects/mast-web/docs/web-design.md` |
 | this doc (this doc) | here | `~/projects/mast-web/docs/web-bootstrap.md` (then deleted after execution) |
-| [positioning.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/positioning.md) | here | `~/projects/mast/docs/positioning.md` (after the fork) |
-| [fork-design.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/fork-design.md) | here | `~/projects/mast/docs/fork-design.md` (after the fork) |
+| [positioning.md](https://github.com/go-steer/mast/blob/main/docs/positioning.md) | here | `~/projects/mast/docs/positioning.md` (after the fork) |
+| [fork-design.md](https://github.com/go-steer/mast/blob/main/docs/fork-design.md) | here | `~/projects/mast/docs/fork-design.md` (after the fork) |
 | `./specialists-design.md` | here | `~/projects/mast/docs/specialists-design.md` (after the fork) |
 | `./README.md` | here | needs splitting: a `mast/docs/README.md` index for mast-side docs, and a `mast-web/docs/README.md` pointing at `mast-web/docs/web-design.md` + cross-referencing the mast repo |
 
@@ -238,8 +238,8 @@ The four mast docs currently live in core-agent's `docs/mast/`. When mast-web (a
 1. Copy `~/projects/core-agent/docs/mast/web-design.md` → `~/projects/mast-web/docs/web-design.md`.
 2. Copy `~/projects/core-agent/docs/mast/web-bootstrap.md` → `~/projects/mast-web/docs/web-bootstrap.md`.
 3. Update cross-references inside the copies:
-   - [positioning.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/positioning.md) → `https://github.com/go-steer/core-agent/blob/main/docs/mast/positioning.md` (until mast lands, then update to mast's docs)
-   - [fork-design.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/fork-design.md) → same pattern
+   - [positioning.md](https://github.com/go-steer/mast/blob/main/docs/positioning.md) → `https://github.com/go-steer/mast/blob/main/docs/positioning.md` (until mast lands, then update to mast's docs)
+   - [fork-design.md](https://github.com/go-steer/mast/blob/main/docs/fork-design.md) → same pattern
    - `./specialists-design.md` → same pattern
    - `../attach-mode-design.md` → `https://github.com/go-steer/core-agent/blob/main/docs/attach-mode-design.md`
    - `../attach-tui-design.md` → same pattern
@@ -282,7 +282,7 @@ That gets us through phase A on clean history in both repos. Phase B + phase C a
 
 ## What this plan does *not* cover
 
-- The mast fork itself (covered by [fork-design.md](https://github.com/go-steer/core-agent/blob/main/docs/mast/fork-design.md)).
+- The mast fork itself (covered by [fork-design.md](https://github.com/go-steer/mast/blob/main/docs/fork-design.md)).
 - Phase D and Phase E from [web-design.md](./web-design.md) (mast-specific UI elements + production hosting docs). Those happen after the fork lands.
 - The Go-side `//go:embed` wiring in mast (Phase C's other half) — that's a mast PR, not a mast-web PR.
 - Migration of issues / project boards from anywhere.

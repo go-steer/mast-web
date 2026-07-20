@@ -158,6 +158,36 @@
     if (Array.isArray(caps.slash_commands)) {
       applyServerSlashCommands(caps.slash_commands);
     }
+    applyObserverMode(caps.features);
+  }
+
+  // Observer mode — when features.observer_mode is true, the operator
+  // is attached to a session someone (or something) else is driving.
+  // Show a persistent banner so an operator doesn't type into a
+  // read-only stream. Full observer-mode support (turn-complete-
+  // driven assistant-footer stamping when no activeTurn exists,
+  // per coretuiremote's StampLatestAssistantFooter pattern) is a
+  // v0.3.0 chunk — needs the turn dispatch to accept externally-
+  // driven turns, which requires refactoring the activeTurn /
+  // runPrompt binding. Deferred; banner is the visible bit today.
+  function applyObserverMode(features) {
+    const isObserver = !!(features && features.observer_mode === true);
+    let banner = document.getElementById('observer-banner');
+    if (!isObserver) {
+      if (banner) banner.remove();
+      return;
+    }
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'observer-banner';
+      banner.className = 'message system';
+      banner.style.borderLeft = '3px solid var(--brand-yellow, #f0b429)';
+      banner.style.background = 'var(--bg-elevated, rgba(240,180,41,0.06))';
+      const main = document.getElementById('output-area');
+      if (main) main.insertBefore(banner, main.firstChild);
+    }
+    banner.textContent =
+      'Attached as observer — this session is being driven elsewhere. Your prompts will be queued but full observer-mode footer support ships in a later version.';
   }
 
   function updateAgentInfo(agent, serverName) {

@@ -1,0 +1,32 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.2.0",
+      "event_types": ["capabilities", "agent"],
+      "server": "core-agent"
+    }
+  },
+  {
+    "type": "tool-call",
+    "data": { "id": "abc", "name": "bq_query", "args": { "sql": "SELECT 1" } }
+  },
+  {
+    "type": "tool-result",
+    "data": {
+      "id": "abc",
+      "name": "bq_query",
+      "response": { "rows": [[1]], "latency_ms": 187.4 },
+      "latencyMs": 187.4
+    }
+  },
+  {
+    "type": "tool-result",
+    "data": {
+      "id": "def",
+      "name": "no_latency_tool",
+      "response": { "ok": true },
+      "latencyMs": 0
+    }
+  }
+]

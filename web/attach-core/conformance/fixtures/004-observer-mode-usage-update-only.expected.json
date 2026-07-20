@@ -1,0 +1,41 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.2.0",
+      "event_types": ["capabilities", "status-update", "usage-update", "turn-complete", "agent"],
+      "server": "core-agent"
+    }
+  },
+  { "type": "status-update", "data": { "model": "gemini-2.5-flash", "turn_state": "streaming" } },
+  {
+    "type": "stream-chunk",
+    "data": { "text": "Observer sees this", "partial": true, "author": "assistant" }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "obs-1",
+      "model": "gemini-2.5-flash",
+      "tokens_in": 12,
+      "tokens_out": 4,
+      "latency_ms": 320
+    }
+  },
+  {
+    "type": "usage-update",
+    "data": {
+      "tokens_in_total": 12,
+      "tokens_out_total": 4,
+      "cost_usd_total": 0.00004,
+      "turns_total": 1,
+      "last_turn": {
+        "tokens_in": 12,
+        "tokens_in_cached": 8,
+        "tokens_out": 4,
+        "cost_usd": 0.00004,
+        "model": "gemini-2.5-flash"
+      }
+    }
+  }
+]

@@ -1,0 +1,10 @@
+{"event": "capabilities", "data": {"protocol_version": "1.2.0", "event_types": ["capabilities", "status-update", "usage-update", "inbox", "turn-complete", "turn-error", "agent"], "server": "core-agent"}}
+{"event": "status-update", "data": {"model": "gemini-2.5-flash", "provider": "vertex", "turn_state": "streaming", "context_pct": 12, "perm_mode": "prompt"}}
+{"event": "inbox", "data": {"state": "queued", "prompt_id": "p1", "queued_at": "2026-07-16T12:00:00Z"}}
+{"event": "inbox", "data": {"state": "dequeued", "prompt_id": "p1", "queued_at": "2026-07-16T12:00:00Z"}}
+{"event": "agent", "data": {"seq": 1, "event": {"Author": "assistant", "Partial": true, "Content": {"parts": [{"text": "Hello"}]}}}}
+{"event": "agent", "data": {"seq": 2, "event": {"Author": "assistant", "Partial": true, "Content": {"parts": [{"text": " world"}]}}}}
+{"event": "agent", "data": {"seq": 3, "event": {"Author": "assistant", "Content": {"parts": [{"functionCall": {"id": "c1", "name": "fs_read", "args": {"path": "/etc/hostname"}}}]}}}}
+{"event": "agent", "data": {"seq": 4, "event": {"Author": "assistant", "Content": {"parts": [{"functionResponse": {"id": "c1", "name": "fs_read", "response": {"content": "example.com\n", "latency_ms": 12}}}]}}}}
+{"event": "turn-complete", "data": {"prompt_id": "p1", "model": "gemini-2.5-flash", "tokens_in": 45, "tokens_out": 8, "cost_usd": 0.00012, "latency_ms": 640}}
+{"event": "usage-update", "data": {"tokens_in_total": 45, "tokens_out_total": 8, "cost_usd_total": 0.00012, "turns_total": 1, "by_model": {"gemini-2.5-flash": {"tokens_in": 45, "tokens_out": 8, "cost_usd": 0.00012, "turns": 1}}, "last_turn": {"tokens_in": 45, "tokens_in_cached": 0, "tokens_out": 8, "cost_usd": 0.00012, "model": "gemini-2.5-flash"}}}

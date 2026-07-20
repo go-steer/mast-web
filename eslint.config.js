@@ -40,7 +40,14 @@ export default [
     },
   },
   {
-    files: ["**/*.test.js", "**/*.spec.js"],
+    files: [
+      "**/*.test.js",
+      "**/*.spec.js",
+      // Conformance harness runs under Node (vitest / import) only,
+      // never in the browser bundle — treat as ES modules so import /
+      // export parse cleanly.
+      "web/attach-core/conformance/**/*.js",
+    ],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",

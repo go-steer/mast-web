@@ -1,0 +1,24 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.2.0",
+      "event_types": ["capabilities", "status-update", "usage-update", "turn-error"],
+      "server": "core-agent"
+    }
+  },
+  {
+    "type": "status-update",
+    "data": { "model": "gemini-2.5-pro", "provider": "vertex", "turn_state": "streaming" }
+  },
+  { "type": "stream-chunk", "data": { "text": "Working", "partial": true, "author": "assistant" } },
+  {
+    "type": "turn-error",
+    "data": {
+      "kind": "cost_ceiling",
+      "message": "session cost ceiling exceeded ($5.00)",
+      "retryable": false,
+      "hint": "contact administrator to reset"
+    }
+  }
+]

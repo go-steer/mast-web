@@ -17,38 +17,39 @@
         ><span class="logo-cursor"></span>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-backend">
         <h3>Backend</h3>
         <div id="backend-info">Not connected</div>
+        <div id="agent-info" hidden></div>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-model">
         <h3>Model</h3>
         <select id="model-select"></select>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-sessions">
         <h3>Sessions</h3>
         <div id="session-list"></div>
         <button class="sidebar-btn" id="new-session-btn">New Session</button>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-mcp">
         <h3>MCP Servers</h3>
         <div id="server-list"></div>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-specialists">
         <h3>Specialists</h3>
         <div id="specialist-list"></div>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-identity">
         <h3>Identity</h3>
         <div id="identity-info">Not connected</div>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="section-actions">
         <h3>Actions</h3>
         <button class="sidebar-btn" id="export-btn">Export Session</button>
       </div>
@@ -100,7 +101,7 @@
         <span class="status-item" id="status-elapsed"
           >⏱ <span id="status-elapsed-value">—</span></span
         >
-        <span class="status-item powered-by"> attach protocol · core-agent / mast </span>
+        <span class="status-item powered-by" id="status-agent"> attach protocol </span>
       </div>
     </div>
 

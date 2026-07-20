@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Standalone smoke test — boots the dev server + a mock backend
+# together so an operator can visually confirm the SPA renders +
+# handles events end-to-end without needing a real core-agent daemon
+# or model credentials.
+#
+# Usage:
+#     make smoke               # if wired into the Makefile
+#     dev/tools/smoke          # direct
+#     dev/tools/smoke --fixture 002-cost-ceiling-mid-turn
+#
+# Environment overrides (also settable as flags on dev/tools/mock-backend):
+#     DEV_PORT             (default 8000)
+#     MOCK_PORT            (default 7778)
+#     MOCK_FIXTURE         (default 001-happy-turn)
+#     MOCK_FRAME_DELAY_MS  (default 150)
+#
+# What runs where:
+#     :8000  → dev/tools/dev serves web/ (the SPA)
+#     :7778  → dev/tools/mock-backend serves the fake attach endpoints
+#
+# Operator flow:
+#     1. Run this script.
+#     2. Open http://localhost:8000 in a browser.
+#     3. First-run modal appears — set endpoint to http://localhost:7778,
+#        leave token blank, click Connect.
+#     4. SPA streams the canned fixture (default: happy-turn) — real
+#        markdown rendering, real tool-call chips, real per-turn footer.
+#     5. Try scenarios by reloading with a `?fixture=` param, or restart
+#        the script with a different --fixture. Available fixtures live
+#        under web/attach-core/conformance/fixtures/.
+#     6. Ctrl-C tears down both processes cleanly.
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+DEV_PORT="${DEV_PORT:-8000}"
+MOCK_PORT="${MOCK_PORT:-7778}"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "smoke: python3 not found on PATH" >&2
+  echo "Install Python 3 (matches the same requirement as dev/tools/dev)." >&2
+  exit 1
+fi
+
+# Start the mock backend in the background; pass through any flags
+# so `dev/tools/smoke --fixture X` reaches it.
+MOCK_LOG="$(mktemp -t mast-web-mock-XXXXXX.log)"
+DEV_LOG="$(mktemp -t mast-web-dev-XXXXXX.log)"
+
+trap teardown INT TERM EXIT
+MOCK_PID=""
+DEV_PID=""
+teardown() {
+  # Guard against re-entry — trap on EXIT fires after INT too.
+  trap - INT TERM EXIT
+  if [[ -n "$MOCK_PID" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
+    kill "$MOCK_PID" 2>/dev/null || true
+    wait "$MOCK_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$DEV_PID" ]] && kill -0 "$DEV_PID" 2>/dev/null; then
+    kill "$DEV_PID" 2>/dev/null || true
+    wait "$DEV_PID" 2>/dev/null || true
+  fi
+  echo ""
+  echo "▸ smoke: mock + dev servers stopped"
+  echo "  mock log: $MOCK_LOG"
+  echo "  dev  log: $DEV_LOG"
+}
+
+MOCK_PORT="$MOCK_PORT" ./dev/tools/mock-backend --port "$MOCK_PORT" "$@" \
+  >"$MOCK_LOG" 2>&1 &
+MOCK_PID=$!
+
+# Give the mock a moment to bind before starting the dev server so
+# any "port in use" failure surfaces first (and cleanly).
+sleep 0.5
+if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+  echo "smoke: mock backend failed to start; see $MOCK_LOG" >&2
+  cat "$MOCK_LOG" >&2
+  exit 1
+fi
+
+PORT="$DEV_PORT" ./dev/tools/dev >"$DEV_LOG" 2>&1 &
+DEV_PID=$!
+
+sleep 0.5
+if ! kill -0 "$DEV_PID" 2>/dev/null; then
+  echo "smoke: dev server failed to start; see $DEV_LOG" >&2
+  cat "$DEV_LOG" >&2
+  exit 1
+fi
+
+cat <<EOF
+▸ mast-web smoke test ready
+  SPA:      http://localhost:$DEV_PORT
+  Backend:  http://localhost:$MOCK_PORT  (no token needed)
+
+  Open the SPA, set the endpoint to http://localhost:$MOCK_PORT in the
+  first-run modal, and click Connect.
+
+  Reload with ?fixture=<name> on any URL to switch scenarios. Available:
+$(cd web/attach-core/conformance/fixtures && ls *.jsonl | sed 's/\.jsonl$//' | sed 's/^/    /')
+
+  Ctrl-C to stop.
+EOF
+
+# Wait for either child to exit; keeps the trap in charge of cleanup.
+wait -n "$MOCK_PID" "$DEV_PID"

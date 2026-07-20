@@ -14,6 +14,7 @@
   },
   "scripts": {
     "dev": "./dev/tools/dev",
+    "smoke": "./dev/tools/smoke",
     "build": "./dev/tools/build",
     "test": "./dev/tools/test-unit",
     "lint": "./dev/tools/lint-js && ./dev/tools/lint-css && ./dev/tools/verify-html",

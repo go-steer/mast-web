@@ -82,6 +82,12 @@ window.AttachClient = (function () {
       // Last capabilities frame seen. Consumers read this for feature
       // detection; treat null as "backend hasn't advertised yet".
       this.capabilities = null;
+      // Session generation counter — bumps on connect() / selectSession()
+      // / any SSE stream restart. Every emitted event carries the gen
+      // at emit time via the `gen` field so consumers can drop stale
+      // events after a switch. Ported concept from core-tui's
+      // agentcmd.go:229 (sessionGen uint64 drop-on-mismatch pattern).
+      this.sessionGen = 0;
     }
 
     // ─── HTTP helpers ────────────────────────────────────────────────
@@ -190,7 +196,8 @@ window.AttachClient = (function () {
     async selectSession(sessionId) {
       this.sessionId = sessionId;
       // Re-open the SSE stream for the new session if we were already
-      // connected.
+      // connected. connect() bumps sessionGen so stale events in
+      // flight from the previous stream get dropped by consumers.
       if (this._sse) {
         this.disconnect();
         await this.connect();
@@ -213,6 +220,10 @@ window.AttachClient = (function () {
         await this.autoSelectSession();
       }
       this._closed = false;
+      // Bump the generation counter so events from an in-flight prior
+      // stream (still draining after the operator hit switch mid-
+      // response) get dropped by consumer-side gen checks.
+      this.sessionGen += 1;
       this.onConnectionState('connecting');
       // EventSource doesn't support custom headers, so when auth is
       // needed we tunnel the token as a URL query param. The server
@@ -247,6 +258,10 @@ window.AttachClient = (function () {
         'turn-complete',
         'turn-error',
       ];
+      // Capture the generation at listener-registration time so events
+      // arriving after a selectSession() bump are tagged with the OLD
+      // gen and consumers can drop them.
+      const streamGen = this.sessionGen;
       typed.forEach((name) => {
         this._sse.addEventListener(name, (e) => {
           let data = null;
@@ -257,13 +272,15 @@ window.AttachClient = (function () {
           }
           // Cache the capabilities first-frame for feature detection.
           if (name === 'capabilities') this.capabilities = data;
-          this.onEvent({ type: name, data });
+          this.onEvent({ type: name, data, gen: streamGen });
         });
       });
 
       // Legacy `agent` event — Frame { seq, event } where event is an
       // ADK session.Event. Decompose into typed signals the renderer
-      // expects (token / toolCall / toolResult).
+      // expects (token / toolCall / toolResult). Each fanned-out
+      // sub-event is tagged with the stream generation so post-switch
+      // stragglers can be dropped by consumers.
       this._sse.addEventListener('agent', (e) => {
         let frame = null;
         try {
@@ -271,7 +288,7 @@ window.AttachClient = (function () {
         } catch {
           return;
         }
-        this._fanoutAgentFrame(frame);
+        this._fanoutAgentFrame(frame, streamGen);
       });
 
       // The default `message` event fires when the server sends a frame
@@ -284,7 +301,7 @@ window.AttachClient = (function () {
         } catch {
           return;
         }
-        if (frame && frame.event) this._fanoutAgentFrame(frame);
+        if (frame && frame.event) this._fanoutAgentFrame(frame, streamGen);
       };
     }
 
@@ -297,11 +314,14 @@ window.AttachClient = (function () {
       this.onConnectionState('disconnected');
     }
 
-    _fanoutAgentFrame(frame) {
+    _fanoutAgentFrame(frame, gen) {
       // Delegate to the pure helper in attach-core/protocol.js so the
       // conformance harness can exercise the same code without wiring
-      // up a client. this.onEvent is the emit callback.
-      fanoutAgentFrame(frame, (e) => this.onEvent(e));
+      // up a client. this.onEvent is the emit callback. Tag each
+      // fanned-out sub-event with the stream gen so consumers can
+      // drop stale post-switch stragglers.
+      const g = typeof gen === 'number' ? gen : this.sessionGen;
+      fanoutAgentFrame(frame, (e) => this.onEvent({ ...e, gen: g }));
     }
 
     // ─── Operator input ─────────────────────────────────────────────

@@ -362,6 +362,17 @@
   const pendingToolCallsByID = new Map();
 
   function dispatchAttachEvent(ev) {
+    // Session-generation gate — drop events tagged with an outdated
+    // stream generation. attach-core/client.js bumps sessionGen on
+    // every connect()/selectSession() and tags each emitted event
+    // with the gen at emit-time. Consumers use this to prevent
+    // stragglers from a prior stream (still draining after the
+    // operator hit switch mid-response) painting into the new
+    // session's view. Ported from core-tui's agentcmd.go:229
+    // sessionGen check.
+    if (mast.client && typeof ev.gen === 'number' && ev.gen !== mast.client.sessionGen) {
+      return;
+    }
     switch (ev.type) {
       case 'capabilities':
         latest.capabilities = ev.data;

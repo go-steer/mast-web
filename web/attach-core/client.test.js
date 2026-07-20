@@ -233,6 +233,37 @@ describe('AttachClient', () => {
       expect(sessions[1].status).toBe('idle');
     });
 
+    it('sessionGen bumps on connect() and tags emitted events', () => {
+      // We can't easily exercise connect()'s SSE bits under jsdom, but
+      // we can verify the sessionGen field is initialized to 0 (the
+      // "no stream yet" sentinel) and that _fanoutAgentFrame tags
+      // fanned events with the current gen.
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      expect(client.sessionGen).toBe(0);
+      // Manually bump — connect() would do this after autoSelectSession.
+      client.sessionGen = 3;
+      const events = [];
+      client.onEvent = (e) => events.push(e);
+      client._fanoutAgentFrame({
+        event: { Content: { parts: [{ text: 'hello' }] } },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0].gen).toBe(3);
+      expect(events[0].type).toBe('stream-chunk');
+    });
+
+    it('_fanoutAgentFrame carries the passed-in gen argument (streamGen at listener-time)', () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      client.sessionGen = 99;
+      const events = [];
+      client.onEvent = (e) => events.push(e);
+      // Pass gen=2 explicitly — mimics what happens in the SSE
+      // addEventListener closure (streamGen captured at listener-
+      // registration time survives even after sessionGen bumps).
+      client._fanoutAgentFrame({ event: { Content: { parts: [{ text: 'stale' }] } } }, 2);
+      expect(events[0].gen).toBe(2);
+    });
+
     it('listSessions defaults status to "active" when server omits it (back-compat)', async () => {
       const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
       globalThis.fetch = vi.fn().mockResolvedValue({
@@ -279,7 +310,7 @@ describe('AttachClient', () => {
   });
 
   describe('_fanoutAgentFrame — legacy agent → typed sub-events', () => {
-    it('emits stream-chunk for text parts', () => {
+    it('emits stream-chunk for text parts (tagged with gen=0 pre-connect)', () => {
       const events = [];
       const client = new AttachClient({
         endpoint: 'https://example',
@@ -293,11 +324,15 @@ describe('AttachClient', () => {
         },
       });
       expect(events).toEqual([
-        { type: 'stream-chunk', data: { text: 'hello', partial: true, author: 'assistant' } },
+        {
+          type: 'stream-chunk',
+          data: { text: 'hello', partial: true, author: 'assistant' },
+          gen: 0,
+        },
       ]);
     });
 
-    it('emits tool-call for functionCall parts', () => {
+    it('emits tool-call for functionCall parts (tagged with current gen)', () => {
       const events = [];
       const client = new AttachClient({
         endpoint: 'https://example',
@@ -311,7 +346,11 @@ describe('AttachClient', () => {
         },
       });
       expect(events).toEqual([
-        { type: 'tool-call', data: { id: 'c1', name: 'fs_read', args: { path: '/x' } } },
+        {
+          type: 'tool-call',
+          data: { id: 'c1', name: 'fs_read', args: { path: '/x' } },
+          gen: 0,
+        },
       ]);
     });
 
@@ -402,6 +441,7 @@ describe('AttachClient', () => {
       expect(events[0]).toEqual({
         type: 'tool-call',
         data: { id: 'c1', name: 'fs_read', args: { path: '/x' } },
+        gen: 0,
       });
     });
 

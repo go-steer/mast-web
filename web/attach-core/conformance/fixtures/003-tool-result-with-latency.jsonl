@@ -1,0 +1,4 @@
+{"event": "capabilities", "data": {"protocol_version": "1.2.0", "event_types": ["capabilities", "agent"], "server": "core-agent"}}
+{"event": "agent", "data": {"seq": 1, "event": {"Author": "assistant", "Content": {"parts": [{"functionCall": {"id": "abc", "name": "bq_query", "args": {"sql": "SELECT 1"}}}]}}}}
+{"event": "agent", "data": {"seq": 2, "event": {"Author": "assistant", "Content": {"parts": [{"functionResponse": {"id": "abc", "name": "bq_query", "response": {"rows": [[1]], "latency_ms": 187.4}}}]}}}}
+{"event": "agent", "data": {"seq": 3, "event": {"Author": "assistant", "Content": {"parts": [{"FunctionResponse": {"ID": "def", "Name": "no_latency_tool", "Response": {"ok": true}}}]}}}}

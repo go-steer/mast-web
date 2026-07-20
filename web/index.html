@@ -141,7 +141,11 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked-highlight@2/lib/index.umd.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
-    <script src="attach-client.js"></script>
+    <!-- attach-core: wire-layer modules. Load order matters — errors
+         and protocol export helpers that client.js reads at IIFE-init. -->
+    <script src="attach-core/errors.js"></script>
+    <script src="attach-core/protocol.js"></script>
+    <script src="attach-core/client.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

@@ -1,0 +1,86 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.2.0",
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "inbox",
+        "turn-complete",
+        "turn-error",
+        "agent"
+      ],
+      "server": "core-agent"
+    }
+  },
+  {
+    "type": "status-update",
+    "data": {
+      "model": "gemini-2.5-flash",
+      "provider": "vertex",
+      "turn_state": "streaming",
+      "context_pct": 12,
+      "perm_mode": "prompt"
+    }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "queued", "prompt_id": "p1", "queued_at": "2026-07-16T12:00:00Z" }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "dequeued", "prompt_id": "p1", "queued_at": "2026-07-16T12:00:00Z" }
+  },
+  { "type": "stream-chunk", "data": { "text": "Hello", "partial": true, "author": "assistant" } },
+  { "type": "stream-chunk", "data": { "text": " world", "partial": true, "author": "assistant" } },
+  {
+    "type": "tool-call",
+    "data": { "id": "c1", "name": "fs_read", "args": { "path": "/etc/hostname" } }
+  },
+  {
+    "type": "tool-result",
+    "data": {
+      "id": "c1",
+      "name": "fs_read",
+      "response": { "content": "example.com\n", "latency_ms": 12 },
+      "latencyMs": 12
+    }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p1",
+      "model": "gemini-2.5-flash",
+      "tokens_in": 45,
+      "tokens_out": 8,
+      "cost_usd": 0.00012,
+      "latency_ms": 640
+    }
+  },
+  {
+    "type": "usage-update",
+    "data": {
+      "tokens_in_total": 45,
+      "tokens_out_total": 8,
+      "cost_usd_total": 0.00012,
+      "turns_total": 1,
+      "by_model": {
+        "gemini-2.5-flash": {
+          "tokens_in": 45,
+          "tokens_out": 8,
+          "cost_usd": 0.00012,
+          "turns": 1
+        }
+      },
+      "last_turn": {
+        "tokens_in": 45,
+        "tokens_in_cached": 0,
+        "tokens_out": 8,
+        "cost_usd": 0.00012,
+        "model": "gemini-2.5-flash"
+      }
+    }
+  }
+]

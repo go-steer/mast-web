@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AttachClient — JavaScript consumer of mast / core-agent's attach
-// protocol (HTTP/SSE per spec v1.1.0). Replaces the phase-A mock
-// `mast` object in app.js with a real backend connection.
+// attach-core/client — JavaScript consumer of mast / core-agent's
+// attach protocol (HTTP/SSE per spec v1.2.0). Replaces the phase-A
+// mock `mast` object in app.js with a real backend connection.
+//
+// Depends on sibling modules (loaded ahead of this file in index.html):
+//   attach-core/errors.js    — PermanentStreamError
+//   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
 //
 // Endpoints consumed (all under <endpoint>):
 //   GET  /sessions                         → list sessions
@@ -26,19 +30,45 @@
 //   GET  /sessions/{sid}/tools             → registered tools
 //   GET  /sessions/{sid}/agents            → registered agents
 //
-// SSE event types (per spec v1.1.0 §2):
+// SSE event types (per spec v1.2.0 §2):
 //   capabilities    — first frame; protocol version + supported events
 //   status-update   — model / provider / turn_state / context_pct
-//   usage-update    — cumulative tokens + cost
+//   usage-update    — cumulative tokens + cost (+ last_turn since 1.1.1)
 //   inbox           — queued / dequeued state for the operator prompt
 //   turn-complete   — per-turn summary (tokens, latency, cost)
-//   turn-error      — pipeline failure
+//                     cost_usd optional since 1.1.0 — falls through to
+//                     the next usage-update.last_turn when absent.
+//   turn-error      — pipeline failure (kind includes cost_ceiling)
 //   agent           — legacy bundle carrying ADK session.Event payloads
 //                     (text chunks, function calls, function responses
-//                     all multiplexed onto this one event type)
+//                     all multiplexed onto this one event type). Since
+//                     1.2.0, tool-result responses carry a latency_ms
+//                     sidecar key inside the response map.
+//
+// Reserved response-body conventions (spec §slash-response, coming in
+// v1.3.0; adopted here early as forward-compat):
+//   _render — "text" | "markdown" | "json" (default) — chosen renderer
+//   _schema — reference for schema-driven rendering (v0.3.0+)
+//
+// PermanentStreamError: HTTP status 404 (session gone / ACL revoked),
+// 401 (token expired / revoked), or 403 (ACL revoked mid-session) are
+// terminal. Everything else — 5xx, 429, transport blips — is transient
+// and the reconnect loop keeps running.
 
 window.AttachClient = (function () {
   'use strict';
+
+  // Dependencies loaded from sibling modules; index.html loads
+  // errors.js + protocol.js before this file.
+  const PermanentStreamError =
+    (window.AttachCoreErrors && window.AttachCoreErrors.PermanentStreamError) || null;
+  const fanoutAgentFrame =
+    (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
+  if (!PermanentStreamError || !fanoutAgentFrame) {
+    throw new Error(
+      'attach-core/client.js: missing dependencies — errors.js and protocol.js must load first'
+    );
+  }
 
   class AttachClient {
     constructor({ endpoint, token, sessionId, onEvent, onConnectionState }) {
@@ -49,6 +79,9 @@ window.AttachClient = (function () {
       this.onConnectionState = onConnectionState || (() => {});
       this._sse = null;
       this._closed = false;
+      // Last capabilities frame seen. Consumers read this for feature
+      // detection; treat null as "backend hasn't advertised yet".
+      this.capabilities = null;
     }
 
     // ─── HTTP helpers ────────────────────────────────────────────────
@@ -68,7 +101,12 @@ window.AttachClient = (function () {
     async _get(path) {
       const r = await fetch(this.endpoint + path, { headers: this._headers() });
       if (!r.ok) {
-        throw new Error(`GET ${path} → HTTP ${r.status}: ${await r.text()}`);
+        const body = await r.text();
+        const msg = `GET ${path} → HTTP ${r.status}: ${body}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
       }
       return r.json();
     }
@@ -80,7 +118,12 @@ window.AttachClient = (function () {
         body: body ? JSON.stringify(body) : null,
       });
       if (!r.ok) {
-        throw new Error(`POST ${path} → HTTP ${r.status}: ${await r.text()}`);
+        const text = await r.text();
+        const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
       }
       // /inject and /wake return small JSON envelopes; tolerate empty.
       const text = await r.text();
@@ -168,6 +211,8 @@ window.AttachClient = (function () {
           } catch {
             return;
           }
+          // Cache the capabilities first-frame for feature detection.
+          if (name === 'capabilities') this.capabilities = data;
           this.onEvent({ type: name, data });
         });
       });
@@ -209,51 +254,10 @@ window.AttachClient = (function () {
     }
 
     _fanoutAgentFrame(frame) {
-      if (!frame || !frame.event) return;
-      const ev = frame.event;
-      const content = ev.Content || ev.content;
-      if (!content || !content.parts) return;
-
-      for (const part of content.parts) {
-        // Streamed text chunk.
-        if (typeof part.text === 'string' && part.text.length > 0) {
-          this.onEvent({
-            type: 'stream-chunk',
-            data: {
-              text: part.text,
-              partial: !!(ev.Partial || ev.partial),
-              author: ev.Author || ev.author || '',
-            },
-          });
-          continue;
-        }
-        // Function call (tool invocation).
-        const fc = part.functionCall || part.function_call || part.FunctionCall;
-        if (fc) {
-          this.onEvent({
-            type: 'tool-call',
-            data: {
-              id: fc.id || fc.ID || '',
-              name: fc.name || fc.Name || '',
-              args: fc.args || fc.Args || {},
-            },
-          });
-          continue;
-        }
-        // Function response (tool result).
-        const fr = part.functionResponse || part.function_response || part.FunctionResponse;
-        if (fr) {
-          this.onEvent({
-            type: 'tool-result',
-            data: {
-              id: fr.id || fr.ID || '',
-              name: fr.name || fr.Name || '',
-              response: fr.response || fr.Response || {},
-            },
-          });
-          continue;
-        }
-      }
+      // Delegate to the pure helper in attach-core/protocol.js so the
+      // conformance harness can exercise the same code without wiring
+      // up a client. this.onEvent is the emit callback.
+      fanoutAgentFrame(frame, (e) => this.onEvent(e));
     }
 
     // ─── Operator input ─────────────────────────────────────────────
@@ -289,6 +293,11 @@ window.AttachClient = (function () {
       return out.agents || [];
     }
   }
+
+  // Re-export the error class as a static on the constructor so
+  // callers can do `err instanceof AttachClient.PermanentStreamError`
+  // without pulling in window.AttachCoreErrors directly.
+  AttachClient.PermanentStreamError = PermanentStreamError;
 
   return AttachClient;
 })();

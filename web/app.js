@@ -52,9 +52,28 @@
   const latest = {
     capabilities: null,
     status: { model: '', provider: '', turnState: 'idle', contextPct: null, permMode: '' },
-    usage: { tokensIn: 0, tokensOut: 0, costUSD: 0, turns: 0 },
+    usage: {
+      tokensIn: 0,
+      tokensOut: 0,
+      costUSD: 0,
+      turns: 0,
+      // Per-model breakdown from usage-update.by_model (v1.1.0+). Keys
+      // are model IDs; values are { tokensIn, tokensOut, costUSD, turns }.
+      byModel: {},
+      // Authoritative per-turn cost with cache attribution from
+      // usage-update.last_turn (v1.1.1+). Populated on each usage-update
+      // that carries a last_turn sub-object; stamped onto the latest
+      // assistant footer when the model wraps a turn.
+      lastTurn: null,
+    },
     sessions: [],
+    // When the server emits turn-error kind=cost_ceiling, we freeze the
+    // input and show a banner. Cleared on reconnect / session switch.
+    costCeilingHit: false,
   };
+  // Inbox coalesce: prompt_id → last state we saw ('queued' | 'dequeued').
+  // Consumer of the "queued" toast dismisses on 'dequeued'.
+  const inboxState = new Map();
 
   // Per-active-turn dispatch state. runPrompt populates these when a
   // turn starts; the SSE event router uses them to fan tokens / tool
@@ -247,24 +266,65 @@
         latest.usage.tokensOut = u.tokens_out_total || 0;
         latest.usage.costUSD = u.cost_usd_total || 0;
         latest.usage.turns = u.turns_total || 0;
+        // by_model (v1.1.0+) — per-model breakdown for /stats.
+        if (u.by_model && typeof u.by_model === 'object') {
+          latest.usage.byModel = {};
+          for (const [model, m] of Object.entries(u.by_model)) {
+            if (!m) continue;
+            latest.usage.byModel[model] = {
+              tokensIn: m.tokens_in || 0,
+              tokensOut: m.tokens_out || 0,
+              costUSD: m.cost_usd || 0,
+              turns: m.turns || 0,
+            };
+          }
+        }
+        // last_turn (v1.1.1+) — authoritative per-turn cost with cache
+        // attribution. Populated by the server after pricing has already
+        // applied cache-discount + operator overrides. Prefer this over
+        // turn-complete.cost_usd when both arrive.
+        if (u.last_turn && typeof u.last_turn === 'object') {
+          const lt = u.last_turn;
+          latest.usage.lastTurn = {
+            tokensIn: lt.tokens_in || 0,
+            tokensInCached: lt.tokens_in_cached || 0,
+            tokensOut: lt.tokens_out || 0,
+            costUSD: lt.cost_usd || 0,
+            model: lt.model || '',
+          };
+        }
         turnCount = latest.usage.turns;
         totalCostUSD = latest.usage.costUSD;
         updateStatusBar();
         return;
       }
 
-      case 'inbox':
-        // Could surface "queued" -> "dequeued" transitions visually;
-        // for v0.1 we silently drive the lifecycle.
+      case 'inbox': {
+        // v1.1.0+: fires twice per prompt (queued, dequeued). Track by
+        // prompt_id so consumers of a "queued" toast dismiss on the
+        // matching "dequeued". For v0.1 we track state only; visual
+        // toast wiring lands in a later PR.
+        const box = ev.data || {};
+        if (box.prompt_id) inboxState.set(box.prompt_id, box.state || '');
         return;
+      }
 
       case 'turn-complete': {
         const tc = ev.data || {};
         if (activeTurn && activeTurn.callbacks) {
-          // No more events for this turn after this point.
+          // v1.1.0+: cost_usd is optional. When absent, fall through to
+          // the next usage-update.last_turn.cost_usd (which is
+          // authoritative — server-side pricing has already applied).
+          const perTurnCost =
+            typeof tc.cost_usd === 'number'
+              ? tc.cost_usd
+              : latest.usage.lastTurn
+                ? latest.usage.lastTurn.costUSD
+                : 0;
           activeTurn.finish({
             totalMs: tc.latency_ms || performance.now() - activeTurn.startedAt,
             tokens: { in: tc.tokens_in || 0, out: tc.tokens_out || 0 },
+            costUSD: perTurnCost,
             toolCalls: [],
           });
         }
@@ -274,6 +334,16 @@
       case 'turn-error': {
         const te = ev.data || {};
         const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
+        // v1.2.0 kind=cost_ceiling — session refuses further turns until
+        // a server-side reset. No matching turn-complete will follow.
+        // Freeze input + show a persistent banner (reset UX will land
+        // when core-agent ships /reset-ceiling; issue core-agent#331).
+        if (te.kind === 'cost_ceiling') {
+          latest.costCeilingHit = true;
+          addSystemMessage(
+            'Cost ceiling reached — session paused. Contact your administrator to reset.'
+          );
+        }
         if (activeTurn) activeTurn.finish(null, new Error(msg));
         else addSystemMessage('Turn error: ' + msg);
         return;
@@ -300,14 +370,16 @@
 
       case 'tool-result': {
         if (!activeTurn || !activeTurn.callbacks.onToolResult) return;
-        const { id, name, response } = ev.data;
+        const { id, name, response, latencyMs } = ev.data;
         const idx = (name || '').indexOf('_');
         const server = idx > 0 ? name.substring(0, idx) : '';
         const tool = idx > 0 ? name.substring(idx + 1) : name;
         activeTurn.callbacks.onToolResult(
           server,
           tool,
-          0, // latency not surfaced per-tool today
+          // v1.2.0: latency_ms sidecar key inside the tool-result
+          // response map (extracted by attach-client _fanoutAgentFrame).
+          typeof latencyMs === 'number' ? latencyMs : 0,
           null,
           JSON.stringify(response || {}, null, 2)
         );

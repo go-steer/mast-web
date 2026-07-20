@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // AttachClient — JavaScript consumer of mast / core-agent's attach
-// protocol (HTTP/SSE per spec v1.1.0). Replaces the phase-A mock
+// protocol (HTTP/SSE per spec v1.2.0). Replaces the phase-A mock
 // `mast` object in app.js with a real backend connection.
 //
 // Endpoints consumed (all under <endpoint>):
@@ -26,19 +26,47 @@
 //   GET  /sessions/{sid}/tools             → registered tools
 //   GET  /sessions/{sid}/agents            → registered agents
 //
-// SSE event types (per spec v1.1.0 §2):
+// SSE event types (per spec v1.2.0 §2):
 //   capabilities    — first frame; protocol version + supported events
 //   status-update   — model / provider / turn_state / context_pct
-//   usage-update    — cumulative tokens + cost
+//   usage-update    — cumulative tokens + cost (+ last_turn since 1.1.1)
 //   inbox           — queued / dequeued state for the operator prompt
 //   turn-complete   — per-turn summary (tokens, latency, cost)
-//   turn-error      — pipeline failure
+//                     cost_usd optional since 1.1.0 — falls through to
+//                     the next usage-update.last_turn when absent.
+//   turn-error      — pipeline failure (kind includes cost_ceiling)
 //   agent           — legacy bundle carrying ADK session.Event payloads
 //                     (text chunks, function calls, function responses
-//                     all multiplexed onto this one event type)
+//                     all multiplexed onto this one event type). Since
+//                     1.2.0, tool-result responses carry a latency_ms
+//                     sidecar key inside the response map.
+//
+// Reserved response-body conventions (spec §slash-response, coming in
+// v1.3.0; adopted here early as forward-compat):
+//   _render — "text" | "markdown" | "json" (default) — chosen renderer
+//   _schema — reference for schema-driven rendering (v0.3.0+)
+//
+// PermanentStreamError: HTTP status 404 (session gone / ACL revoked),
+// 401 (token expired / revoked), or 403 (ACL revoked mid-session) are
+// terminal. Everything else — 5xx, 429, transport blips — is transient
+// and the reconnect loop keeps running.
 
 window.AttachClient = (function () {
   'use strict';
+
+  // Thrown by _get/_post on HTTP 404/401/403 — statuses that mean the
+  // session is gone or auth is revoked. Consumers should stop the
+  // reconnect loop and surface a terminal banner rather than retrying.
+  class PermanentStreamError extends Error {
+    constructor(message, status) {
+      super(message);
+      this.name = 'PermanentStreamError';
+      this.status = status;
+    }
+    static isPermanentStatus(status) {
+      return status === 401 || status === 403 || status === 404;
+    }
+  }
 
   class AttachClient {
     constructor({ endpoint, token, sessionId, onEvent, onConnectionState }) {
@@ -49,6 +77,9 @@ window.AttachClient = (function () {
       this.onConnectionState = onConnectionState || (() => {});
       this._sse = null;
       this._closed = false;
+      // Last capabilities frame seen. Consumers read this for feature
+      // detection; treat null as "backend hasn't advertised yet".
+      this.capabilities = null;
     }
 
     // ─── HTTP helpers ────────────────────────────────────────────────
@@ -68,7 +99,12 @@ window.AttachClient = (function () {
     async _get(path) {
       const r = await fetch(this.endpoint + path, { headers: this._headers() });
       if (!r.ok) {
-        throw new Error(`GET ${path} → HTTP ${r.status}: ${await r.text()}`);
+        const body = await r.text();
+        const msg = `GET ${path} → HTTP ${r.status}: ${body}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
       }
       return r.json();
     }
@@ -80,7 +116,12 @@ window.AttachClient = (function () {
         body: body ? JSON.stringify(body) : null,
       });
       if (!r.ok) {
-        throw new Error(`POST ${path} → HTTP ${r.status}: ${await r.text()}`);
+        const text = await r.text();
+        const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
       }
       // /inject and /wake return small JSON envelopes; tolerate empty.
       const text = await r.text();
@@ -168,6 +209,8 @@ window.AttachClient = (function () {
           } catch {
             return;
           }
+          // Cache the capabilities first-frame for feature detection.
+          if (name === 'capabilities') this.capabilities = data;
           this.onEvent({ type: name, data });
         });
       });
@@ -243,12 +286,18 @@ window.AttachClient = (function () {
         // Function response (tool result).
         const fr = part.functionResponse || part.function_response || part.FunctionResponse;
         if (fr) {
+          const response = fr.response || fr.Response || {};
+          // v1.2.0: latency_ms rides as a sidecar key in the response
+          // map (ADK constraint — tool.Run can't set CustomMetadata).
+          // Browser JSON decode makes it a Number; accept absent or 0.
+          const latencyMs = typeof response.latency_ms === 'number' ? response.latency_ms : 0;
           this.onEvent({
             type: 'tool-result',
             data: {
               id: fr.id || fr.ID || '',
               name: fr.name || fr.Name || '',
-              response: fr.response || fr.Response || {},
+              response,
+              latencyMs,
             },
           });
           continue;
@@ -289,6 +338,10 @@ window.AttachClient = (function () {
       return out.agents || [];
     }
   }
+
+  // Expose the error class as a static on the constructor so callers
+  // can do `err instanceof AttachClient.PermanentStreamError`.
+  AttachClient.PermanentStreamError = PermanentStreamError;
 
   return AttachClient;
 })();

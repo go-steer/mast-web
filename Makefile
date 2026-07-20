@@ -15,11 +15,19 @@
 # Convenience entrypoints. Real logic lives in dev/tools/.
 # Same scripts run locally and in CI — "green local = green remote."
 
-.PHONY: dev build test lint format ci clean docs-serve
+.PHONY: dev smoke build test lint format ci clean docs-serve
 
 # Local development server (serves web/ on :8000).
 dev:
 	./dev/tools/dev
+
+# Standalone smoke test — SPA + mock backend, no real agent needed.
+# Boots dev/tools/dev on :8000 and dev/tools/mock-backend on :7778;
+# operator connects the SPA to the mock URL to render a canned
+# conversation from the conformance fixtures. Ctrl-C tears down both.
+# See dev/tools/smoke for fixture selection + env overrides.
+smoke:
+	./dev/tools/smoke
 
 # Build the distributable static bundle into ./dist/.
 build:

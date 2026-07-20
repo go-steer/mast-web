@@ -13,8 +13,15 @@
 // limitations under the License.
 
 // attach-core/client — JavaScript consumer of mast / core-agent's
-// attach protocol (HTTP/SSE per spec v1.2.0). Replaces the phase-A
+// attach protocol (HTTP/SSE per spec v1.4.0). Replaces the phase-A
 // mock `mast` object in app.js with a real backend connection.
+//
+// Version note: v1.3.0 was consumed 2026-07-17 by the digest-`savings`
+// sidecar. v1.4.0 (core-agent#344 + core-tui#68, both merged
+// 2026-07-20) added the capabilities-frame extensions this client
+// consumes (features / slash_commands / agent / caller_id +
+// status-update.capabilities merge) plus the /whoami endpoint +
+// slash-response `_render` / `_schema` reserved keys.
 //
 // Depends on sibling modules (loaded ahead of this file in index.html):
 //   attach-core/errors.js    — PermanentStreamError
@@ -31,9 +38,15 @@
 //   GET  /sessions/{sid}/tools             → registered tools
 //   GET  /sessions/{sid}/agents            → registered agents
 //
-// SSE event types (per spec v1.2.0 §2):
-//   capabilities    — first frame; protocol version + supported events
-//   status-update   — model / provider / turn_state / context_pct
+// SSE event types (per spec v1.4.0 §2):
+//   capabilities    — first frame; protocol_version + event_types +
+//                     server + (since 1.4.0) features / slash_commands
+//                     / agent / caller_id. Consumers cache the whole
+//                     frame on client.capabilities.
+//   status-update   — model / provider / turn_state / context_pct.
+//                     Since 1.4.0, may carry an optional `capabilities`
+//                     field for hot changes (merge semantics — merge
+//                     into stored capabilities, don't replace).
 //   usage-update    — cumulative tokens + cost (+ last_turn since 1.1.1)
 //   inbox           — queued / dequeued state for the operator prompt
 //   turn-complete   — per-turn summary (tokens, latency, cost)
@@ -46,8 +59,7 @@
 //                     1.2.0, tool-result responses carry a latency_ms
 //                     sidecar key inside the response map.
 //
-// Reserved response-body conventions (spec §slash-response, coming in
-// v1.3.0; adopted here early as forward-compat):
+// Reserved response-body conventions (spec §6, v1.4.0):
 //   _render — "text" | "markdown" | "json" (default) — chosen renderer
 //   _schema — reference for schema-driven rendering (v0.3.0+)
 //
@@ -413,6 +425,19 @@ window.AttachClient = (function () {
     async listAgents() {
       const out = await this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/agents');
       return out.agents || [];
+    }
+
+    // GET /whoami — session-agnostic caller identity endpoint (v1.4.0+).
+    // Returns { identity, admin, source, proxy_by } where:
+    //   source ∈ { bearer, mtls, iap, asserted, anonymous }
+    //   proxy_by  — set when the caller was asserted via a proxy
+    //               allowlist (X-Asserted-Caller); identifies the
+    //               proxy for audit / display ("alice via bot").
+    //               Empty string when not proxied.
+    // Standard middleware still runs — a bearer-required listener
+    // 401s an unauthenticated /whoami like any other route.
+    async whoami() {
+      return this._get('/whoami');
     }
   }
 

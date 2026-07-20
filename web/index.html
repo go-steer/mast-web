@@ -104,6 +104,28 @@
       </div>
     </div>
 
+    <!-- Permission-prompt modal — appears when /perms/stream delivers
+         a prompt frame. Contents populated by app.js at open time.
+         Hidden by default via .modal-overlay CSS; toggled visible by
+         adding the .open class (matches the setup modal pattern). -->
+    <div class="modal-overlay" id="perms-modal">
+      <div class="modal">
+        <h2 id="perms-modal-title">Permission requested</h2>
+        <div id="perms-modal-body" style="font-size: 12px; margin-bottom: 12px"></div>
+        <label
+          for="perms-modal-scope"
+          style="display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 8px"
+        >
+          <input type="checkbox" id="perms-modal-scope" style="margin-right: 4px" />
+          Allow for the rest of this session (skip prompts for this same tool)
+        </label>
+        <div class="btn-row">
+          <button class="btn-primary" id="perms-modal-allow">Allow</button>
+          <button id="perms-modal-deny">Deny</button>
+        </div>
+      </div>
+    </div>
+
     <!-- First-run setup modal -->
     <div class="modal-overlay" id="setup-modal">
       <div class="modal">
@@ -144,10 +166,12 @@
     <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
     <!-- attach-core: wire-layer modules. Load order matters — errors
          + protocol + replay export helpers that client.js reads at
-         IIFE-init. -->
+         IIFE-init. prompter is independent and can load in any order
+         after errors (uses no protocol/replay symbols directly). -->
     <script src="attach-core/errors.js"></script>
     <script src="attach-core/protocol.js"></script>
     <script src="attach-core/replay.js"></script>
+    <script src="attach-core/prompter.js"></script>
     <script src="attach-core/client.js"></script>
     <script src="app.js"></script>
   </body>

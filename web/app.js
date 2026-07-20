@@ -82,6 +82,7 @@
 
   const mast = {
     client: null,
+    prompter: null,
 
     async init({ endpoint, token }) {
       if (typeof window.AttachClient !== 'function') {
@@ -100,6 +101,13 @@
       await client.connect();
       this.client = client;
       connected = true;
+
+      // Open the perms/stream subscription in parallel with the main
+      // event stream. If the agent has no PromptBrokerProvider the
+      // server 501s on subscribe; Prompter classifies that as
+      // terminal and quietly stays disconnected.
+      openPromptStream(endpoint, token, session.id);
+
       return { ok: true };
     },
 
@@ -147,6 +155,10 @@
       if (!this.client) throw new Error('not connected');
       await this.client.selectSession(id);
       currentSession = id;
+      // Restart the perms stream against the new session — prompts are
+      // per-session, so a stale subscription against the outgoing sid
+      // would never fire for prompts on the new one.
+      openPromptStream(this.client.endpoint, this.client.token, id);
     },
 
     // v0.2.0: real create/delete via POST /sessions + DELETE
@@ -1097,6 +1109,101 @@
     }
   }
 
+  // ─── Perms stream + modal ─────────────────────────────────────────
+  //
+  // A second SSE subscription — /sessions/{sid}/perms/stream — carries
+  // permission prompts. Each frame opens the perms modal with the
+  // prompt's tool / detail; the operator's Allow / Deny click POSTs
+  // to /perms/respond with the frame ID + a wire-stable decision
+  // string. 501 from the subscribe means the agent lacks the
+  // PromptBrokerProvider capability; Prompter classifies as terminal.
+
+  function openPromptStream(endpoint, token, sessionId) {
+    if (mast.prompter) {
+      mast.prompter.disconnect();
+      mast.prompter = null;
+    }
+    if (!window.AttachCorePrompter || !window.AttachCorePrompter.Prompter) return;
+    const p = new window.AttachCorePrompter.Prompter({
+      endpoint,
+      token,
+      sessionId,
+      onPrompt: (frame) => showPermsModal(frame),
+      onTerminal: () => {
+        addSystemMessage(
+          'Perms stream unavailable — agent does not support interactive prompts or the stream permanently failed.'
+        );
+      },
+    });
+    p.connect();
+    mast.prompter = p;
+  }
+
+  // Currently-open prompt frame. Buttons read this to know which ID
+  // to respond with; overwriting means the newer prompt wins the
+  // modal (rare but possible if the operator ignores a prompt long
+  // enough for the agent to fire another).
+  let currentPromptFrame = null;
+
+  function showPermsModal(frame) {
+    if (!frame || !frame.id) return;
+    currentPromptFrame = frame;
+    const overlay = document.getElementById('perms-modal');
+    const title = document.getElementById('perms-modal-title');
+    const body = document.getElementById('perms-modal-body');
+    const scope = document.getElementById('perms-modal-scope');
+    if (!overlay) return;
+    // Reset the scope checkbox on every open — sticky state across
+    // prompts is a footgun (an operator ticks it once and forgets).
+    if (scope) scope.checked = false;
+    if (title) {
+      title.textContent = 'Permission request — ' + (frame.tool || frame.kind || 'tool');
+    }
+    if (body) {
+      const parts = [];
+      if (frame.detail) parts.push(escapeHtml(frame.detail));
+      if (frame.verb)
+        parts.push(
+          '<div style="margin-top:8px"><strong>Verb:</strong> ' + escapeHtml(frame.verb) + '</div>'
+        );
+      if (frame.access)
+        parts.push('<div><strong>Access:</strong> ' + escapeHtml(frame.access) + '</div>');
+      if (frame.source)
+        parts.push(
+          '<div style="color:var(--text-dim);margin-top:8px;font-size:11px">Source: ' +
+            escapeHtml(frame.source) +
+            '</div>'
+        );
+      body.innerHTML = parts.join('') || '<em>No further detail provided.</em>';
+    }
+    overlay.classList.add('open');
+  }
+
+  function closePermsModal() {
+    const overlay = document.getElementById('perms-modal');
+    if (overlay) overlay.classList.remove('open');
+    currentPromptFrame = null;
+  }
+
+  async function respondToPrompt(baseDecision) {
+    const frame = currentPromptFrame;
+    if (!frame || !mast.prompter) return;
+    const scope = document.getElementById('perms-modal-scope');
+    // Wire-stable decision strings from core-agent/pkg/attach/prompter.go's
+    // DecisionFromWire mapping. Scope checkbox upgrades allow-once →
+    // allow-session-tool (skip prompts for this tool for the session).
+    let decision = baseDecision;
+    if (baseDecision === 'allow-once' && scope && scope.checked) {
+      decision = 'allow-session-tool';
+    }
+    closePermsModal();
+    try {
+      await mast.prompter.respond(frame.id, decision);
+    } catch (e) {
+      addSystemMessage('perms respond failed: ' + (e.message || e));
+    }
+  }
+
   // ─── Stop / interrupt ─────────────────────────────────────────────
   //
   // The Stop button is hidden by default and only shown while a turn
@@ -1541,6 +1648,13 @@
   });
 
   document.getElementById('stop-btn').addEventListener('click', handleStopClick);
+
+  document.getElementById('perms-modal-allow').addEventListener('click', () => {
+    respondToPrompt('allow-once');
+  });
+  document.getElementById('perms-modal-deny').addEventListener('click', () => {
+    respondToPrompt('deny');
+  });
 
   document.getElementById('model-select').addEventListener('change', async (e) => {
     if (!connected) return;

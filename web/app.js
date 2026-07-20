@@ -876,10 +876,12 @@
         info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span> ${badge}`;
         info.style.cursor = 'pointer';
         info.onclick = async () => {
+          if (s.active) return; // no-op click on the current session
           try {
+            clearTranscriptView();
             await mast.switchSession(s.id);
-            updateSessionList();
-            updateStatusBar();
+            refreshAllSidebar();
+            addSystemMessage(`Switched to session ${s.id}.`);
           } catch (e) {
             addSystemMessage('switch failed: ' + (e.message || e));
           }
@@ -1177,9 +1179,9 @@
         addSystemMessage('Usage: /sessions switch <id>');
         return;
       }
+      clearTranscriptView();
       await mast.switchSession(id);
-      updateSessionList();
-      updateStatusBar();
+      refreshAllSidebar();
       addSystemMessage('Switched to ' + id);
     } else {
       addSystemMessage('Usage: /sessions [list|switch <id>]');
@@ -1524,12 +1526,14 @@
     }
     try {
       const s = await mast.createSession();
-      addSystemMessage(`Created session ${s.id} (owner: ${s.user || '(unknown)'}).`);
       // Immediately switch to the newly-created session so the operator
-      // can start interacting with it.
+      // can start interacting with it. Same clear+refresh cadence as
+      // any other session switch so the sidebar doesn't show stale
+      // state from the outgoing session.
+      clearTranscriptView();
       await mast.switchSession(s.id);
-      updateSessionList();
-      updateStatusBar();
+      refreshAllSidebar();
+      addSystemMessage(`Created session ${s.id} (owner: ${s.user || '(unknown)'}).`);
     } catch (e) {
       addSystemMessage('create session failed: ' + (e.message || e));
     }
@@ -1544,16 +1548,44 @@
       await mast.init({ endpoint, token });
       setConnectionState('connected');
       addSystemMessage(`Connected to ${endpoint}.`);
-      updateModelSelect();
-      updateSessionList();
-      updateServerList();
-      updateSpecialistList();
-      fetchIdentity();
-      updateStatusBar();
+      refreshAllSidebar();
     } catch (e) {
       setConnectionState('disconnected');
       addSystemMessage('Connection failed: ' + (e?.message || e));
     }
+  }
+
+  // Atomic sidebar refresh — call after any operation that switches
+  // the effective session context (initial connect, switchSession,
+  // createSession, deleteSession-then-fallback). Fires the model /
+  // sessions / servers / specialists / identity + status bar fetches
+  // in parallel so they land as close to together as possible.
+  //
+  // Ports the lesson from core-tui's bug #274: on session switch you
+  // MUST refresh usage totals, memory, skills, MCP list, and branding
+  // — not just the event stream. Otherwise the sidebar keeps
+  // showing the outgoing session's data. The atomicity target here
+  // is "before the next paint", not "in a single transaction"; a
+  // brief flicker to empty sub-panels is acceptable.
+  function refreshAllSidebar() {
+    // Kick these off in parallel; each function handles its own
+    // errors + DOM writes and doesn't rely on the others' results.
+    updateModelSelect();
+    updateSessionList();
+    updateServerList();
+    updateSpecialistList();
+    fetchIdentity();
+    updateStatusBar();
+  }
+
+  // Clear the transcript view on session switch so the outgoing
+  // session's messages don't linger in the new session's view. The
+  // per-turn footers, tool-call rows, etc. all belong to the old
+  // session's SSE stream (already dropped by the sessionGen check in
+  // dispatchAttachEvent).
+  function clearTranscriptView() {
+    const output = document.getElementById('output-area');
+    if (output) output.innerHTML = '';
   }
 
   // ─── Boot ──────────────────────────────────────────────────────────

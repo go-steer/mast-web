@@ -115,15 +115,30 @@
     },
 
     async setModel(_id) {
-      // Model switching is not yet exposed via attach-mode operator
-      // endpoints. Surface a no-op with a useful message; phase D
-      // wires this up when /sessions/{sid}/model lands upstream.
-      throw new Error('Model switching from the UI is not yet wired (backend endpoint pending).');
+      // Verified 2026-07-20: no model-switch endpoint exists in
+      // core-agent (grep of pkg/attach/handlers_operator.go). The
+      // current model is server-driven via status-update events. A
+      // server-side POST /sessions/{app}/{sid}/model endpoint is a
+      // v0.3.0 item (needs SwitchModelProvider capability interface
+      // on the agent side); see mast-web plan doc §8.4.
+      throw new Error(
+        'Model switching requires a server-side endpoint that does not exist yet. ' +
+          'Tracked as a v0.3.0 item.'
+      );
     },
 
     async listSessions() {
       if (!this.client) return [];
       const sessions = await this.client.listSessions();
+      // Sort by last_touched_at desc so most-recently-active shows
+      // first (matches the operator's mental model + core-tui's
+      // session-picker ordering). Sessions without a timestamp
+      // (older backends) sink to the bottom.
+      sessions.sort((a, b) => {
+        const at = a.lastTouchedAt ? Date.parse(a.lastTouchedAt) : 0;
+        const bt = b.lastTouchedAt ? Date.parse(b.lastTouchedAt) : 0;
+        return bt - at;
+      });
       latest.sessions = sessions;
       return sessions.map((s) => ({ ...s, active: s.id === currentSession }));
     },
@@ -132,6 +147,33 @@
       if (!this.client) throw new Error('not connected');
       await this.client.selectSession(id);
       currentSession = id;
+    },
+
+    // v0.2.0: real create/delete via POST /sessions + DELETE
+    // /sessions/{app}/{sid}. Both endpoints landed in core-agent
+    // pkg/attach/handlers_create_session.go + handlers_delete_session.go.
+    async createSession() {
+      if (!this.client) throw new Error('not connected');
+      const s = await this.client.createSession();
+      return s;
+    },
+
+    async deleteSession(id) {
+      if (!this.client) throw new Error('not connected');
+      // Look up the app for this sid from the last listSessions() so
+      // we can use the qualified path (safer than the shortcut which
+      // 409s on multi-tenant collisions).
+      const found = latest.sessions.find((s) => s.id === id);
+      if (!found) throw new Error(`session ${id} not in the local list — reload the sidebar first`);
+      if (id === 'default') {
+        // Server would 403 anyway; guard client-side for a nicer
+        // error and to avoid the pointless round trip.
+        throw new Error('the bootstrap `default` session cannot be deleted');
+      }
+      await this.client.deleteSession(found.app, id);
+      // Drop it from our snapshot so the sidebar re-renders without
+      // waiting on the next list poll.
+      latest.sessions = latest.sessions.filter((s) => s.id !== id);
     },
 
     async listMcpServers() {
@@ -166,43 +208,120 @@
     },
 
     async getStats() {
+      // Real numbers straight from the state fed by usage-update
+      // events. byModel + lastTurn come from the v1.2.0 alignment in
+      // PR 1 (last_turn is authoritative per-turn cost with cache
+      // attribution; by_model powers per-model breakdown).
+      const perModel = Object.entries(latest.usage.byModel || {})
+        .map(([model, m]) => ({
+          model,
+          tokensIn: m.tokensIn,
+          tokensOut: m.tokensOut,
+          costUSD: m.costUSD,
+          turns: m.turns,
+        }))
+        // Sort by descending cost, tie-break by descending output
+        // tokens, then model name — same ordering as core-tui's
+        // /stats renderer (slash_builtin.go:802-884).
+        .sort(
+          (a, b) =>
+            b.costUSD - a.costUSD || b.tokensOut - a.tokensOut || a.model.localeCompare(b.model)
+        );
       return {
         totalTurns: latest.usage.turns,
         totalTokenIn: latest.usage.tokensIn,
         totalTokenOut: latest.usage.tokensOut,
-        totalToolCalls: 0, // not currently surfaced via attach; phase D
         totalCostUSD: latest.usage.costUSD,
-        avgTtfbMs: 0,
-        avgTotalMs: 0,
+        // Per-turn breakdown for the "last turn" row. Only included
+        // when we've received a usage-update.last_turn (v1.1.1+).
+        lastTurn: latest.usage.lastTurn,
+        // Per-model breakdown; empty array when the backend only
+        // emits totals (byModel absent or single model).
+        byModel: perModel,
+        // totalToolCalls / avgTtfbMs / avgTotalMs deliberately omitted
+        // — attach doesn't surface these today. If future spec adds
+        // them, add here.
       };
     },
 
     async exportSession(_id, fmt) {
-      // Eventlog-driven export will need a dedicated attach endpoint;
-      // for now, dump what we have client-side from the rendered DOM
-      // as a placeholder so /export still does *something* useful.
+      // Client-side export of the rendered transcript. Reads message
+      // rows from the DOM (each .message has classes indicating role
+      // and a text payload) and packages them + connection metadata.
+      // Server-side JSONL export of the full eventlog is a v0.3.0
+      // item (needs a dedicated attach endpoint reading pkg/audit).
+      const rows = [];
+      document.querySelectorAll('#output-area .message').forEach((el) => {
+        const role = el.classList.contains('user')
+          ? 'user'
+          : el.classList.contains('assistant')
+            ? 'assistant'
+            : el.classList.contains('system')
+              ? 'system'
+              : 'unknown';
+        // For assistant messages, prefer the raw markdown source we
+        // stashed on data-source (renderer keeps it for reflow); fall
+        // back to textContent otherwise.
+        const text = el.dataset && el.dataset.source ? el.dataset.source : el.textContent;
+        rows.push({ role, text: (text || '').trim() });
+      });
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        endpoint: this.client ? this.client.endpoint : null,
+        sessionId: currentSession || null,
+        turns: turnCount,
+        totalCostUSD: latest.usage.costUSD,
+        messages: rows,
+      };
       if (fmt === 'md') {
-        return '# mast session export (placeholder — backend export endpoint pending)\n';
+        // Simple markdown transcript for humans.
+        const md = [
+          '# mast session export',
+          '',
+          `- Session: \`${currentSession || '(none)'}\``,
+          `- Endpoint: ${this.client ? this.client.endpoint : '(not connected)'}`,
+          `- Turns: ${turnCount}`,
+          `- Cost: $${latest.usage.costUSD.toFixed(6)}`,
+          `- Exported: ${payload.exportedAt}`,
+          '',
+          '---',
+          '',
+          ...rows.map((r) => `**${r.role}:**\n\n${r.text}\n`),
+        ].join('\n');
+        return md;
       }
-      return { placeholder: true, note: 'backend export endpoint pending', turns: turnCount };
+      return payload;
     },
 
     async clearSession() {
-      // Clearing server-side history requires a dedicated endpoint we
-      // haven't built yet. For now clear the visible UI and warn the
-      // operator the backend retains history.
+      // View-only clear. To hard-delete the server-side session, use
+      // the per-row "Delete" button in the sidebar (POST /sessions +
+      // DELETE /sessions/{app}/{sid} were wired in this PR — see the
+      // deleteSession method below).
+      const output = document.getElementById('output-area');
+      if (output) output.innerHTML = '';
       addSystemMessage(
-        'Browser view cleared. Backend session history is retained — restart the backend or use a new --session-db to fully reset.'
+        'Browser view cleared. Server-side session state is untouched — use the sidebar delete button to remove the session on the backend.'
       );
     },
 
     async fetchIdentity() {
-      // No dedicated identity endpoint on attach today. Surface the
-      // backend URL and current session as a stand-in.
+      // v0.2.0 placeholder. Real caller identity ships in PR 4 via
+      // capabilities.caller_id (from the first frame) with GET
+      // /whoami as the canonical fallback. Both delivered by
+      // sibling core-agent PR (core-agent#329, spec v1.3.0).
+      // Until then, surface a best-effort description so the sidebar
+      // doesn't render an empty slot.
       if (!this.client) return { email: '(not connected)', source: 'none' };
+      // If the backend has advertised capabilities.caller_id (rare
+      // today; ships properly in v1.3.0), prefer it.
+      const caps = this.client.capabilities;
+      if (caps && caps.caller_id) {
+        return { email: caps.caller_id, source: caps.server || 'attach' };
+      }
       return {
-        email: '(authenticated via attach token)',
-        source: this.client.endpoint + '/sessions/' + currentSession,
+        email: '(identity pending — server v1.3.0 will advertise via /whoami)',
+        source: this.client.endpoint,
       };
     },
 
@@ -243,6 +362,17 @@
   const pendingToolCallsByID = new Map();
 
   function dispatchAttachEvent(ev) {
+    // Session-generation gate — drop events tagged with an outdated
+    // stream generation. attach-core/client.js bumps sessionGen on
+    // every connect()/selectSession() and tags each emitted event
+    // with the gen at emit-time. Consumers use this to prevent
+    // stragglers from a prior stream (still draining after the
+    // operator hit switch mid-response) painting into the new
+    // session's view. Ported from core-tui's agentcmd.go:229
+    // sessionGen check.
+    if (mast.client && typeof ev.gen === 'number' && ev.gen !== mast.client.sessionGen) {
+      return;
+    }
     switch (ev.type) {
       case 'capabilities':
         latest.capabilities = ev.data;
@@ -350,12 +480,16 @@
       }
 
       case 'stream-chunk': {
+        // Suppress replay-flood tokens from the transcript. Aggregate
+        // state (usage etc.) isn't affected by stream-chunk anyway.
+        if (ev.replay) return;
         if (!activeTurn || !activeTurn.callbacks.onToken) return;
         activeTurn.callbacks.onToken(ev.data.text);
         return;
       }
 
       case 'tool-call': {
+        if (ev.replay) return; // historical tool call, not for this session's view
         if (!activeTurn || !activeTurn.callbacks.onToolCall) return;
         const { id, name } = ev.data;
         const idx = name.indexOf('_');
@@ -369,6 +503,7 @@
       }
 
       case 'tool-result': {
+        if (ev.replay) return; // historical tool result, not for this session's view
         if (!activeTurn || !activeTurn.callbacks.onToolResult) return;
         const { id, name, response, latencyMs } = ev.data;
         const idx = (name || '').indexOf('_');
@@ -735,14 +870,50 @@
         const item = document.createElement('div');
         item.className = 'server-item';
         if (s.active) item.classList.add('active');
+
+        // Name + status badge. status is 'active' or 'idle' (v1.1.0+);
+        // idle sessions are lazy-resumed on attach.
         const info = document.createElement('div');
-        info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span>`;
-        item.appendChild(info);
-        item.onclick = async () => {
-          await mast.switchSession(s.id);
-          updateSessionList();
-          updateStatusBar();
+        const statusText = s.status === 'idle' ? 'idle' : '';
+        const badge = statusText
+          ? `<span class="status ${escapeHtml(s.status)}" title="lazy-resumes on attach">${escapeHtml(statusText)}</span>`
+          : '';
+        info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span> ${badge}`;
+        info.style.cursor = 'pointer';
+        info.onclick = async () => {
+          if (s.active) return; // no-op click on the current session
+          try {
+            clearTranscriptView();
+            await mast.switchSession(s.id);
+            refreshAllSidebar();
+            addSystemMessage(`Switched to session ${s.id}.`);
+          } catch (e) {
+            addSystemMessage('switch failed: ' + (e.message || e));
+          }
         };
+        item.appendChild(info);
+
+        // Delete button — guard the bootstrap `default` sid client-side
+        // (server 403s anyway, but the message is nicer this way).
+        if (s.id !== 'default') {
+          const del = document.createElement('button');
+          del.className = 'remove-btn';
+          del.textContent = '×';
+          del.title = 'Delete session';
+          del.onclick = async (evt) => {
+            evt.stopPropagation();
+            if (!window.confirm(`Delete session "${s.id}"? This cannot be undone.`)) return;
+            try {
+              await mast.deleteSession(s.id);
+              addSystemMessage(`Deleted session ${s.id}.`);
+              updateSessionList();
+            } catch (e) {
+              addSystemMessage('delete failed: ' + (e.message || e));
+            }
+          };
+          item.appendChild(del);
+        }
+
         container.appendChild(item);
       });
     } catch {
@@ -1013,9 +1184,9 @@
         addSystemMessage('Usage: /sessions switch <id>');
         return;
       }
+      clearTranscriptView();
       await mast.switchSession(id);
-      updateSessionList();
-      updateStatusBar();
+      refreshAllSidebar();
       addSystemMessage('Switched to ' + id);
     } else {
       addSystemMessage('Usage: /sessions [list|switch <id>]');
@@ -1349,7 +1520,29 @@
 
   // ─── Sidebar buttons ───────────────────────────────────────────────
 
-  document.getElementById('new-session-btn').addEventListener('click', () => cmdClear());
+  document.getElementById('new-session-btn').addEventListener('click', async () => {
+    // v0.2.0: real server-side creation via POST /sessions. Falls back
+    // to a friendly message on 501 (daemon without SessionFactory) or
+    // 401 (anonymous caller). The client-side stub used to just clear
+    // the DOM; that lives under /clear now.
+    if (!connected) {
+      addSystemMessage('Not connected. Open the setup modal and connect first.');
+      return;
+    }
+    try {
+      const s = await mast.createSession();
+      // Immediately switch to the newly-created session so the operator
+      // can start interacting with it. Same clear+refresh cadence as
+      // any other session switch so the sidebar doesn't show stale
+      // state from the outgoing session.
+      clearTranscriptView();
+      await mast.switchSession(s.id);
+      refreshAllSidebar();
+      addSystemMessage(`Created session ${s.id} (owner: ${s.user || '(unknown)'}).`);
+    } catch (e) {
+      addSystemMessage('create session failed: ' + (e.message || e));
+    }
+  });
   document.getElementById('export-btn').addEventListener('click', () => cmdExport([]));
 
   // ─── Connection lifecycle ──────────────────────────────────────────
@@ -1360,16 +1553,44 @@
       await mast.init({ endpoint, token });
       setConnectionState('connected');
       addSystemMessage(`Connected to ${endpoint}.`);
-      updateModelSelect();
-      updateSessionList();
-      updateServerList();
-      updateSpecialistList();
-      fetchIdentity();
-      updateStatusBar();
+      refreshAllSidebar();
     } catch (e) {
       setConnectionState('disconnected');
       addSystemMessage('Connection failed: ' + (e?.message || e));
     }
+  }
+
+  // Atomic sidebar refresh — call after any operation that switches
+  // the effective session context (initial connect, switchSession,
+  // createSession, deleteSession-then-fallback). Fires the model /
+  // sessions / servers / specialists / identity + status bar fetches
+  // in parallel so they land as close to together as possible.
+  //
+  // Ports the lesson from core-tui's bug #274: on session switch you
+  // MUST refresh usage totals, memory, skills, MCP list, and branding
+  // — not just the event stream. Otherwise the sidebar keeps
+  // showing the outgoing session's data. The atomicity target here
+  // is "before the next paint", not "in a single transaction"; a
+  // brief flicker to empty sub-panels is acceptable.
+  function refreshAllSidebar() {
+    // Kick these off in parallel; each function handles its own
+    // errors + DOM writes and doesn't rely on the others' results.
+    updateModelSelect();
+    updateSessionList();
+    updateServerList();
+    updateSpecialistList();
+    fetchIdentity();
+    updateStatusBar();
+  }
+
+  // Clear the transcript view on session switch so the outgoing
+  // session's messages don't linger in the new session's view. The
+  // per-turn footers, tool-call rows, etc. all belong to the old
+  // session's SSE stream (already dropped by the sessionGen check in
+  // dispatchAttachEvent).
+  function clearTranscriptView() {
+    const output = document.getElementById('output-area');
+    if (output) output.innerHTML = '';
   }
 
   // ─── Boot ──────────────────────────────────────────────────────────

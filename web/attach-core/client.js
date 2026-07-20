@@ -19,6 +19,7 @@
 // Depends on sibling modules (loaded ahead of this file in index.html):
 //   attach-core/errors.js    — PermanentStreamError
 //   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
+//   attach-core/replay.js    — ReplayFilter (attach cutoff)
 //
 // Endpoints consumed (all under <endpoint>):
 //   GET  /sessions                         → list sessions
@@ -59,14 +60,15 @@ window.AttachClient = (function () {
   'use strict';
 
   // Dependencies loaded from sibling modules; index.html loads
-  // errors.js + protocol.js before this file.
+  // errors.js + protocol.js + replay.js before this file.
   const PermanentStreamError =
     (window.AttachCoreErrors && window.AttachCoreErrors.PermanentStreamError) || null;
   const fanoutAgentFrame =
     (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
-  if (!PermanentStreamError || !fanoutAgentFrame) {
+  const ReplayFilter = (window.AttachCoreReplay && window.AttachCoreReplay.ReplayFilter) || null;
+  if (!PermanentStreamError || !fanoutAgentFrame || !ReplayFilter) {
     throw new Error(
-      'attach-core/client.js: missing dependencies — errors.js and protocol.js must load first'
+      'attach-core/client.js: missing dependencies — errors.js, protocol.js, and replay.js must load first'
     );
   }
 
@@ -82,6 +84,12 @@ window.AttachClient = (function () {
       // Last capabilities frame seen. Consumers read this for feature
       // detection; treat null as "backend hasn't advertised yet".
       this.capabilities = null;
+      // Session generation counter — bumps on connect() / selectSession()
+      // / any SSE stream restart. Every emitted event carries the gen
+      // at emit time via the `gen` field so consumers can drop stale
+      // events after a switch. Ported concept from core-tui's
+      // agentcmd.go:229 (sessionGen uint64 drop-on-mismatch pattern).
+      this.sessionGen = 0;
     }
 
     // ─── HTTP helpers ────────────────────────────────────────────────
@@ -134,19 +142,64 @@ window.AttachClient = (function () {
 
     async listSessions() {
       const out = await this._get('/sessions');
+      // v1.1.0+: response also carries `status` ('active'|'idle') and
+      // `last_touched_at` (ISO string). Expose both so the sidebar
+      // can render an idle badge + sort by recency.
       return (out.sessions || []).map((s) => ({
         id: s.session_id,
         app: s.app_name,
         user: s.user_id,
         hasEventLog: !!s.has_event_log,
+        status: s.status || 'active',
+        lastTouchedAt: s.last_touched_at || null,
         label: s.session_id,
       }));
+    }
+
+    // ─── Session create / delete (new in v0.2.0) ────────────────────
+
+    // POST /sessions — creates an owned session for the authenticated
+    // caller. Returns { app, user, sessionID, url }. Throws:
+    //   401 → authenticated caller required (no anon sessions)
+    //   409 → sid collision (factory generator bug)
+    //   501 → daemon has no SessionFactory configured
+    // See core-agent pkg/attach/handlers_create_session.go.
+    async createSession() {
+      const res = await this._post('/sessions', {});
+      return {
+        id: res.sessionID || res.session_id || '',
+        app: res.app || res.app_name || '',
+        user: res.user || res.user_id || '',
+        url: res.url || '',
+      };
+    }
+
+    // DELETE /sessions/{app}/{sid} — hard-deletes a session. 204 on
+    // success; 403 on the bootstrap `default` session; SessionAdmin
+    // required. All SSE subscribers see channel-close EOF.
+    // See core-agent pkg/attach/handlers_delete_session.go.
+    async deleteSession(app, sid) {
+      const path = '/sessions/' + encodeURIComponent(app) + '/' + encodeURIComponent(sid);
+      const r = await fetch(this.endpoint + path, {
+        method: 'DELETE',
+        headers: this._headers(),
+      });
+      if (!r.ok && r.status !== 204) {
+        const text = await r.text();
+        const msg = `DELETE ${path} → HTTP ${r.status}: ${text}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
+      }
+      return true;
     }
 
     async selectSession(sessionId) {
       this.sessionId = sessionId;
       // Re-open the SSE stream for the new session if we were already
-      // connected.
+      // connected. connect() bumps sessionGen so stale events in
+      // flight from the previous stream get dropped by consumers.
       if (this._sse) {
         this.disconnect();
         await this.connect();
@@ -169,6 +222,15 @@ window.AttachClient = (function () {
         await this.autoSelectSession();
       }
       this._closed = false;
+      // Bump the generation counter so events from an in-flight prior
+      // stream (still draining after the operator hit switch mid-
+      // response) get dropped by consumer-side gen checks.
+      this.sessionGen += 1;
+      // Fresh replay filter per connection. The server may re-stream
+      // the full eventlog before switching to live tail; frames with
+      // Timestamp < (connectedAt - grace) are classified as replay
+      // and consumers suppress them from the transcript view.
+      this._replayFilter = new ReplayFilter({});
       this.onConnectionState('connecting');
       // EventSource doesn't support custom headers, so when auth is
       // needed we tunnel the token as a URL query param. The server
@@ -203,6 +265,10 @@ window.AttachClient = (function () {
         'turn-complete',
         'turn-error',
       ];
+      // Capture the generation at listener-registration time so events
+      // arriving after a selectSession() bump are tagged with the OLD
+      // gen and consumers can drop them.
+      const streamGen = this.sessionGen;
       typed.forEach((name) => {
         this._sse.addEventListener(name, (e) => {
           let data = null;
@@ -213,13 +279,18 @@ window.AttachClient = (function () {
           }
           // Cache the capabilities first-frame for feature detection.
           if (name === 'capabilities') this.capabilities = data;
-          this.onEvent({ type: name, data });
+          this.onEvent({ type: name, data, gen: streamGen });
         });
       });
 
       // Legacy `agent` event — Frame { seq, event } where event is an
       // ADK session.Event. Decompose into typed signals the renderer
-      // expects (token / toolCall / toolResult).
+      // expects (token / toolCall / toolResult). Each fanned-out
+      // sub-event is tagged with the stream generation so post-switch
+      // stragglers can be dropped by consumers, and with `replay:
+      // true` when the server-provided Timestamp puts it before the
+      // connection cutoff (broadcaster replay flood suppression).
+      const replayFilter = this._replayFilter;
       this._sse.addEventListener('agent', (e) => {
         let frame = null;
         try {
@@ -227,7 +298,9 @@ window.AttachClient = (function () {
         } catch {
           return;
         }
-        this._fanoutAgentFrame(frame);
+        const ts = ReplayFilter.extractAgentFrameTimestamp(frame);
+        const isReplay = replayFilter ? replayFilter.isReplay(ts) : false;
+        this._fanoutAgentFrame(frame, streamGen, isReplay);
       });
 
       // The default `message` event fires when the server sends a frame
@@ -240,7 +313,7 @@ window.AttachClient = (function () {
         } catch {
           return;
         }
-        if (frame && frame.event) this._fanoutAgentFrame(frame);
+        if (frame && frame.event) this._fanoutAgentFrame(frame, streamGen);
       };
     }
 
@@ -253,11 +326,23 @@ window.AttachClient = (function () {
       this.onConnectionState('disconnected');
     }
 
-    _fanoutAgentFrame(frame) {
+    _fanoutAgentFrame(frame, gen, replay) {
       // Delegate to the pure helper in attach-core/protocol.js so the
       // conformance harness can exercise the same code without wiring
       // up a client. this.onEvent is the emit callback.
-      fanoutAgentFrame(frame, (e) => this.onEvent(e));
+      //
+      // Every fanned-out sub-event is tagged with:
+      //   gen    — stream generation at emit-time (see connect()).
+      //            Consumers drop mismatched gens to prevent stale-
+      //            event bleed after a switch.
+      //   replay — true when the source frame's server timestamp puts
+      //            it before the connection cutoff (broadcaster
+      //            replay-flood). Consumers suppress replay events
+      //            from the transcript view but still update
+      //            aggregate state (usage totals, etc.).
+      const g = typeof gen === 'number' ? gen : this.sessionGen;
+      const r = replay === true;
+      fanoutAgentFrame(frame, (e) => this.onEvent({ ...e, gen: g, replay: r }));
     }
 
     // ─── Operator input ─────────────────────────────────────────────

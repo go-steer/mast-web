@@ -26,19 +26,21 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Load the three attach-core modules in order into jsdom's window
-// global — same order as index.html. errors.js and protocol.js set
-// window.AttachCoreErrors / window.AttachCoreProtocol; client.js reads
+// Load the four attach-core modules in order into jsdom's window
+// global — same order as index.html. errors / protocol / replay each
+// set their respective window.AttachCore* namespace; client.js reads
 // them at IIFE-init.
 const here = dirname(fileURLToPath(import.meta.url));
 const srcErrors = readFileSync(join(here, 'errors.js'), 'utf8');
 const srcProtocol = readFileSync(join(here, 'protocol.js'), 'utf8');
+const srcReplay = readFileSync(join(here, 'replay.js'), 'utf8');
 const srcClient = readFileSync(join(here, 'client.js'), 'utf8');
 
 function loadAttachClient() {
   const load = (s) => new Function('window', s)(globalThis);
   load(srcErrors);
   load(srcProtocol);
+  load(srcReplay);
   load(srcClient);
   return globalThis.AttachClient;
 }
@@ -49,6 +51,7 @@ describe('AttachClient', () => {
     delete globalThis.AttachClient;
     delete globalThis.AttachCoreErrors;
     delete globalThis.AttachCoreProtocol;
+    delete globalThis.AttachCoreReplay;
     AttachClient = loadAttachClient();
   });
 
@@ -119,6 +122,169 @@ describe('AttachClient', () => {
     });
   });
 
+  describe('session lifecycle', () => {
+    it('createSession POSTs to /sessions and normalizes the response', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              app: 'core-agent',
+              user: 'alice@example.com',
+              sessionID: 'sess-abc',
+              url: 'https://example/sessions/core-agent/sess-abc',
+            })
+          ),
+      });
+      const s = await client.createSession();
+      expect(s).toEqual({
+        id: 'sess-abc',
+        app: 'core-agent',
+        user: 'alice@example.com',
+        url: 'https://example/sessions/core-agent/sess-abc',
+      });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://example/sessions',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('createSession surfaces a 501 as a plain Error (no SessionFactory)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 501,
+        text: () => Promise.resolve('not supported'),
+      });
+      let err;
+      try {
+        await client.createSession();
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(AttachClient.PermanentStreamError);
+    });
+
+    it('createSession surfaces a 401 as a PermanentStreamError (anonymous)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('unauthorized'),
+      });
+      await expect(client.createSession()).rejects.toBeInstanceOf(
+        AttachClient.PermanentStreamError
+      );
+    });
+
+    it('deleteSession DELETEs the qualified path', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 204, text: () => '' });
+      await client.deleteSession('core-agent', 'sess-abc');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://example/sessions/core-agent/sess-abc',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+
+    it('deleteSession surfaces 403 as a permanent error (bootstrap default guard)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: () => Promise.resolve('cannot delete bootstrap session'),
+      });
+      await expect(client.deleteSession('core-agent', 'default')).rejects.toBeInstanceOf(
+        AttachClient.PermanentStreamError
+      );
+    });
+
+    it('listSessions parses status + last_touched_at fields (v1.1.0+)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            sessions: [
+              {
+                app_name: 'core-agent',
+                user_id: 'alice',
+                session_id: 's1',
+                has_event_log: true,
+                status: 'active',
+                last_touched_at: '2026-07-20T12:00:00Z',
+              },
+              {
+                app_name: 'core-agent',
+                user_id: 'alice',
+                session_id: 's2',
+                has_event_log: true,
+                status: 'idle',
+                last_touched_at: '2026-07-19T12:00:00Z',
+              },
+            ],
+          }),
+      });
+      const sessions = await client.listSessions();
+      expect(sessions).toHaveLength(2);
+      expect(sessions[0].status).toBe('active');
+      expect(sessions[0].lastTouchedAt).toBe('2026-07-20T12:00:00Z');
+      expect(sessions[1].status).toBe('idle');
+    });
+
+    it('sessionGen bumps on connect() and tags emitted events', () => {
+      // We can't easily exercise connect()'s SSE bits under jsdom, but
+      // we can verify the sessionGen field is initialized to 0 (the
+      // "no stream yet" sentinel) and that _fanoutAgentFrame tags
+      // fanned events with the current gen.
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      expect(client.sessionGen).toBe(0);
+      // Manually bump — connect() would do this after autoSelectSession.
+      client.sessionGen = 3;
+      const events = [];
+      client.onEvent = (e) => events.push(e);
+      client._fanoutAgentFrame({
+        event: { Content: { parts: [{ text: 'hello' }] } },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0].gen).toBe(3);
+      expect(events[0].type).toBe('stream-chunk');
+    });
+
+    it('_fanoutAgentFrame carries the passed-in gen argument (streamGen at listener-time)', () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      client.sessionGen = 99;
+      const events = [];
+      client.onEvent = (e) => events.push(e);
+      // Pass gen=2 explicitly — mimics what happens in the SSE
+      // addEventListener closure (streamGen captured at listener-
+      // registration time survives even after sessionGen bumps).
+      client._fanoutAgentFrame({ event: { Content: { parts: [{ text: 'stale' }] } } }, 2);
+      expect(events[0].gen).toBe(2);
+    });
+
+    it('listSessions defaults status to "active" when server omits it (back-compat)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            sessions: [
+              { app_name: 'core-agent', user_id: 'alice', session_id: 's1', has_event_log: true },
+            ],
+          }),
+      });
+      const sessions = await client.listSessions();
+      expect(sessions[0].status).toBe('active');
+      expect(sessions[0].lastTouchedAt).toBeNull();
+    });
+  });
+
   describe('capabilities frame caching', () => {
     it('captures the first capabilities frame into client.capabilities', () => {
       const events = [];
@@ -147,7 +313,7 @@ describe('AttachClient', () => {
   });
 
   describe('_fanoutAgentFrame — legacy agent → typed sub-events', () => {
-    it('emits stream-chunk for text parts', () => {
+    it('emits stream-chunk for text parts (tagged with gen=0 pre-connect)', () => {
       const events = [];
       const client = new AttachClient({
         endpoint: 'https://example',
@@ -161,11 +327,16 @@ describe('AttachClient', () => {
         },
       });
       expect(events).toEqual([
-        { type: 'stream-chunk', data: { text: 'hello', partial: true, author: 'assistant' } },
+        {
+          type: 'stream-chunk',
+          data: { text: 'hello', partial: true, author: 'assistant' },
+          gen: 0,
+          replay: false,
+        },
       ]);
     });
 
-    it('emits tool-call for functionCall parts', () => {
+    it('emits tool-call for functionCall parts (tagged with current gen)', () => {
       const events = [];
       const client = new AttachClient({
         endpoint: 'https://example',
@@ -179,7 +350,12 @@ describe('AttachClient', () => {
         },
       });
       expect(events).toEqual([
-        { type: 'tool-call', data: { id: 'c1', name: 'fs_read', args: { path: '/x' } } },
+        {
+          type: 'tool-call',
+          data: { id: 'c1', name: 'fs_read', args: { path: '/x' } },
+          gen: 0,
+          replay: false,
+        },
       ]);
     });
 
@@ -270,6 +446,8 @@ describe('AttachClient', () => {
       expect(events[0]).toEqual({
         type: 'tool-call',
         data: { id: 'c1', name: 'fs_read', args: { path: '/x' } },
+        gen: 0,
+        replay: false,
       });
     });
 

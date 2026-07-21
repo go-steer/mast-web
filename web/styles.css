@@ -987,6 +987,31 @@ body {
   padding: 0 16px 8px;
 }
 
+#batch-progress {
+  padding: 4px 16px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+#batch-progress-text {
+  margin-bottom: 4px;
+}
+
+#batch-progress-bar {
+  height: 3px;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#batch-progress-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  transition: width 200ms ease-out;
+}
+
 #batch-results table {
   width: 100%;
   border-collapse: collapse;

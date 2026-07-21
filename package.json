@@ -10,7 +10,7 @@
     "url": "https://github.com/go-steer/mast-web.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "./dev/tools/dev",

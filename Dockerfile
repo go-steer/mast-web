@@ -17,9 +17,21 @@
 #   asset-stage  — build the SPA bundle (web/ -> internal/webui/dist/)
 #   go-stage     — compile mast-web-server with the embedded bundle
 #   runtime      — distroless static, ~10MB, runs as nonroot
+#
+# Multi-arch cross-compile:
+#   Both intermediate stages are pinned to $BUILDPLATFORM so they run
+#   NATIVELY on the CI amd64 runner (npm ci + go build are fast). The
+#   go build cross-compiles to $TARGETARCH so the final binary matches
+#   the runtime layer's architecture. buildx's `--platform linux/amd64,
+#   linux/arm64` then only needs QEMU for the final scratch-based
+#   runtime layer, which does zero code execution — just file copies.
+#
+#   Fix for mast-web#29: previously both intermediates inherited the
+#   target platform, forcing full QEMU emulation of npm ci + go build,
+#   which stalled the arm64 leg indefinitely (~6h, then cancelled).
 
 # ── asset-stage ───────────────────────────────────────────────────────
-FROM node:20-alpine AS asset-stage
+FROM --platform=$BUILDPLATFORM node:24-alpine AS asset-stage
 WORKDIR /src
 
 # Copy only what the asset build needs to maximize layer caching.
@@ -34,7 +46,7 @@ COPY web/ ./web/
 RUN mkdir -p internal/webui/dist && cp -R web/. internal/webui/dist/
 
 # ── go-stage ───────────────────────────────────────────────────────────
-FROM golang:1.26-alpine AS go-stage
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-stage
 WORKDIR /src
 
 # Module deps first for layer caching.
@@ -48,11 +60,18 @@ COPY internal/ ./internal/
 # asset stage. Path matches //go:embed all:dist in internal/webui/webui.go.
 COPY --from=asset-stage /src/internal/webui/dist/ ./internal/webui/dist/
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+# buildx populates $TARGETARCH per platform (amd64 / arm64 / etc.);
+# cross-compile to it from the native amd64 host. CGO stays off so
+# there's no linker toolchain dependency.
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" \
     -o /out/mast-web-server ./cmd/mast-web-server
 
 # ── runtime ────────────────────────────────────────────────────────────
+# Distroless picks the correct-arch base automatically from buildx's
+# per-target --platform; the COPY below then lands the arch-matching
+# binary produced by go-stage. No execution in this layer.
 FROM gcr.io/distroless/static:nonroot
 COPY --from=go-stage /out/mast-web-server /mast-web-server
 

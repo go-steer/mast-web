@@ -171,6 +171,13 @@
     <script src="attach-core/replay.js"></script>
     <script src="attach-core/prompter.js"></script>
     <script src="attach-core/client.js"></script>
+    <!-- state: observable stores. subscriptions.js is the primitive
+         everything else depends on. session / connection / daemons
+         each set window.MastState.<name> at IIFE-init. -->
+    <script src="state/subscriptions.js"></script>
+    <script src="state/session.js"></script>
+    <script src="state/connection.js"></script>
+    <script src="state/daemons.js"></script>
     <!-- slash-render: dispatch skeleton for server-side slash
          responses. Reserved _render / _schema convention. -->
     <script src="slash-render.js"></script>

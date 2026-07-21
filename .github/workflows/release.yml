@@ -47,7 +47,7 @@ permissions:
   packages: write   # push container image to ghcr.io
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '24'
   GO_VERSION: '1.26'
   REGISTRY: ghcr.io
   IMAGE_NAME: go-steer/mast-web
@@ -121,6 +121,12 @@ jobs:
     name: image
     needs: release
     runs-on: ubuntu-latest
+    # Bounded so a stalled buildx run fails fast (the v0.2.0 tag push
+    # sat for ~6h before cancellation because the pre-#29 Dockerfile
+    # forced full QEMU emulation on the arm64 leg). With #29's
+    # cross-compile shape a real build takes ~2 min; anything past
+    # 30 is a regression worth surfacing immediately.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write

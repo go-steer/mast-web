@@ -37,7 +37,7 @@ permissions:
 env:
   GO_VERSION: '1.26'
   HUGO_VERSION: '0.158.0'
-  NODE_VERSION: '20'
+  NODE_VERSION: '24'
 
 jobs:
   build:

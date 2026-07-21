@@ -41,3 +41,7 @@ resume
 
 # Local go-build output at repo root.
 /mast-web-server
+
+# Playwright output.
+playwright-report/
+test-results/

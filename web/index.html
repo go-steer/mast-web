@@ -81,7 +81,12 @@
         <textarea id="batch-input" placeholder="Enter prompts, one per line..."></textarea>
         <div class="batch-actions">
           <button id="batch-run-btn">Run Batch</button>
+          <button id="batch-stop-btn" hidden>Stop</button>
           <button id="batch-export-btn">Export CSV</button>
+        </div>
+        <div id="batch-progress" hidden>
+          <div id="batch-progress-text"></div>
+          <div id="batch-progress-bar"><span></span></div>
         </div>
         <div id="batch-results"></div>
       </div>

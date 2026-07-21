@@ -2374,8 +2374,20 @@
   }
 
   // ─── Batch run ─────────────────────────────────────────────────────
+  //
+  // Sequential real-backend runner: for each prompt, injects +
+  // waits for turn-complete via mast.runPrompt, capturing per-turn
+  // {latencyMs, tokens, cost, ttfbMs}. Rows render incrementally as
+  // each turn resolves — the operator sees progress instead of
+  // waiting for the whole batch to finish before the table paints.
+  //
+  // Cancellation halts before the next prompt; the in-flight turn
+  // is left to complete (interrupting mid-turn requires the agent's
+  // Interrupt capability, which we don't want to entangle with
+  // batch semantics for v0.3.0).
 
   let batchData = [];
+  let batchCancelToken = null;
   const sortDir = {};
 
   document.getElementById('batch-run-btn').addEventListener('click', async () => {
@@ -2383,35 +2395,114 @@
       addSystemMessage('Not connected to a backend');
       return;
     }
+    if (batchCancelToken) {
+      addSystemMessage('A batch run is already in flight — use Stop first.');
+      return;
+    }
     const input = document.getElementById('batch-input').value.trim();
     if (!input) return;
     const prompts = input.split('\n').filter((l) => l.trim());
-    const resultsDiv = document.getElementById('batch-results');
-    resultsDiv.innerHTML =
-      '<div style="color:var(--text-dim)">Running batch (stub — phase B wires real backend)…</div>';
-    try {
-      // Phase A: simulate a batch via repeated stub runPrompt calls so
-      // the table rendering is exercised. Phase B replaces with a real
-      // batched backend call if the attach protocol grows one, or with
-      // a sequential loop over real runPrompt.
-      const entries = [];
-      for (const p of prompts) {
-        const r = await mast.runPrompt(p, {});
-        entries.push({ prompt: p, result: { ...r, ttfbMs: 50, toolCalls: r.toolCalls || [] } });
+    if (prompts.length === 0) return;
+
+    const runBtn = document.getElementById('batch-run-btn');
+    const stopBtn = document.getElementById('batch-stop-btn');
+    runBtn.disabled = true;
+    stopBtn.hidden = false;
+    batchCancelToken = { cancelled: false };
+    // Snapshot the token here so a subsequent "Run Batch" click
+    // that resets batchCancelToken doesn't break this run's guard.
+    const myCancel = batchCancelToken;
+
+    // Seed the entries with pending rows so the table renders
+    // immediately with the shape of the whole run. Each row flips
+    // to done / error / cancelled as its turn resolves.
+    const entries = prompts.map((p) => ({ prompt: p, status: 'pending' }));
+    batchData = entries;
+    renderBatchTable(entries, null);
+    updateBatchProgress(0, entries.length);
+    document.getElementById('batch-progress').hidden = false;
+
+    let done = 0;
+    for (let i = 0; i < prompts.length; i++) {
+      if (myCancel.cancelled) {
+        for (let j = i; j < prompts.length; j++) {
+          entries[j].status = 'cancelled';
+        }
+        break;
       }
-      const stats = {
-        totalTurns: entries.length,
-        totalTokenIn: entries.reduce((s, e) => s + e.result.tokens.in, 0),
-        totalTokenOut: entries.reduce((s, e) => s + e.result.tokens.out, 0),
-        avgTtfbMs: entries.reduce((s, e) => s + e.result.ttfbMs, 0) / Math.max(1, entries.length),
-        avgTotalMs: entries.reduce((s, e) => s + e.result.totalMs, 0) / Math.max(1, entries.length),
-      };
-      renderBatchTable(entries, stats);
-    } catch (e) {
-      resultsDiv.innerHTML =
-        '<div style="color:var(--red)">Batch error: ' + escapeHtml(String(e)) + '</div>';
+      const p = prompts[i];
+      entries[i].status = 'running';
+      renderBatchTable(entries, null);
+      try {
+        const startedAt = performance.now();
+        let firstEventAt = 0;
+        const r = await mast.runPrompt(p, {
+          onToken: () => {
+            if (!firstEventAt) firstEventAt = performance.now();
+          },
+          onToolCall: () => {
+            if (!firstEventAt) firstEventAt = performance.now();
+          },
+        });
+        const ttfbMs = firstEventAt ? firstEventAt - startedAt : r.totalMs;
+        entries[i] = {
+          prompt: p,
+          status: 'done',
+          result: {
+            totalMs: r.totalMs,
+            ttfbMs,
+            tokens: r.tokens || { in: 0, out: 0 },
+            costUSD: typeof r.costUSD === 'number' ? r.costUSD : 0,
+            toolCalls: r.toolCalls || [],
+          },
+        };
+      } catch (e) {
+        entries[i] = {
+          prompt: p,
+          status: 'error',
+          error: e?.message || String(e),
+        };
+      }
+      done = i + 1;
+      updateBatchProgress(done, entries.length);
+      renderBatchTable(entries, null);
     }
+
+    // Final summary — same stats block the header table shows.
+    const okEntries = entries.filter((e) => e.status === 'done');
+    const stats = okEntries.length
+      ? {
+          totalTurns: okEntries.length,
+          totalTokenIn: okEntries.reduce((s, e) => s + e.result.tokens.in, 0),
+          totalTokenOut: okEntries.reduce((s, e) => s + e.result.tokens.out, 0),
+          totalCostUSD: okEntries.reduce((s, e) => s + (e.result.costUSD || 0), 0),
+          avgTtfbMs: okEntries.reduce((s, e) => s + e.result.ttfbMs, 0) / okEntries.length,
+          avgTotalMs: okEntries.reduce((s, e) => s + e.result.totalMs, 0) / okEntries.length,
+        }
+      : null;
+    renderBatchTable(entries, stats);
+    stopBtn.hidden = true;
+    runBtn.disabled = false;
+    batchCancelToken = null;
   });
+
+  document.getElementById('batch-stop-btn').addEventListener('click', () => {
+    if (!batchCancelToken) return;
+    batchCancelToken.cancelled = true;
+    // The current in-flight turn will still complete. Stop is only
+    // meaningful as "don't kick off the next prompt".
+    addSystemMessage('Batch stop requested — halting after current in-flight prompt.');
+  });
+
+  function updateBatchProgress(done, total) {
+    const wrap = document.getElementById('batch-progress');
+    const text = document.getElementById('batch-progress-text');
+    const bar = document.querySelector('#batch-progress-bar span');
+    if (!wrap || !text || !bar) return;
+    text.textContent = `${done} of ${total} done`;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    bar.style.width = pct + '%';
+  }
 
   function renderBatchTable(entries, batchStats) {
     batchData = entries;
@@ -2427,22 +2518,34 @@
     html += '<th data-sort="toolCalls">Tools</th>';
     html += '<th data-sort="tokensIn">In</th>';
     html += '<th data-sort="tokensOut">Out</th>';
+    html += '<th data-sort="costUSD">Cost ($)</th>';
     html += '<th>Status</th>';
     html += '</tr></thead><tbody>';
     entries.forEach((e) => {
       html += '<tr>';
       html += `<td>${escapeHtml(e.prompt.slice(0, 60))}</td>`;
-      if (e.error) {
-        html += `<td colspan="5" style="color:var(--red)">${escapeHtml(e.error)}</td>`;
+      const status = e.status || (e.error ? 'error' : e.result ? 'done' : 'pending');
+      if (status === 'error') {
+        html += `<td colspan="6" style="color:var(--red)">${escapeHtml(e.error || '')}</td>`;
         html += '<td style="color:var(--red)">Error</td>';
-      } else {
+      } else if (status === 'done') {
         const r = e.result;
         html += `<td>${r.totalMs.toFixed(0)}</td>`;
         html += `<td>${r.ttfbMs.toFixed(0)}</td>`;
         html += `<td>${(r.toolCalls || []).length}</td>`;
         html += `<td>${r.tokens.in}</td>`;
         html += `<td>${r.tokens.out}</td>`;
+        html += `<td>${(r.costUSD || 0).toFixed(6)}</td>`;
         html += '<td style="color:var(--green)">OK</td>';
+      } else if (status === 'running') {
+        html += `<td colspan="6" style="color:var(--brand-yellow)">running…</td>`;
+        html += '<td style="color:var(--brand-yellow)">Running</td>';
+      } else if (status === 'cancelled') {
+        html += `<td colspan="6" style="color:var(--text-dim)">skipped (Stop)</td>`;
+        html += '<td style="color:var(--text-dim)">Cancelled</td>';
+      } else {
+        html += `<td colspan="6" style="color:var(--text-dim)">pending</td>`;
+        html += '<td style="color:var(--text-dim)">Pending</td>';
       }
       html += '</tr>';
     });
@@ -2450,8 +2553,9 @@
     if (batchStats) {
       html +=
         `<div style="margin-top:8px;font-size:11px;color:var(--text-dim)">` +
-        `Summary: ${batchStats.totalTurns} prompts, ` +
+        `Summary: ${batchStats.totalTurns} completed, ` +
         `${batchStats.totalTokenIn} in / ${batchStats.totalTokenOut} out tokens, ` +
+        `$${batchStats.totalCostUSD.toFixed(6)} total, ` +
         `avg TTFB ${batchStats.avgTtfbMs.toFixed(0)}ms, avg total ${batchStats.avgTotalMs.toFixed(0)}ms</div>`;
     }
     resultsDiv.innerHTML = html;
@@ -2468,8 +2572,11 @@
       if (field === 'prompt') {
         va = a.prompt;
         vb = b.prompt;
-      } else if (a.error || b.error) {
-        return a.error ? 1 : -1;
+      } else if (!a.result || !b.result) {
+        // Rows without a result (error / pending / running / cancelled)
+        // sink to the bottom in either direction — a stable "unrated"
+        // block keeps the table readable during a streaming run.
+        return !a.result ? 1 : -1;
       } else {
         const ra = a.result;
         const rb = b.result;
@@ -2488,6 +2595,9 @@
         } else if (field === 'tokensOut') {
           va = ra.tokens.out;
           vb = rb.tokens.out;
+        } else if (field === 'costUSD') {
+          va = ra.costUSD || 0;
+          vb = rb.costUSD || 0;
         }
       }
       if (va < vb) return asc ? -1 : 1;
@@ -2499,14 +2609,23 @@
 
   document.getElementById('batch-export-btn').addEventListener('click', () => {
     if (!batchData || batchData.length === 0) return;
-    let csv = 'Prompt,Total (ms),TTFB (ms),Tool Calls,Tokens In,Tokens Out,Status\n';
+    let csv = 'Prompt,Total (ms),TTFB (ms),Tool Calls,Tokens In,Tokens Out,Cost (USD),Status\n';
     batchData.forEach((e) => {
       const prompt = '"' + e.prompt.replace(/"/g, '""') + '"';
-      if (e.error) {
-        csv += `${prompt},,,,,,Error: ${e.error.replace(/,/g, ';')}\n`;
-      } else {
+      const status = e.status || (e.error ? 'error' : e.result ? 'done' : 'pending');
+      if (status === 'error') {
+        const msg = (e.error || '').replace(/,/g, ';');
+        csv += `${prompt},,,,,,,Error: ${msg}\n`;
+      } else if (status === 'done') {
         const r = e.result;
-        csv += `${prompt},${r.totalMs.toFixed(0)},${r.ttfbMs.toFixed(0)},${(r.toolCalls || []).length},${r.tokens.in},${r.tokens.out},OK\n`;
+        csv +=
+          `${prompt},${r.totalMs.toFixed(0)},${r.ttfbMs.toFixed(0)},` +
+          `${(r.toolCalls || []).length},${r.tokens.in},${r.tokens.out},` +
+          `${(r.costUSD || 0).toFixed(6)},OK\n`;
+      } else if (status === 'cancelled') {
+        csv += `${prompt},,,,,,,Cancelled\n`;
+      } else {
+        csv += `${prompt},,,,,,,${status}\n`;
       }
     });
     downloadFile('mast-batch.csv', csv, 'text/csv');

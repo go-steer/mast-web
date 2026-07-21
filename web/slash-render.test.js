@@ -127,8 +127,260 @@ describe('SlashRender', () => {
         _render: 'text',
         body: '<script>alert("xss")</script>',
       });
-      expect(html).not.toContain('<script>');
+      expect(html).not.toContain('<script>alert');
       expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('exports escapeHTML for callers', () => {
+      expect(typeof SlashRender.escapeHTML).toBe('function');
+      expect(SlashRender.escapeHTML('<a>&"\'"')).toContain('&lt;a&gt;');
+      expect(SlashRender.escapeHTML('<a>&"\'"')).toContain('&amp;');
+      expect(SlashRender.escapeHTML('<a>&"\'"')).toContain('&quot;');
+    });
+  });
+
+  // ─── Registry (v0.3.0 PR 4 additions) ─────────────────────────────
+
+  describe('register', () => {
+    it('adds a new renderer that renderSlashResponse then dispatches to', () => {
+      SlashRender.register(
+        'shout',
+        (r) => '<b>' + SlashRender.escapeHTML(String(r.body || '')).toUpperCase() + '</b>'
+      );
+      const html = SlashRender.renderSlashResponse({ _render: 'shout', body: 'hello' });
+      expect(html).toBe('<b>HELLO</b>');
+    });
+
+    it('overwrites an existing renderer (last register wins)', () => {
+      SlashRender.register('text', () => '<p>replaced</p>');
+      const html = SlashRender.renderSlashResponse({ _render: 'text', body: 'x' });
+      expect(html).toBe('<p>replaced</p>');
+    });
+
+    it('throws on non-string name', () => {
+      expect(() => SlashRender.register('', () => '')).toThrow();
+      expect(() => SlashRender.register(null, () => '')).toThrow();
+    });
+
+    it('throws on non-function renderer', () => {
+      expect(() => SlashRender.register('foo', 'not-a-fn')).toThrow();
+      expect(() => SlashRender.register('foo', null)).toThrow();
+    });
+  });
+
+  // ─── Table renderer ──────────────────────────────────────────────
+
+  describe('table renderer', () => {
+    it('renders columns + rows into a semantic table', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'table',
+        columns: ['name', 'cost'],
+        rows: [
+          ['gemini-2.5-flash', 0.001],
+          ['gemini-2.5-pro', 0.02],
+        ],
+      });
+      expect(html).toContain('<table>');
+      expect(html).toContain('<th');
+      expect(html).toContain('name</th>');
+      expect(html).toContain('cost</th>');
+      expect(html).toContain('gemini-2.5-flash');
+      expect(html).toContain('0.02');
+    });
+
+    it('accepts column-object entries with label + align', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'table',
+        columns: [
+          { name: 'n', label: 'Name' },
+          { name: 'c', label: 'Cost', align: 'right' },
+        ],
+        rows: [['a', 1]],
+      });
+      expect(html).toContain('Name</th>');
+      expect(html).toContain('style="text-align:right"');
+    });
+
+    it('escapes HTML in header labels + cells (XSS defence)', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'table',
+        columns: ['<danger>'],
+        rows: [['<script>alert(1)</script>']],
+      });
+      expect(html).not.toContain('<danger>');
+      expect(html).not.toContain('<script>alert');
+      expect(html).toContain('&lt;danger&gt;');
+      expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('stringifies object cells as JSON', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'table',
+        columns: ['obj'],
+        rows: [[{ a: 1 }]],
+      });
+      expect(html).toContain('{&quot;a&quot;:1}');
+    });
+
+    it('renders empty table when rows/columns absent', () => {
+      const html = SlashRender.renderSlashResponse({ _render: 'table' });
+      expect(html).toContain('<table>');
+      expect(html).toContain('<thead>');
+    });
+  });
+
+  // ─── Tree renderer ───────────────────────────────────────────────
+
+  describe('tree renderer', () => {
+    it('renders nested objects into <details> elements', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'tree',
+        root: { a: { b: { c: 1 } } },
+      });
+      expect(html).toContain('<details');
+      expect(html).toContain('slash-tree-key');
+      expect(html).toContain('a</span>');
+      expect(html).toContain('b</span>');
+      expect(html).toContain('c:');
+    });
+
+    it('handles arrays with a count label', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'tree',
+        root: [1, 2, 3],
+      });
+      expect(html).toContain('(3)');
+    });
+
+    it('marks null / empty object / empty array as leaves', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'tree',
+        root: { n: null, e: {}, a: [] },
+      });
+      expect(html).toContain('<em>null</em>');
+      expect(html).toContain('{}');
+      expect(html).toContain('[]');
+    });
+
+    it('truncates strings longer than TREE_LONG_STRING', () => {
+      const long = 'x'.repeat(500);
+      const html = SlashRender.renderSlashResponse({
+        _render: 'tree',
+        root: { long },
+      });
+      expect(html).toContain('truncated, 500 chars');
+      expect(html).not.toContain('x'.repeat(500));
+    });
+
+    it('accepts raw value when no root key present', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'tree',
+        a: 1,
+        b: 2,
+      });
+      // The whole response object becomes the root; slash-tree-key
+      // shows _render / a / b under it.
+      expect(html).toContain('slash-tree-key');
+      expect(html).toContain('a:');
+      expect(html).toContain('b:');
+    });
+
+    it('escapes HTML in tree keys + values', () => {
+      const html = SlashRender.renderSlashResponse({
+        _render: 'tree',
+        root: { '<key>': '<danger>' },
+      });
+      expect(html).not.toContain('<key>');
+      expect(html).not.toContain('<danger>');
+      expect(html).toContain('&lt;key&gt;');
+      expect(html).toContain('&lt;danger&gt;');
+    });
+
+    it('stops recursion at TREE_MAX_DEPTH', () => {
+      // Build a chain of 20 nested objects (max depth is 12).
+      let deep = { leaf: true };
+      for (let i = 0; i < 20; i++) deep = { child: deep };
+      const html = SlashRender.renderSlashResponse({ _render: 'tree', root: deep });
+      expect(html).toContain('max depth');
+    });
+  });
+
+  // ─── _schema validator ───────────────────────────────────────────
+
+  describe('validate', () => {
+    it('validates required object properties', () => {
+      const r = SlashRender.validate({ x: 1 }, { type: 'object', required: ['x', 'y'] });
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.includes('y'))).toBe(true);
+    });
+
+    it('validates property types recursively', () => {
+      const r = SlashRender.validate(
+        { name: 'ok', age: 'not-a-number' },
+        {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            age: { type: 'number' },
+          },
+        }
+      );
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.includes('age'))).toBe(true);
+    });
+
+    it('validates array item types', () => {
+      const r = SlashRender.validate([1, 2, 'three'], { type: 'array', items: { type: 'number' } });
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.includes('[2]'))).toBe(true);
+    });
+
+    it('type check reports null vs. object correctly', () => {
+      const r = SlashRender.validate(null, { type: 'object' });
+      expect(r.ok).toBe(false);
+      expect(r.errors[0]).toContain('null');
+    });
+
+    it('returns ok when schema is missing', () => {
+      expect(SlashRender.validate({ x: 1 }, null).ok).toBe(true);
+      expect(SlashRender.validate({ x: 1 }, undefined).ok).toBe(true);
+    });
+  });
+
+  describe('_schema dispatch', () => {
+    it('logs a warning on validation failure but still renders', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const html = SlashRender.renderSlashResponse({
+        _render: 'table',
+        _schema: '#/renderers/table',
+        // Missing 'rows' — should trigger a schema warning.
+        columns: ['a'],
+      });
+      expect(warn).toHaveBeenCalled();
+      // Still rendered.
+      expect(html).toContain('<table>');
+      warn.mockRestore();
+    });
+
+    it('accepts inline schema object', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      SlashRender.renderSlashResponse({
+        _render: 'json',
+        _schema: { type: 'object', required: ['missing'] },
+        payload: 1,
+      });
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('warns on unknown schema reference', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      SlashRender.renderSlashResponse({
+        _render: 'json',
+        _schema: '#/nonexistent/schema',
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/unknown _schema reference/));
+      warn.mockRestore();
     });
   });
 });

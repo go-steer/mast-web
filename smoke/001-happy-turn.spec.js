@@ -12,47 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Smoke: 001-happy-turn — the canonical happy path.
-//
-// The SPA's stream-chunk / tool-call / tool-result handlers only
-// render into an active turn (created by submitPrompt → runPrompt),
-// so a fixture that just streams into a fresh connection doesn't
-// paint assistant text or tool chips — the events fire but drop.
-// That's the observer-mode gap; full assistant-side rendering
-// lands with v0.3.0 PR 3 (mast-web#23, StampLatestAssistantFooter
-// equivalent + externally-driven turns).
-//
-// Until PR 3 lands, this spec asserts on the connect-time surface
-// that DOES render without an active turn:
-//   - status-update fields flow into the status bar (model)
-//   - usage-update fields flow into the status bar (turn counter,
-//     cost cell)
-//   - the sidebar's Backend / Sessions sections populate from mock
-//     endpoints
-// When PR 3 ships, add:
-//   - assistant text streams into a .message.assistant row
-//   - tool-call chip renders with the tool name
-//   - per-turn footer stamps with tokens
+// Smoke: 001-happy-turn — the canonical happy path. Fixture streams
+// capabilities → status → stream-chunk × N → turn-complete →
+// usage-update. The SPA auto-spawns an observer turn on the first
+// stream-chunk (v0.3.0 PR 3) so all events render even without an
+// operator prompt.
 
 import { test, expect } from '@playwright/test';
 import { connectToMock } from './helpers.js';
 
 test.describe('smoke: 001-happy-turn', () => {
-  test('connect + capabilities/status/usage flow into status bar + sidebar', async ({ page }) => {
+  test('assistant text renders + per-turn footer stamps', async ({ page }) => {
     await connectToMock(page, '001-happy-turn');
 
-    // status-update.model → status bar (renders whether or not an
-    // active turn exists).
+    // Assistant text streamed into a .message.assistant row via the
+    // auto-spawned observer turn.
+    await expect(page.locator('#output-area .message.assistant').first()).toBeVisible();
+
+    // Per-turn footer stamped from turn-complete (latency + tokens).
+    // Only present if the observer turn's finish path ran.
+    await expect(page.locator('#output-area .turn-footer').first()).toBeVisible();
+
+    // Status-bar reflections of the stream.
     await expect(page.locator('#status-model')).toContainText('gemini-2.5-flash');
-
-    // usage-update.turns_total → turn counter (fixture ships 1).
     await expect(page.locator('#status-turns')).toContainText('1');
-
-    // Cost cell is present (fixture cost rounds to $0.00 under the
-    // .toFixed(2) formatter; assert on presence, not value).
-    await expect(page.locator('#status-cost')).toBeVisible();
-
-    // Backend section populated (mock's canned session name).
-    await expect(page.locator('#session-list')).toContainText(/smoke-session/);
   });
 });

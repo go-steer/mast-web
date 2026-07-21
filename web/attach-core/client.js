@@ -449,6 +449,17 @@ window.AttachClient = (function () {
       return out.agents || [];
     }
 
+    // GET /sessions/{sid}/usage — cumulative-usage snapshot including
+    // the same last_turn payload the usage-update SSE frame carries.
+    // Used by the observer-mode footer-stamping path (v0.3.0 PR 3) to
+    // back-fill the first turn's per-turn cost when the SPA attaches
+    // mid-stream and misses the usage-update that would have primed
+    // lastTurn (coretuiremote LastTurn fallback pattern; see
+    // core-agent/internal/coretuiremote/capabilities.go:180-206).
+    async getUsage() {
+      return this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/usage');
+    }
+
     // GET /whoami — session-agnostic caller identity endpoint (v1.4.0+).
     // Returns { identity, admin, source, proxy_by } where:
     //   source ∈ { bearer, mtls, iap, asserted, anonymous }

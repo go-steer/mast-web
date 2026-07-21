@@ -71,7 +71,7 @@ var (
 		},
 	}
 	stubUsage = map[string]any{
-		"overall":  map[string]any{"tokens_in": 45, "tokens_out": 8, "cost_usd": 0.00012, "turns": 1},
+		"overall": map[string]any{"tokens_in": 45, "tokens_out": 8, "cost_usd": 0.00012, "turns": 1},
 		"per_model": map[string]any{
 			"mock-model-1.5": map[string]any{"tokens_in": 45, "tokens_out": 8, "cost_usd": 0.00012, "turns": 1},
 		},

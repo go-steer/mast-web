@@ -1072,3 +1072,84 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
 }
+
+/* ─── Slash-response renderers (v0.3.0 PR 4) ─────────────────────
+ * Styles for the table + tree renderers registered in slash-render.js.
+ * text / markdown / json use <pre> blocks and inherit .message system
+ * styling above. */
+
+.slash-render-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+.slash-render-table th,
+.slash-render-table td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.slash-render-table th {
+  background: var(--bg-elevated);
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+
+.slash-render-table th:hover {
+  background: var(--border);
+}
+
+.slash-render-table tbody tr:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.slash-render-tree {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.slash-render-tree details {
+  margin-left: 12px;
+}
+
+.slash-render-tree summary {
+  cursor: pointer;
+  padding: 2px 0;
+  list-style-position: outside;
+}
+
+.slash-render-tree summary:hover {
+  color: var(--accent, #4a9eff);
+}
+
+.slash-tree-key {
+  color: var(--light-blue, #4a9eff);
+  font-weight: 600;
+}
+
+.slash-tree-count {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.slash-tree-value {
+  color: var(--text);
+}
+
+.slash-tree-truncated,
+.slash-tree-truncated-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.slash-tree-leaf {
+  margin-left: 16px;
+  padding: 1px 0;
+}

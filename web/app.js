@@ -310,6 +310,27 @@
           'AttachClient global missing — check that attach-client.js loaded before app.js'
         );
       }
+      // Tear down any previous client + prompter so switching backends
+      // via /endpoint's setup-save path doesn't leak an SSE stream
+      // pointed at the outgoing endpoint. /attach's own cmdAttach
+      // does its own explicit teardown; init handles the setup-modal
+      // path (and any other caller).
+      if (this.prompter) {
+        try {
+          this.prompter.disconnect();
+        } catch {
+          /* best effort */
+        }
+        this.prompter = null;
+      }
+      if (this.client && typeof this.client.disconnect === 'function') {
+        try {
+          this.client.disconnect();
+        } catch {
+          /* best effort */
+        }
+        this.client = null;
+      }
       const client = new window.AttachClient({
         endpoint,
         token,
@@ -805,6 +826,13 @@
   }
 
   function setStoredConfig(cfg) {
+    if (cfg == null) {
+      // Explicitly clear — boot's checkFirstRun then sees no stored
+      // config and opens the setup modal, rather than looping on a
+      // "null" string.
+      localStorage.removeItem('mast-web:config');
+      return;
+    }
     localStorage.setItem('mast-web:config', JSON.stringify(cfg));
   }
 
@@ -1284,12 +1312,25 @@
   // ─── Prompt submission ─────────────────────────────────────────────
 
   async function submitPrompt(text) {
-    if (!connected || isRunning) return;
     text = text.trim();
     if (!text) return;
+    if (isRunning) return;
 
+    // Slash commands run regardless of connection state. Some of them
+    // (/attach, /endpoint, /help, /clear) are the operator's escape
+    // hatch when the SPA is disconnected — bailing on !connected here
+    // would silently swallow the only recovery path they have.
+    // Individual slash handlers decide for themselves whether they
+    // need a live backend.
     if (text.startsWith('/')) {
       await handleSlashCommand(text);
+      return;
+    }
+
+    if (!connected) {
+      addSystemMessage(
+        'Not connected — use /attach <url> [<token>] to connect to a backend, or /endpoint to reopen the setup modal.'
+      );
       return;
     }
 
@@ -1776,6 +1817,11 @@
   }
 
   function cmdEndpoint() {
+    // Reopen the setup modal so the operator can retarget. The
+    // actual reconnect happens in setup-save's click handler (which
+    // properly tears down the previous client via mast.init). Modal
+    // open on top of an existing connection is fine — the operator
+    // can still cancel by closing the modal.
     document.getElementById('setup-modal').classList.add('open');
   }
 
@@ -1809,6 +1855,11 @@
 
     addSystemMessage(`Attaching to ${url}${initialSid ? ' (session ' + initialSid + ')' : ''}...`);
 
+    // Snapshot the current config so we can restore on failure — a
+    // failed /attach used to leave the operator with a persisted bad
+    // endpoint that auto-reconnected to on reload, bricking the SPA.
+    const prevConfig = getStoredConfig();
+
     // Tear down the current client + prompter first so we don't leak
     // an SSE stream after switching backends.
     try {
@@ -1830,27 +1881,65 @@
       console.warn('cmdAttach teardown:', e);
     }
 
-    // Persist the new config so a page reload sticks. Same shape the
-    // setup modal writes (getStoredConfig / setStoredConfig).
+    // Reconnect to the new backend BEFORE persisting. If the connect
+    // fails we restore the previous config so the operator isn't
+    // stuck with a broken auto-connect on reload. Only on a proven-
+    // working connection do we commit the new endpoint to
+    // localStorage.
+    let connectSucceeded = false;
+    try {
+      await connectToBackend(url, token);
+      // connectToBackend catches its own errors and sets `connected`
+      // via the connection state machine. If it didn't wire mast.client,
+      // the connection failed (setConnectionState('disconnected') was
+      // called + an "Connection failed" system message printed).
+      connectSucceeded = !!mast.client && connected;
+    } catch (e) {
+      // Belt-and-suspenders — connectToBackend shouldn't rethrow, but
+      // if it does we still want to reach the restore path.
+      addSystemMessage('/attach failed: ' + (e.message || e));
+    }
+
+    if (!connectSucceeded) {
+      // Restore the previous config so reload doesn't auto-connect
+      // to the bad endpoint. If there was no previous config (fresh
+      // /attach on a first-run SPA), clear it so the setup modal
+      // reopens on reload rather than looping on the bad URL.
+      try {
+        if (prevConfig && prevConfig.endpoint) {
+          setStoredConfig(prevConfig);
+          addSystemMessage(
+            `/attach: kept previous endpoint ${prevConfig.endpoint} — new URL didn't connect.`
+          );
+        } else {
+          setStoredConfig(null);
+          addSystemMessage('/attach: not connected — use /endpoint to reopen setup.');
+        }
+      } catch (e) {
+        console.warn('cmdAttach restore:', e);
+      }
+      return;
+    }
+
+    // Only persist the new endpoint after we know it works.
     try {
       setStoredConfig({ endpoint: url, token, sessionId: initialSid || null });
     } catch (e) {
       console.warn('cmdAttach persist:', e);
     }
 
-    // Reconnect to the new backend. If an initialSid was provided,
-    // select it explicitly rather than falling to the first session.
-    try {
-      await connectToBackend(url, token);
-      if (initialSid && mast.client) {
-        clearTranscriptView();
+    if (initialSid && mast.client) {
+      clearTranscriptView();
+      try {
         await mast.switchSession(initialSid);
         refreshAllSidebar();
+      } catch (e) {
+        addSystemMessage(
+          `/attach connected but /sessions/${initialSid} switch failed: ${e.message || e}`
+        );
       }
-      addSystemMessage(`Attached to ${url}.`);
-    } catch (e) {
-      addSystemMessage('/attach failed: ' + (e.message || e));
     }
+    addSystemMessage(`Attached to ${url}.`);
   }
 
   // ─── Batch run ─────────────────────────────────────────────────────
@@ -2153,6 +2242,20 @@
     const cfg = getStoredConfig();
     if (cfg && cfg.endpoint) {
       await connectToBackend(cfg.endpoint, cfg.token || '');
+      // If the stored endpoint failed to connect, reopen the setup
+      // modal so the operator has a clear recovery path. Without this,
+      // a stale bad endpoint (e.g. from a previously-successful smoke
+      // run pointing at a mock that's now gone) bricks the SPA on
+      // reload — connection quietly fails, no modal, and slash
+      // commands used to be blocked too (fixed in this same PR).
+      if (!connected) {
+        addSystemMessage(
+          'Auto-connect to ' +
+            cfg.endpoint +
+            ' failed — reopening setup so you can fix the endpoint.'
+        );
+        document.getElementById('setup-modal').classList.add('open');
+      }
     } else {
       checkFirstRun();
     }

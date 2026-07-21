@@ -15,6 +15,7 @@
   "scripts": {
     "dev": "./dev/tools/dev",
     "smoke": "./dev/tools/smoke",
+    "smoke:headless": "./dev/tools/smoke-headless",
     "build": "./dev/tools/build",
     "test": "./dev/tools/test-unit",
     "lint": "./dev/tools/lint-js && ./dev/tools/lint-css && ./dev/tools/verify-html",
@@ -22,13 +23,14 @@
     "ci": "./dev/tools/ci"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "eslint": "^9.18.0",
     "globals": "^15.14.0",
     "htmlhint": "^1.2.0",
+    "jsdom": "^25.0.1",
     "prettier": "^3.4.2",
     "stylelint": "^16.13.0",
     "stylelint-config-standard": "^36.0.1",
-    "vitest": "^2.1.8",
-    "jsdom": "^25.0.1"
+    "vitest": "^2.1.8"
   }
 }

@@ -47,6 +47,9 @@ export default [
       // never in the browser bundle — treat as ES modules so import /
       // export parse cleanly.
       "web/attach-core/conformance/**/*.js",
+      // Playwright smoke tests + shared helpers run under Node/Playwright.
+      "smoke/**/*.js",
+      "playwright.config.js",
     ],
     languageOptions: {
       ecmaVersion: 2022,
@@ -60,6 +63,10 @@ export default [
         beforeEach: "readonly",
         afterEach: "readonly",
         vi: "readonly",
+        // Playwright injects `test` + its own `expect` for the .spec.js
+        // files; leaving them here so the JS lint doesn't false-positive
+        // when the spec author writes `test.describe(...)`.
+        test: "readonly",
       },
     },
   },

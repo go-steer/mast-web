@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Run the Playwright smoke suite headless. Playwright autostarts the
+# mock backend via its config's webServer: block, so this wrapper
+# just delegates to `playwright test` after ensuring the tooling is
+# installed.
+#
+# Local usage:
+#     dev/tools/smoke-headless           # run all scenarios
+#     dev/tools/smoke-headless 001       # match a specific spec name
+#     npm run smoke:headless             # same, via package.json script
+#
+# CI: called from .github/workflows/smoke.yml.
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+ensure_node_deps
+
+# Playwright ships browser binaries separately from the npm package.
+# In CI the workflow caches these; locally, install on first run so
+# the operator doesn't need to remember `npx playwright install`.
+if [[ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ]]; then
+  # Default cache location Playwright uses (~/.cache/ms-playwright).
+  # If chromium isn't there, install it.
+  if ! npx --no-install playwright --version >/dev/null 2>&1; then
+    echo "smoke-headless: @playwright/test not installed; run npm ci first" >&2
+    exit 1
+  fi
+  if [[ ! -d "$HOME/.cache/ms-playwright" ]] || [[ -z "$(ls -A "$HOME/.cache/ms-playwright" 2>/dev/null)" ]]; then
+    echo "▸ installing Playwright chromium (first run)..."
+    npx --no-install playwright install chromium
+  fi
+fi
+
+exec npx --no-install playwright test "$@"

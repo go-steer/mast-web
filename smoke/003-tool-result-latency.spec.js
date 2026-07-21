@@ -13,28 +13,26 @@
 // limitations under the License.
 
 // Smoke: 003-tool-result-with-latency — v1.2.0 latency_ms sidecar on
-// tool-result payloads.
+// tool-result payloads. Fixture streams a functionCall +
+// functionResponse pair where the response includes latency_ms:187.4.
 //
-// Tool-call/result events only render into an active turn (see 001
-// spec's header for background). Until v0.3.0 PR 3 (mast-web#23)
-// wires observer-mode dispatch, tool-call chips don't render for
-// a fixture-only connect. Full assertions on the 187ms latency chip
-// deferred to PR 3.
-//
-// What CAN be verified pre-PR-3: the fixture connects cleanly + the
-// SPA's connection state reaches "connected". Basic sanity that the
-// mock's SSE handler routes the fixture correctly.
+// The tool-call event auto-spawns an observer turn (v0.3.0 PR 3), so
+// the tool row + latency chip render without an operator prompt.
 
 import { test, expect } from '@playwright/test';
 import { connectToMock } from './helpers.js';
 
 test.describe('smoke: 003-tool-result-with-latency', () => {
-  test('fixture streams end-to-end without connection errors', async ({ page }) => {
+  test('tool-call chip renders with latency chip from v1.2.0 sidecar', async ({ page }) => {
     await connectToMock(page, '003-tool-result-with-latency');
 
-    // Basic sanity — the SPA connected + Backend section populated.
-    // If the fixture stream broke, we'd get "disconnected" here.
-    await expect(page.locator('#status-connection')).toHaveClass(/connected/);
-    await expect(page.locator('#session-list')).toContainText(/smoke-session/);
+    // Tool row rendered (auto-spawned observer turn's onToolCall).
+    const toolRow = page.locator('#output-area .message.tool-done').first();
+    await expect(toolRow).toBeVisible();
+    await expect(toolRow.locator('.tool-name')).toContainText('bq_query');
+
+    // Latency chip formatted as "(187ms)" — rounded from the fixture's
+    // 187.4 via toFixed(0) in completeToolMessage.
+    await expect(toolRow.locator('.tool-latency')).toContainText('187ms');
   });
 });

@@ -1,4 +1,4 @@
-{"event": "capabilities", "data": {"protocol_version": "1.2.0", "event_types": ["capabilities", "status-update", "usage-update", "turn-complete", "agent"], "server": "core-agent"}}
+{"event": "capabilities", "data": {"protocol_version": "1.4.0", "event_types": ["capabilities", "status-update", "usage-update", "turn-complete", "agent"], "server": "core-agent", "features": {"observer_mode": true, "live_agent": false}}}
 {"event": "status-update", "data": {"model": "gemini-2.5-flash", "turn_state": "streaming"}}
 {"event": "agent", "data": {"seq": 1, "event": {"Author": "assistant", "Partial": true, "Content": {"parts": [{"text": "Observer sees this"}]}}}}
 {"event": "turn-complete", "data": {"prompt_id": "obs-1", "model": "gemini-2.5-flash", "tokens_in": 12, "tokens_out": 4, "latency_ms": 320}}

@@ -185,19 +185,56 @@
       applyServerSlashCommands(caps.slash_commands);
     }
     applyObserverMode(caps.features);
+    // Observer mode: prime lastTurn from the /usage snapshot in case
+    // we attached mid-stream and the SPA missed the usage-update that
+    // would have populated it. Without this, the first observer-turn
+    // footer's cost falls back to 0 (turn-complete.cost_usd is v1.1.0-
+    // optional). Ported from coretuiremote LastTurn fallback (see
+    // internal/coretuiremote/capabilities.go:180-206). Best-effort;
+    // errors swallowed since a missing snapshot just means we defer
+    // to the next usage-update.
+    if (
+      caps.features &&
+      caps.features.observer_mode === true &&
+      mast.client &&
+      mast.client.sessionId &&
+      typeof mast.client.getUsage === 'function'
+    ) {
+      mast.client.getUsage().then(
+        (u) => {
+          if (!u) return;
+          const lt = u.last_turn;
+          if (lt && typeof lt === 'object') {
+            sessionStore.patchUsage({
+              lastTurn: {
+                tokensIn: lt.tokens_in || 0,
+                tokensInCached: lt.tokens_in_cached || 0,
+                tokensOut: lt.tokens_out || 0,
+                costUSD: lt.cost_usd || 0,
+                model: lt.model || '',
+              },
+            });
+          }
+        },
+        () => {}
+      );
+    }
   }
 
   // Observer mode — when features.observer_mode is true, the operator
   // is attached to a session someone (or something) else is driving.
   // Show a persistent banner so an operator doesn't type into a
-  // read-only stream. Full observer-mode support (turn-complete-
-  // driven assistant-footer stamping when no activeTurn exists,
-  // per coretuiremote's StampLatestAssistantFooter pattern) is a
-  // v0.3.0 chunk — needs the turn dispatch to accept externally-
-  // driven turns, which requires refactoring the activeTurn /
-  // runPrompt binding. Deferred; banner is the visible bit today.
+  // read-only stream expecting normal chat semantics.
+  //
+  // Two variants per features.live_agent:
+  //   - read-only  (observer_mode + !live_agent): agent is autonomous;
+  //     operator prompts would be no-ops (or queued indefinitely).
+  //   - read-write (observer_mode + live_agent): live session — the
+  //     operator's messages CAN drive the agent, but events are also
+  //     visible to (and driven by) others attached to the same session.
   function applyObserverMode(features) {
     const isObserver = !!(features && features.observer_mode === true);
+    const isLive = !!(features && features.live_agent === true);
     let banner = document.getElementById('observer-banner');
     if (!isObserver) {
       if (banner) banner.remove();
@@ -212,8 +249,9 @@
       const main = document.getElementById('output-area');
       if (main) main.insertBefore(banner, main.firstChild);
     }
-    banner.textContent =
-      'Attached as observer — this session is being driven elsewhere. Your prompts will be queued but full observer-mode footer support ships in a later version.';
+    banner.textContent = isLive
+      ? 'Live session — your messages drive the agent; events stream as they happen.'
+      : 'Attached as observer — agent runs autonomously; events stream below.';
   }
 
   function updateAgentInfo(agent, serverName) {
@@ -634,6 +672,72 @@
     },
   };
 
+  // Externally-driven turn state. When the SPA is attached in observer
+  // mode (or any time an event arrives without a matching runPrompt),
+  // the first stream-chunk / tool-call auto-creates an observer turn so
+  // the render dispatchers have somewhere to route. On turn-complete,
+  // the footer is stamped + tracked in `lastObserverFooter` so a
+  // subsequent usage-update.last_turn.cost_usd can back-fill the
+  // authoritative cost.
+  let lastObserverFooter = null;
+
+  function beginObserverTurn() {
+    // Mirror the render callbacks submitPrompt uses so observer events
+    // paint into the transcript identically to operator-driven ones.
+    // Closure over `streaming` + `pendingToolEls` keeps per-turn state
+    // hidden here rather than leaking module-scope.
+    let streaming = null;
+    const pendingToolEls = [];
+    const startedAt = performance.now();
+
+    const turn = {
+      observer: true,
+      callbacks: {
+        onToken: (token) => {
+          if (!streaming) streaming = createStreamingMessage();
+          updateStreamingMessage(streaming, token);
+        },
+        onToolCall: (server, tool) => {
+          streaming = null;
+          pendingToolEls.push(addToolPendingMessage(server, tool));
+        },
+        onToolResult: (server, tool, latencyMs, errMsg, resultJSON) => {
+          const el = pendingToolEls.shift();
+          completeToolMessage(el, latencyMs, errMsg, resultJSON);
+        },
+        onSearchQueries: (queries) => {
+          streaming = null;
+          addBuiltinToolMessage('🔍 Search', Array.from(queries));
+        },
+        onURLFetch: (urls) => {
+          streaming = null;
+          addBuiltinToolMessage('🌐 URL fetched', Array.from(urls));
+        },
+        onGrounding: (claims, sources) => {
+          injectCitations(streaming, Array.from(claims || []), Array.from(sources || []));
+        },
+      },
+      startedAt,
+      done: false,
+      finish(result) {
+        if (this.done) return;
+        this.done = true;
+        connectionStore.setActiveTurn(null);
+        if (result) {
+          const el = addTurnFooter(result);
+          lastObserverFooter = el;
+          sessionStore.incrementTurnCount();
+          updateStatusBar();
+        }
+        // Safety net: any pending tool indicators without a matching
+        // result get marked as "turn ended".
+        pendingToolEls.forEach((el) => completeToolMessage(el, 0, 'turn ended', ''));
+      },
+    };
+    connectionStore.setActiveTurn(turn);
+    return turn;
+  }
+
   // ─── SSE event → renderer dispatch ─────────────────────────────────
 
   // Pairs onToolCall → onToolResult: each tool call pushes its
@@ -718,6 +822,10 @@
             costUSD: lt.cost_usd || 0,
             model: lt.model || '',
           };
+          // If a footer got stamped ahead of the priced-out cost (the
+          // usual case for turn-complete-then-usage-update ordering),
+          // back-fill it in place. Idempotent — no-op if already set.
+          backfillTurnFooter(lastObserverFooter, usagePatch.lastTurn.costUSD);
         }
         sessionStore.patchUsage(usagePatch);
         sessionStore.store.set({
@@ -757,6 +865,8 @@
             toolCalls: [],
           });
         }
+        // Empty turn (no activeTurn AND no stream-chunk / tool-call
+        // rendered): nothing to footer. Skip silently.
         return;
       }
 
@@ -782,19 +892,31 @@
         // Suppress replay-flood tokens from the transcript. Aggregate
         // state (usage etc.) isn't affected by stream-chunk anyway.
         if (ev.replay) return;
-        if (!activeTurn || !activeTurn.callbacks.onToken) return;
-        activeTurn.callbacks.onToken(ev.data.text);
+        let turn = activeTurn;
+        // Externally-driven turn: if events arrive without an
+        // activeTurn (peer-observed / observer-mode / autonomous
+        // session running while we attach mid-stream), spawn an
+        // observer turn so we render everything we see rather than
+        // silently dropping it. Matches coretuiremote's peer-observer
+        // rendering behavior. observer_mode capability still gates
+        // the banner variant, but the render path itself is not
+        // capability-gated.
+        if (!turn) turn = beginObserverTurn();
+        if (!turn || !turn.callbacks.onToken) return;
+        turn.callbacks.onToken(ev.data.text);
         return;
       }
 
       case 'tool-call': {
         if (ev.replay) return; // historical tool call, not for this session's view
-        if (!activeTurn || !activeTurn.callbacks.onToolCall) return;
+        let turn = activeTurn;
+        if (!turn) turn = beginObserverTurn();
+        if (!turn || !turn.callbacks.onToolCall) return;
         const { id, name } = ev.data;
         const idx = name.indexOf('_');
         const server = idx > 0 ? name.substring(0, idx) : '';
         const tool = idx > 0 ? name.substring(idx + 1) : name;
-        activeTurn.callbacks.onToolCall(server, tool);
+        turn.callbacks.onToolCall(server, tool);
         // Track the call so the matching result can be paired even
         // when the renderer dropped the pending element (defensive).
         if (id) pendingToolCallsByID.set(id, { server, tool });
@@ -918,12 +1040,45 @@
     outputArea.scrollTop = outputArea.scrollHeight;
   }
 
+  // Renders a per-turn footer + returns the element so a later
+  // usage-update.last_turn can back-fill the authoritative cost
+  // (turn-complete.cost_usd is v1.1.0-optional; the SPA doesn't know
+  // whether the incoming zero is "no cost" or "not yet computed" until
+  // last_turn arrives with the server-priced number).
   function addTurnFooter(result) {
     const div = document.createElement('div');
     div.className = 'turn-footer';
-    div.textContent = `--- ${(result.totalMs / 1000).toFixed(2)}s, ${result.tokens.in} in / ${result.tokens.out} out tokens ---`;
+    div.dataset.totalMs = String(result.totalMs || 0);
+    div.dataset.tokensIn = String(result.tokens.in || 0);
+    div.dataset.tokensOut = String(result.tokens.out || 0);
+    div.dataset.costUsd = String(result.costUSD || 0);
+    renderTurnFooter(div);
     outputArea.appendChild(div);
     outputArea.scrollTop = outputArea.scrollHeight;
+    return div;
+  }
+
+  // Renders a footer's visible text from its data-* attributes. Split
+  // out so backfillTurnFooter can update the same element idempotently.
+  function renderTurnFooter(el) {
+    const totalMs = Number(el.dataset.totalMs) || 0;
+    const tIn = Number(el.dataset.tokensIn) || 0;
+    const tOut = Number(el.dataset.tokensOut) || 0;
+    const cost = Number(el.dataset.costUsd) || 0;
+    const parts = [`${(totalMs / 1000).toFixed(2)}s`, `${tIn} in / ${tOut} out tokens`];
+    if (cost > 0) parts.push('$' + cost.toFixed(6));
+    el.textContent = '--- ' + parts.join(', ') + ' ---';
+  }
+
+  // Back-fills a stamped footer's cost once the authoritative
+  // usage-update.last_turn arrives. No-op if the new cost matches
+  // what's already displayed (prevents flicker on double-fires).
+  function backfillTurnFooter(el, costUSD) {
+    if (!el || typeof costUSD !== 'number' || costUSD <= 0) return;
+    const prev = Number(el.dataset.costUsd) || 0;
+    if (prev === costUSD) return;
+    el.dataset.costUsd = String(costUSD);
+    renderTurnFooter(el);
   }
 
   function injectCitations(streamingRef, claims, sources) {
@@ -1421,7 +1576,7 @@
           injectCitations(streaming, Array.from(claims || []), Array.from(sources || []));
         },
       });
-      addTurnFooter(result);
+      lastObserverFooter = addTurnFooter(result);
       sessionStore.incrementTurnCount();
       updateStatusBar();
     } catch (e) {

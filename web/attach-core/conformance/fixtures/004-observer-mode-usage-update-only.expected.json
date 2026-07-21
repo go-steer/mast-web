@@ -2,9 +2,10 @@
   {
     "type": "capabilities",
     "data": {
-      "protocol_version": "1.2.0",
+      "protocol_version": "1.4.0",
       "event_types": ["capabilities", "status-update", "usage-update", "turn-complete", "agent"],
-      "server": "core-agent"
+      "server": "core-agent",
+      "features": { "observer_mode": true, "live_agent": false }
     }
   },
   { "type": "status-update", "data": { "model": "gemini-2.5-flash", "turn_state": "streaming" } },

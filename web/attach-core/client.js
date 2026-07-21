@@ -460,6 +460,19 @@ window.AttachClient = (function () {
       return this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/usage');
     }
 
+    // GET /peers — enumerate other backend daemons this one has been
+    // told about (v1.1.0+; register/heartbeat handlers in core-agent
+    // pkg/attach/peers_handlers.go). Returned shape:
+    //   { peers: [{ name, endpoint, labels?, registered_at,
+    //               last_heartbeat, lease_expires_at }] }
+    // 404 on old servers; caller should treat as an empty list.
+    // Used by the multi-daemon peer fan-out path (v0.3.0 PR 2, mast-
+    // web#22) to surface discoverable peers for one-click add.
+    async listPeers() {
+      const out = await this._get('/peers');
+      return (out && out.peers) || [];
+    }
+
     // GET /whoami — session-agnostic caller identity endpoint (v1.4.0+).
     // Returns { identity, admin, source, proxy_by } where:
     //   source ∈ { bearer, mtls, iap, asserted, anonymous }

@@ -31,6 +31,98 @@
   --sidebar-w: 280px;
 }
 
+/* ─── Themes (v0.3.0 PR 7) ──────────────────────────────────────────
+   Themes are CSS-variable overrides applied to <body data-theme="…">.
+   The default palette above is used when data-theme is unset or
+   "default". Each theme block below overrides the palette variables
+   only — layout, typography, spacing, everything else stays the
+   same. Ported concept from cogo-wasm2's theme picker.
+
+   Persistence + /theme slash command wiring live in web/app.js. */
+
+body[data-theme='solarized-dark'] {
+  --bg: #002b36;
+  --bg-surface: #073642;
+  --bg-elevated: #073642;
+  --text: #93a1a1;
+  --text-dim: #586e75;
+  --border: #268bd2;
+  --border-soft: #586e75;
+  --accent: #268bd2;
+  --accent-hover: #2aa198;
+  --green: #859900;
+  --red: #dc322f;
+  --yellow: #b58900;
+  --blue: #268bd2;
+}
+
+body[data-theme='solarized-light'] {
+  --bg: #fdf6e3;
+  --bg-surface: #eee8d5;
+  --bg-elevated: #eee8d5;
+  --text: #586e75;
+  --text-dim: #93a1a1;
+  --border: #268bd2;
+  --border-soft: #93a1a1;
+  --accent: #268bd2;
+  --accent-hover: #2aa198;
+  --green: #859900;
+  --red: #dc322f;
+  --yellow: #b58900;
+  --blue: #268bd2;
+}
+
+body[data-theme='high-contrast'] {
+  --bg: #000;
+  --bg-surface: #000;
+  --bg-elevated: #111;
+  --text: #fff;
+  --text-dim: #ccc;
+  --border: #fff;
+  --border-soft: #888;
+  --accent: #0ff;
+  --accent-hover: #7ff;
+  --green: #0f0;
+  --red: #f33;
+  --yellow: #ff0;
+  --blue: #0af;
+}
+
+/* Grayscale everything except errors + warnings — reduces palette
+   fatigue in long sessions without sacrificing at-a-glance error
+   surface. */
+body[data-theme='mono'] {
+  --bg: #1a1a1a;
+  --bg-surface: #101010;
+  --bg-elevated: #262626;
+  --text: #d4d4d4;
+  --text-dim: #8a8a8a;
+  --border: #4a4a4a;
+  --border-soft: #333;
+  --accent: #d4d4d4;
+  --accent-hover: #fff;
+  --green: #7a7a7a;
+  --blue: #7a7a7a;
+  --red: #d3574d;
+  --yellow: #d9c467;
+}
+
+body[data-theme='paper'] {
+  --bg: #faf8f2;
+  --bg-surface: #f2eee5;
+  --bg-elevated: #e8e2d4;
+  --text: #2b2b2b;
+  --text-dim: #6a6a6a;
+  --border: #005c8a;
+  --border-soft: #b3b3b3;
+  --accent: #005c8a;
+  --accent-hover: #007eaf;
+  --green: #2b7a2b;
+  --red: #b0263a;
+  --yellow: #8a6a00;
+  --blue: #005c8a;
+}
+
 body {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
   background: var(--bg);
@@ -1135,6 +1227,79 @@ body {
 .modal .btn-secondary {
   background: var(--bg-elevated);
   color: var(--text);
+}
+
+/* Command palette + session picker — wider modal, no vertical
+   padding on the inner list (rows own their own padding). */
+.modal.palette {
+  width: 520px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.modal.palette input {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  background: var(--bg-elevated);
+}
+
+.modal.palette input:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+#palette-list,
+#picker-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.palette-item:hover {
+  background: var(--bg-elevated);
+}
+
+.palette-item .palette-cmd {
+  color: var(--text);
+}
+
+.palette-item .palette-src {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+/* <kbd> styling for the shortcuts overlay — makes the key label
+   look like a physical key. */
+kbd {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--brand-yellow);
+}
+
+/* Ctrl+B toggles this on <body> — shrinks the sidebar to a thin
+   collapsed strip. Not fully hidden (operator retains a visual
+   handle to re-expand). */
+body.sidebar-collapsed #sidebar {
+  width: 24px;
+  min-width: 24px;
+  overflow: hidden;
 }
 
 /* Scrollbar */

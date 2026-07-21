@@ -29,14 +29,63 @@
 (function () {
   'use strict';
 
-  // ─── State ──────────────────────────────────────────────────────────
+  // ─── State (v0.3.0 PR 1: source of truth in window.MastState) ─────
+  //
+  // State lives in window.MastState.session / .connection / .daemons
+  // (observable stores under web/state/). This block wires two
+  // module-scope mirrors — `latest` and `conn` — that stay in sync
+  // via subscribe callbacks, so existing rendering code that reads
+  // `latest.foo.bar` and `conn.state` etc. keeps working with no
+  // per-call change. All WRITES go through the store's named actions
+  // (sessionStore.patchStatus, connectionStore.setState, etc.) so
+  // the store stays authoritative.
+  //
+  // Reactive rendering (renderers subscribe directly, no mirror
+  // needed) is deliberately NOT part of this PR — that migration
+  // happens in v0.3.0 PRs 3/5 where the render paths get restructured
+  // anyway. Doing it here would balloon the diff without changing
+  // behavior.
+  if (!window.MastState || !window.MastState.session || !window.MastState.connection) {
+    throw new Error(
+      'MastState missing — check that web/state/*.js loaded before app.js in index.html'
+    );
+  }
+  const sessionStore = window.MastState.session;
+  const connectionStore = window.MastState.connection;
 
-  let connected = false;
-  let turnCount = 0;
-  let totalCostUSD = 0;
-  let currentModel = '';
-  let currentSession = '';
-  let isRunning = false;
+  // `latest` / `conn` are subscribe-updated snapshots of the two
+  // stores; the module-scope let vars below (connected, isRunning,
+  // currentSession, etc.) mirror the same data as simple identifiers
+  // so pre-refactor read call sites need no per-line changes. All
+  // writes go through the store actions (sessionStore.patchStatus,
+  // connectionStore.setState, etc.) — the module vars are read-only
+  // mirrors, updated when the store changes.
+  let latest = sessionStore.store.get();
+  let conn = connectionStore.store.get();
+
+  let connected = conn.state === 'connected';
+  let isRunning = conn.isRunning;
+  let activeTurn = conn.activeTurn;
+  let currentSession = latest.currentSession;
+  let currentModel = latest.currentModel;
+  let turnCount = latest.turnCount;
+  let totalCostUSD = latest.totalCostUSD;
+
+  sessionStore.store.subscribe((s) => {
+    latest = s;
+    currentSession = s.currentSession;
+    currentModel = s.currentModel;
+    turnCount = s.turnCount;
+    totalCostUSD = s.totalCostUSD;
+  });
+  connectionStore.store.subscribe((c) => {
+    conn = c;
+    connected = c.state === 'connected';
+    isRunning = c.isRunning;
+    activeTurn = c.activeTurn;
+  });
+
+  // Timers are transient and don't belong in a store.
   let elapsedTimer = null;
 
   // ─── mast: real attach-protocol backend (phase B) ──────────────────
@@ -47,38 +96,26 @@
   // sync callback shape (onToken / onToolCall / onToolResult / etc.)
   // the renderer expects.
 
-  // Latest backend-reported state, fed by status-update / usage-update
-  // events. Snapshot in the sidebar and status bar.
-  const latest = {
-    capabilities: null,
-    status: { model: '', provider: '', turnState: 'idle', contextPct: null, permMode: '' },
-    usage: {
-      tokensIn: 0,
-      tokensOut: 0,
-      costUSD: 0,
-      turns: 0,
-      // Per-model breakdown from usage-update.by_model (v1.1.0+). Keys
-      // are model IDs; values are { tokensIn, tokensOut, costUSD, turns }.
-      byModel: {},
-      // Authoritative per-turn cost with cache attribution from
-      // usage-update.last_turn (v1.1.1+). Populated on each usage-update
-      // that carries a last_turn sub-object; stamped onto the latest
-      // assistant footer when the model wraps a turn.
-      lastTurn: null,
-    },
-    sessions: [],
-    // When the server emits turn-error kind=cost_ceiling, we freeze the
-    // input and show a banner. Cleared on reconnect / session switch.
-    costCeilingHit: false,
-  };
   // Inbox coalesce: prompt_id → last state we saw ('queued' | 'dequeued').
-  // Consumer of the "queued" toast dismisses on 'dequeued'.
-  const inboxState = new Map();
+  // Consumer of the "queued" toast dismisses on 'dequeued'. State lives
+  // in sessionStore.inboxState; this local mirror is a read-friendly
+  // Map facade that mirrors the store's plain-object shape.
+  const inboxState = {
+    set(key, val) {
+      sessionStore.recordInbox(key, val);
+    },
+    get(key) {
+      return latest.inboxState[key];
+    },
+    has(key) {
+      return Object.prototype.hasOwnProperty.call(latest.inboxState, key);
+    },
+  };
 
-  // Per-active-turn dispatch state. runPrompt populates these when a
-  // turn starts; the SSE event router uses them to fan tokens / tool
-  // calls / results into the right rendering callbacks.
-  let activeTurn = null;
+  // Per-active-turn dispatch state now lives in connectionStore. The
+  // `activeTurn` mirror declared at the top of the file gives read
+  // access to the current dispatch handle; runPrompt writes via
+  // connectionStore.setActiveTurn.
 
   // ─── Capability manifest (v1.4.0+) ────────────────────────────────
   //
@@ -137,17 +174,6 @@
     // knows about more flags than the server advertises).
     if (!(name in features)) return true;
     return !!features[name];
-  }
-
-  function mergeCapabilities(base, patch) {
-    // Shallow merge with a small twist: `features` is deep-merged
-    // (so a status-update flipping a single flag doesn't clobber
-    // the rest of the map). Other fields replace.
-    const out = { ...(base || {}), ...(patch || {}) };
-    if ((base && base.features) || (patch && patch.features)) {
-      out.features = { ...(base && base.features), ...(patch && patch.features) };
-    }
-    return out;
   }
 
   function applyCapabilities(caps) {
@@ -297,7 +323,7 @@
     // Server-advertised commands are stored for the /help output +
     // future autocomplete palette. Dispatch is handled generically
     // via cmdServerSlash — the router doesn't need a static entry.
-    latest.serverSlashCommands = names.slice();
+    sessionStore.setServerSlashCommands(names);
   }
 
   const mast = {
@@ -338,10 +364,11 @@
         onEvent: (ev) => dispatchAttachEvent(ev),
       });
       const session = await client.autoSelectSession();
-      currentSession = session.id;
+      sessionStore.setCurrentSession(session.id);
       await client.connect();
       this.client = client;
-      connected = true;
+      connectionStore.setClient(client);
+      connectionStore.setState('connected');
 
       // Open the perms/stream subscription in parallel with the main
       // event stream. If the agent has no PromptBrokerProvider the
@@ -388,14 +415,14 @@
         const bt = b.lastTouchedAt ? Date.parse(b.lastTouchedAt) : 0;
         return bt - at;
       });
-      latest.sessions = sessions;
+      sessionStore.setSessions(sessions);
       return sessions.map((s) => ({ ...s, active: s.id === currentSession }));
     },
 
     async switchSession(id) {
       if (!this.client) throw new Error('not connected');
       await this.client.selectSession(id);
-      currentSession = id;
+      sessionStore.setCurrentSession(id);
       // Restart the perms stream against the new session — prompts are
       // per-session, so a stale subscription against the outgoing sid
       // would never fire for prompts on the new one.
@@ -426,7 +453,7 @@
       await this.client.deleteSession(found.app, id);
       // Drop it from our snapshot so the sidebar re-renders without
       // waiting on the next list poll.
-      latest.sessions = latest.sessions.filter((s) => s.id !== id);
+      sessionStore.setSessions(latest.sessions.filter((s) => s.id !== id));
     },
 
     async listMcpServers() {
@@ -585,18 +612,19 @@
       // rejects on turn-error). startedAt is used to compute totalMs.
       const startedAt = performance.now();
       return new Promise((resolve, reject) => {
-        activeTurn = {
+        const turn = {
           callbacks,
           startedAt,
           done: false,
           finish(result, err) {
             if (this.done) return;
             this.done = true;
-            activeTurn = null;
+            connectionStore.setActiveTurn(null);
             if (err) reject(err);
             else resolve(result);
           },
         };
+        connectionStore.setActiveTurn(turn);
         // Send the operator prompt and wake the agent.
         Promise.resolve()
           .then(() => this.client.inject(text))
@@ -628,25 +656,27 @@
     }
     switch (ev.type) {
       case 'capabilities':
-        latest.capabilities = ev.data;
+        sessionStore.setCapabilities(ev.data);
         applyCapabilities(latest.capabilities);
         return;
 
       case 'status-update': {
         const s = ev.data || {};
-        if (s.model !== undefined) latest.status.model = s.model;
-        if (s.provider !== undefined) latest.status.provider = s.provider;
-        if (s.turn_state !== undefined) latest.status.turnState = s.turn_state;
-        if (s.context_pct !== undefined) latest.status.contextPct = s.context_pct;
-        if (s.perm_mode !== undefined) latest.status.permMode = s.perm_mode;
-        currentModel = latest.status.model || currentModel;
+        const statusPatch = {};
+        if (s.model !== undefined) statusPatch.model = s.model;
+        if (s.provider !== undefined) statusPatch.provider = s.provider;
+        if (s.turn_state !== undefined) statusPatch.turnState = s.turn_state;
+        if (s.context_pct !== undefined) statusPatch.contextPct = s.context_pct;
+        if (s.perm_mode !== undefined) statusPatch.permMode = s.perm_mode;
+        if (Object.keys(statusPatch).length > 0) sessionStore.patchStatus(statusPatch);
+        if (s.model) sessionStore.setCurrentModel(s.model);
         // v1.4.0: status-update may carry an optional `capabilities`
         // merge for hot changes (e.g. MCP server registers mid-
         // session and features.mcp flips true). Merge into stored
         // capabilities; re-apply UI. No producer emits this yet as
         // of core-agent#344, but consumers wire the merge path once.
         if (s.capabilities && typeof s.capabilities === 'object') {
-          latest.capabilities = mergeCapabilities(latest.capabilities, s.capabilities);
+          sessionStore.mergeCapabilities(s.capabilities);
           applyCapabilities(latest.capabilities);
         }
         updateStatusBar();
@@ -655,22 +685,25 @@
 
       case 'usage-update': {
         const u = ev.data || {};
-        latest.usage.tokensIn = u.tokens_in_total || 0;
-        latest.usage.tokensOut = u.tokens_out_total || 0;
-        latest.usage.costUSD = u.cost_usd_total || 0;
-        latest.usage.turns = u.turns_total || 0;
+        const usagePatch = {
+          tokensIn: u.tokens_in_total || 0,
+          tokensOut: u.tokens_out_total || 0,
+          costUSD: u.cost_usd_total || 0,
+          turns: u.turns_total || 0,
+        };
         // by_model (v1.1.0+) — per-model breakdown for /stats.
         if (u.by_model && typeof u.by_model === 'object') {
-          latest.usage.byModel = {};
+          const byModel = {};
           for (const [model, m] of Object.entries(u.by_model)) {
             if (!m) continue;
-            latest.usage.byModel[model] = {
+            byModel[model] = {
               tokensIn: m.tokens_in || 0,
               tokensOut: m.tokens_out || 0,
               costUSD: m.cost_usd || 0,
               turns: m.turns || 0,
             };
           }
+          usagePatch.byModel = byModel;
         }
         // last_turn (v1.1.1+) — authoritative per-turn cost with cache
         // attribution. Populated by the server after pricing has already
@@ -678,7 +711,7 @@
         // turn-complete.cost_usd when both arrive.
         if (u.last_turn && typeof u.last_turn === 'object') {
           const lt = u.last_turn;
-          latest.usage.lastTurn = {
+          usagePatch.lastTurn = {
             tokensIn: lt.tokens_in || 0,
             tokensInCached: lt.tokens_in_cached || 0,
             tokensOut: lt.tokens_out || 0,
@@ -686,8 +719,11 @@
             model: lt.model || '',
           };
         }
-        turnCount = latest.usage.turns;
-        totalCostUSD = latest.usage.costUSD;
+        sessionStore.patchUsage(usagePatch);
+        sessionStore.store.set({
+          turnCount: usagePatch.turns,
+          totalCostUSD: usagePatch.costUSD,
+        });
         updateStatusBar();
         return;
       }
@@ -732,7 +768,7 @@
         // Freeze input + show a persistent banner (reset UX will land
         // when core-agent ships /reset-ceiling; issue core-agent#331).
         if (te.kind === 'cost_ceiling') {
-          latest.costCeilingHit = true;
+          sessionStore.setCostCeilingHit(true);
           addSystemMessage(
             'Cost ceiling reached — session paused. Contact your administrator to reset.'
           );
@@ -1334,7 +1370,7 @@
       return;
     }
 
-    isRunning = true;
+    connectionStore.setIsRunning(true);
     document.getElementById('send-btn').disabled = true;
     // Show the Stop button while a turn is in flight (hidden by
     // default; interrupt handler restores hidden state on finally).
@@ -1386,7 +1422,7 @@
         },
       });
       addTurnFooter(result);
-      turnCount++;
+      sessionStore.incrementTurnCount();
       updateStatusBar();
     } catch (e) {
       addSystemMessage('Error: ' + e);
@@ -1396,7 +1432,7 @@
       // safety net: mark any orphaned pending indicators as failed
       pendingToolEls.forEach((el) => completeToolMessage(el, 0, 'turn ended', ''));
       pendingToolEls.length = 0;
-      isRunning = false;
+      connectionStore.setIsRunning(false);
       document.getElementById('send-btn').disabled = false;
       hideStopButton();
     }
@@ -1502,12 +1538,11 @@
   // The Stop button is hidden by default and only shown while a turn
   // is in flight. If a call to /interrupt returns unsupported=true
   // (backend agent has no InterruptProvider), we remember that per
-  // session so subsequent turns skip the affordance entirely.
-
-  const interruptUnsupportedForSession = new Set();
+  // session (in sessionStore.interruptUnsupportedForSession) so
+  // subsequent turns skip the affordance entirely.
 
   function showStopButton() {
-    if (interruptUnsupportedForSession.has(currentSession)) return;
+    if (sessionStore.interruptUnsupportedFor(currentSession)) return;
     const btn = document.getElementById('stop-btn');
     if (btn) btn.hidden = false;
   }
@@ -1528,7 +1563,7 @@
       } else if (r.ok) {
         addSystemMessage('Turn interrupted.');
       } else if (r.unsupported) {
-        interruptUnsupportedForSession.add(currentSession);
+        sessionStore.markInterruptUnsupported(currentSession);
         addSystemMessage(
           'This agent does not support interruption (no InterruptProvider). Stop button hidden for this session.'
         );
@@ -1663,7 +1698,7 @@
     const name = args[0];
     try {
       await mast.setModel(name);
-      currentModel = name;
+      sessionStore.setCurrentModel(name);
       updateModelSelect();
       updateStatusBar();
       addSystemMessage('Switched to ' + name);
@@ -1799,8 +1834,7 @@
     }
     outputArea.innerHTML = '';
     await mast.clearSession();
-    turnCount = 0;
-    totalCostUSD = 0;
+    sessionStore.store.set({ turnCount: 0, totalCostUSD: 0 });
     addSystemMessage('Session cleared.');
     updateStatusBar();
   }
@@ -1871,7 +1905,8 @@
         mast.client.disconnect();
       }
       mast.client = null;
-      connected = false;
+      connectionStore.setClient(null);
+      connectionStore.setState('disconnected');
       setConnectionState('disconnected');
       // Clear the transcript view; a new backend means an unrelated
       // context and the outgoing session's messages shouldn't linger.
@@ -2136,7 +2171,7 @@
     const model = e.target.value;
     try {
       await mast.setModel(model);
-      currentModel = model;
+      sessionStore.setCurrentModel(model);
       updateStatusBar();
       addSystemMessage('Switched to ' + model);
     } catch (err) {

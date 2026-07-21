@@ -163,6 +163,37 @@
       </div>
     </div>
 
+    <!-- Keyboard-shortcuts overlay (Ctrl+/ or Cmd+/). Populated + shown
+         by web/app.js's shortcuts wiring; hidden by default. -->
+    <div class="modal-overlay" id="shortcuts-modal">
+      <div class="modal">
+        <h2>Keyboard shortcuts</h2>
+        <table id="shortcuts-table" style="font-size: 12px; width: 100%; margin-top: 8px">
+          <tbody></tbody>
+        </table>
+        <div class="btn-row" style="margin-top: 12px">
+          <button class="btn-primary" id="shortcuts-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Command palette (Ctrl+P / Cmd+P). Fuzzy-matches slash commands. -->
+    <div class="modal-overlay" id="palette-modal">
+      <div class="modal palette">
+        <input id="palette-input" placeholder="Type to search commands…" autocomplete="off" />
+        <div id="palette-list"></div>
+      </div>
+    </div>
+
+    <!-- Session picker (Ctrl+K / Cmd+K). Fuzzy-matches sessions across
+         all daemons. -->
+    <div class="modal-overlay" id="picker-modal">
+      <div class="modal palette">
+        <input id="picker-input" placeholder="Type to search sessions…" autocomplete="off" />
+        <div id="picker-list"></div>
+      </div>
+    </div>
+
     <!-- Markdown + syntax highlighting from CDN. Pinned major versions.   -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked-highlight@2/lib/index.umd.js"></script>

@@ -2046,7 +2046,58 @@
     '/whoami': cmdWhoami,
     '/endpoint': cmdEndpoint,
     '/attach': cmdAttach,
+    '/theme': cmdTheme,
   };
+
+  // Theme picker (v0.3.0 PR 7, mast-web#27). Themes are CSS-variable
+  // overrides applied via <body data-theme="…">. Persisted in
+  // localStorage under the key 'mast-web:theme' so a reload keeps
+  // the operator's choice. All theme rules live in web/styles.css
+  // (search for /* Themes */ header).
+  const THEMES = [
+    { id: 'default', label: 'Default (Go brand, dark)' },
+    { id: 'solarized-dark', label: 'Solarized Dark' },
+    { id: 'solarized-light', label: 'Solarized Light' },
+    { id: 'high-contrast', label: 'High Contrast (WCAG AAA)' },
+    { id: 'mono', label: 'Monochrome' },
+    { id: 'paper', label: 'Paper (soft light)' },
+  ];
+
+  function applyTheme(id) {
+    const known = THEMES.find((t) => t.id === id);
+    const chosen = known ? id : 'default';
+    if (chosen === 'default') {
+      document.body.removeAttribute('data-theme');
+    } else {
+      document.body.setAttribute('data-theme', chosen);
+    }
+    try {
+      localStorage.setItem('mast-web:theme', chosen);
+    } catch {
+      /* ignore quota errors */
+    }
+  }
+
+  function currentTheme() {
+    return document.body.getAttribute('data-theme') || 'default';
+  }
+
+  function cmdTheme(args) {
+    if (args.length === 0) {
+      const cur = currentTheme();
+      const list = THEMES.map((t) => `${t.id === cur ? '> ' : '  '}${t.id.padEnd(18)} ${t.label}`);
+      addSystemMessage('Themes:\n' + list.join('\n') + '\n\nUsage: /theme <id>');
+      return;
+    }
+    const id = args[0].toLowerCase();
+    const known = THEMES.find((t) => t.id === id);
+    if (!known) {
+      addSystemMessage(`Unknown theme "${id}". /theme with no args to list.`);
+      return;
+    }
+    applyTheme(id);
+    addSystemMessage('Theme: ' + id);
+  }
 
   async function handleSlashCommand(input) {
     const parts = input.split(/\s+/);
@@ -2116,6 +2167,9 @@
       '/clear             — Clear current session messages',
       '/whoami            — Show backend identity',
       '/endpoint          — Reconfigure backend endpoint',
+      '/theme [id]        — List or switch themes',
+      '',
+      'Press Ctrl+/ (Cmd+/ on macOS) to see all keyboard shortcuts.',
     ];
     // Merge server-advertised slash commands from capabilities.slash_commands.
     // Known names get pretty display from SERVER_SLASH_METADATA; unknown names
@@ -2784,9 +2838,279 @@
     if (output) output.innerHTML = '';
   }
 
+  // ─── Keyboard shortcuts (v0.3.0 PR 7, mast-web#27) ────────────────
+  //
+  // Modifier is Ctrl on Linux/Windows, Cmd on Mac. Bindings are
+  // hardcoded — rebindable shortcuts are v0.4+ work. All shortcuts
+  // are documented in the Ctrl+/ overlay.
+
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+  const MOD_LABEL = isMac ? 'Cmd' : 'Ctrl';
+
+  // Table of shortcuts — rendered into the shortcuts overlay and
+  // driven by installKeyboardShortcuts. `test` returns true when the
+  // event matches; `action` runs the binding.
+  const SHORTCUTS = [
+    {
+      key: `${MOD_LABEL}+K`,
+      description: 'Open session picker (fuzzy-match across all daemons)',
+      test: (e) => modKey(e) && e.key.toLowerCase() === 'k',
+      action: () => openSessionPicker(),
+    },
+    {
+      key: `${MOD_LABEL}+P`,
+      description: 'Open command palette (fuzzy-match slash commands)',
+      test: (e) => modKey(e) && e.key.toLowerCase() === 'p',
+      action: () => openCommandPalette(),
+    },
+    {
+      key: `${MOD_LABEL}+Enter`,
+      description: 'Submit prompt (bypasses Shift+Enter for newline)',
+      test: (e) => modKey(e) && e.key === 'Enter',
+      action: () => document.getElementById('send-btn')?.click(),
+    },
+    {
+      key: `${MOD_LABEL}+B`,
+      description: 'Toggle sidebar collapse',
+      test: (e) => modKey(e) && e.key.toLowerCase() === 'b',
+      action: () => document.body.classList.toggle('sidebar-collapsed'),
+    },
+    {
+      key: `${MOD_LABEL}+/`,
+      description: 'Show this keyboard-shortcuts overlay',
+      test: (e) => modKey(e) && e.key === '/',
+      action: () => openShortcutsOverlay(),
+    },
+    {
+      key: '/',
+      description: 'Focus prompt input + start typing a slash command',
+      // Only fires when nothing else is focused (i.e. body has focus).
+      test: (e) => e.key === '/' && !isEditableFocused() && !anyModalOpen(),
+      action: () => {
+        const input = document.getElementById('prompt-input');
+        if (!input) return;
+        input.focus();
+        // Insert the '/' the operator just typed so it doesn't get
+        // eaten by the focus jump. The default keydown handler would
+        // also insert it, but we've prevented that in the wrapper.
+        input.value = input.value + '/';
+        // Move cursor to end.
+        input.selectionStart = input.selectionEnd = input.value.length;
+      },
+    },
+    {
+      key: 'Esc',
+      description: 'Close any open modal / overlay / batch panel',
+      test: (e) => e.key === 'Escape' && anyModalOpen(),
+      action: () => closeAllModals(),
+    },
+  ];
+
+  function modKey(e) {
+    return isMac ? e.metaKey : e.ctrlKey;
+  }
+
+  function isEditableFocused() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+  }
+
+  function anyModalOpen() {
+    return !!document.querySelector('.modal-overlay.open, #batch-panel.open');
+  }
+
+  function closeAllModals() {
+    document.querySelectorAll('.modal-overlay.open').forEach((el) => el.classList.remove('open'));
+    document.getElementById('batch-panel')?.classList.remove('open');
+  }
+
+  function installKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+      // Skip everything if this is a repeat — modifiers + letter
+      // held down shouldn't spam the palette open.
+      if (e.repeat) return;
+      for (const s of SHORTCUTS) {
+        if (s.test(e)) {
+          e.preventDefault();
+          try {
+            s.action();
+          } catch (err) {
+            console.warn('shortcut action failed:', err);
+          }
+          return;
+        }
+      }
+    });
+
+    // Wire the shortcuts-overlay close button.
+    document.getElementById('shortcuts-close')?.addEventListener('click', () => {
+      document.getElementById('shortcuts-modal').classList.remove('open');
+    });
+
+    // Command palette wiring — input filters + Enter runs the top match.
+    const paletteInput = document.getElementById('palette-input');
+    paletteInput?.addEventListener('input', () => refreshPaletteList(paletteInput.value));
+    paletteInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const first = document.querySelector('#palette-list .palette-item');
+        if (first) {
+          e.preventDefault();
+          first.click();
+        }
+      }
+    });
+
+    // Session picker wiring — same shape as palette.
+    const pickerInput = document.getElementById('picker-input');
+    pickerInput?.addEventListener('input', () => refreshPickerList(pickerInput.value));
+    pickerInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const first = document.querySelector('#picker-list .palette-item');
+        if (first) {
+          e.preventDefault();
+          first.click();
+        }
+      }
+    });
+  }
+
+  function openShortcutsOverlay() {
+    const tbody = document.querySelector('#shortcuts-table tbody');
+    if (tbody) {
+      tbody.innerHTML = SHORTCUTS.map(
+        (s) =>
+          `<tr><td style="padding:4px 8px;color:var(--brand-yellow);white-space:nowrap"><kbd>${escapeHtml(s.key)}</kbd></td>` +
+          `<td style="padding:4px 8px">${escapeHtml(s.description)}</td></tr>`
+      ).join('');
+    }
+    document.getElementById('shortcuts-modal').classList.add('open');
+  }
+
+  function openCommandPalette() {
+    const modal = document.getElementById('palette-modal');
+    const input = document.getElementById('palette-input');
+    if (!modal || !input) return;
+    input.value = '';
+    refreshPaletteList('');
+    modal.classList.add('open');
+    setTimeout(() => input.focus(), 0);
+  }
+
+  function refreshPaletteList(query) {
+    const list = document.getElementById('palette-list');
+    if (!list) return;
+    const q = query.trim().toLowerCase().replace(/^\//, '');
+    const local = Object.keys(slashCommands).map((cmd) => ({ name: cmd.slice(1), src: 'local' }));
+    const serverNames = (latest.capabilities && latest.capabilities.slash_commands) || [];
+    const server = serverNames.map((n) => ({ name: n, src: 'server' }));
+    const all = local.concat(server);
+    const matches = q ? all.filter((c) => fuzzyMatch(c.name, q)).slice(0, 20) : all.slice(0, 20);
+    list.innerHTML = matches
+      .map(
+        (c) =>
+          `<div class="palette-item" data-cmd="${escapeHtml(c.name)}">` +
+          `<span class="palette-cmd">/${escapeHtml(c.name)}</span>` +
+          `<span class="palette-src">${escapeHtml(c.src)}</span></div>`
+      )
+      .join('');
+    list.querySelectorAll('.palette-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        document.getElementById('palette-modal').classList.remove('open');
+        const input = document.getElementById('prompt-input');
+        if (input) {
+          input.value = '/' + el.dataset.cmd + ' ';
+          input.focus();
+          input.selectionStart = input.selectionEnd = input.value.length;
+        }
+      });
+    });
+  }
+
+  function openSessionPicker() {
+    const modal = document.getElementById('picker-modal');
+    const input = document.getElementById('picker-input');
+    if (!modal || !input) return;
+    input.value = '';
+    refreshPickerList('');
+    modal.classList.add('open');
+    setTimeout(() => input.focus(), 0);
+  }
+
+  function refreshPickerList(query) {
+    const list = document.getElementById('picker-list');
+    if (!list) return;
+    // Aggregate sessions across every registered daemon (multi-daemon
+    // from PR 2). Each row remembers its owning daemon so Enter can
+    // dispatch to the right client.
+    const rows = [];
+    daemonsStore.listDaemons().forEach((d) => {
+      (d.sessions || []).forEach((s) => {
+        rows.push({
+          daemon: d,
+          session: s,
+          label: `${s.label || s.id}  [${d.alias || aliasFor(d.endpoint)}]`,
+        });
+      });
+    });
+    const q = query.trim().toLowerCase();
+    const matches = q
+      ? rows.filter((r) => fuzzyMatch(r.label.toLowerCase(), q)).slice(0, 30)
+      : rows.slice(0, 30);
+    list.innerHTML = matches
+      .map(
+        (r, idx) =>
+          `<div class="palette-item" data-idx="${idx}">` +
+          `<span class="palette-cmd">${escapeHtml(r.session.label || r.session.id)}</span>` +
+          `<span class="palette-src">${escapeHtml(r.daemon.alias || aliasFor(r.daemon.endpoint))}</span></div>`
+      )
+      .join('');
+    list.querySelectorAll('.palette-item').forEach((el) => {
+      el.addEventListener('click', async () => {
+        const r = matches[Number(el.dataset.idx)];
+        if (!r) return;
+        document.getElementById('picker-modal').classList.remove('open');
+        try {
+          clearTranscriptView();
+          if (daemonsStore.store.get().activeDaemon !== r.daemon.endpoint) {
+            await mast.switchToDaemon(r.daemon.endpoint);
+          }
+          await mast.switchSession(r.session.id);
+          refreshAllSidebar();
+        } catch (e) {
+          addSystemMessage('picker switch failed: ' + (e.message || e));
+        }
+      });
+    });
+  }
+
+  // Cheap fuzzy match: every char in query must appear in name in
+  // order (not necessarily contiguous). Good enough for a small
+  // command list; if we grow to 100s of commands, revisit with a
+  // scoring model. Case-insensitive; assumes both args lowercased.
+  function fuzzyMatch(name, query) {
+    let i = 0;
+    for (const c of name) {
+      if (c === query[i]) i++;
+      if (i === query.length) return true;
+    }
+    return false;
+  }
+
   // ─── Boot ──────────────────────────────────────────────────────────
 
   async function boot() {
+    // Apply persisted theme before any paint so there's no flash of
+    // default palette on reload. If nothing's persisted, applyTheme
+    // falls through to 'default' + writes it back (harmless).
+    try {
+      applyTheme(localStorage.getItem('mast-web:theme') || 'default');
+    } catch {
+      applyTheme('default');
+    }
+    installKeyboardShortcuts();
+
     updateBackendInfo();
     setConnectionState('disconnected');
 

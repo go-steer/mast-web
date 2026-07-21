@@ -45,13 +45,19 @@
   // happens in v0.3.0 PRs 3/5 where the render paths get restructured
   // anyway. Doing it here would balloon the diff without changing
   // behavior.
-  if (!window.MastState || !window.MastState.session || !window.MastState.connection) {
+  if (
+    !window.MastState ||
+    !window.MastState.session ||
+    !window.MastState.connection ||
+    !window.MastState.daemons
+  ) {
     throw new Error(
       'MastState missing — check that web/state/*.js loaded before app.js in index.html'
     );
   }
   const sessionStore = window.MastState.session;
   const connectionStore = window.MastState.connection;
+  const daemonsStore = window.MastState.daemons;
 
   // `latest` / `conn` are subscribe-updated snapshots of the two
   // stores; the module-scope let vars below (connected, isRunning,
@@ -364,21 +370,168 @@
     sessionStore.setServerSlashCommands(names);
   }
 
+  // Multi-daemon helpers (module-scope so both mast + boot can reach).
+
+  // Derives a short human-readable alias from a daemon endpoint URL
+  // for use in the sidebar's per-daemon group header + peer tags.
+  // "https://prod-daemon.internal:8080/" → "prod-daemon.internal".
+  // Falls back to the URL itself on parse failure.
+  function aliasFor(endpoint) {
+    try {
+      return new URL(endpoint).hostname || endpoint;
+    } catch {
+      return endpoint;
+    }
+  }
+
+  function existingAddedAt(endpoint) {
+    const d = daemonsStore.getDaemon(endpoint);
+    return d && d.addedAt ? d.addedAt : '';
+  }
+
+  function nowISO() {
+    return new Date().toISOString();
+  }
+
+  // Persistence for the multi-daemon registry — reads/writes an
+  // array of {endpoint, token, alias} entries under the storage key
+  // 'mast-web:daemons'. Live client/prompter refs are NOT persisted
+  // (they're rebuilt on each hydrate via addDaemon-then-connect).
+  //
+  // Coexists with the legacy 'mast-web:config' single-entry key: on
+  // first upgrade, if the daemons array is missing/empty and there's
+  // a stored config, we seed the array from it. Successive writes
+  // then flow through 'mast-web:daemons'.
+  function getStoredDaemons() {
+    try {
+      const raw = localStorage.getItem('mast-web:daemons');
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function persistDaemons() {
+    // Snapshot from the store (drop live refs; they don't round-trip
+    // through JSON anyway). Preserves add order via listDaemons().
+    const rows = daemonsStore.listDaemons().map((d) => ({
+      endpoint: d.endpoint,
+      token: d.token || '',
+      alias: d.alias || '',
+      addedAt: d.addedAt || '',
+    }));
+    try {
+      localStorage.setItem('mast-web:daemons', JSON.stringify(rows));
+    } catch (e) {
+      console.warn('persistDaemons:', e);
+    }
+  }
+
+  // Fire persistDaemons whenever the daemon registry changes so
+  // reload picks up the latest set without callers threading persist
+  // calls through every add/remove path.
+  daemonsStore.store.subscribe(() => persistDaemons());
+
   const mast = {
     client: null,
     prompter: null,
 
     async init({ endpoint, token }) {
+      // v0.3.0: init now wraps addDaemon — the first setup-modal add
+      // is just the first entry in the multi-daemon registry. Tearing
+      // down previously-active clients happens per-daemon in
+      // removeDaemon; init here does NOT tear down existing daemons,
+      // so a reload-triggered re-init doesn't nuke sibling daemons.
+      return await this.addDaemon({ endpoint, token, makeActive: true });
+    },
+
+    // Multi-daemon core (v0.3.0 PR 2, mast-web#22):
+    //
+    //   addDaemon        — connect a new backend + register it. If
+    //                      makeActive, swap the transcript view to it.
+    //   removeDaemon     — tear down + drop from registry.
+    //   switchToDaemon   — activate an already-connected daemon.
+    //
+    // Sidebar aggregation (updateSessionList) walks the registry and
+    // renders every daemon's sessions grouped by daemon alias.
+
+    async addDaemon({ endpoint, token, alias, makeActive }) {
       if (typeof window.AttachClient !== 'function') {
         throw new Error(
           'AttachClient global missing — check that attach-client.js loaded before app.js'
         );
       }
-      // Tear down any previous client + prompter so switching backends
-      // via /endpoint's setup-save path doesn't leak an SSE stream
-      // pointed at the outgoing endpoint. /attach's own cmdAttach
-      // does its own explicit teardown; init handles the setup-modal
-      // path (and any other caller).
+      if (!endpoint) throw new Error('addDaemon: endpoint required');
+
+      // Register optimistically so the sidebar shows a "connecting"
+      // row immediately. Overwritten with live refs post-connect.
+      daemonsStore.addDaemon({
+        endpoint,
+        token: token || '',
+        alias: alias || aliasFor(endpoint),
+        addedAt: existingAddedAt(endpoint) || nowISO(),
+        state: 'connecting',
+      });
+
+      // Per-daemon SSE dispatch: tag each event with its origin so
+      // dispatchAttachEvent's multi-daemon gate can drop events from
+      // non-active daemons instead of painting them into the active
+      // daemon's transcript.
+      const client = new window.AttachClient({
+        endpoint,
+        token,
+        onConnectionState: (state) => {
+          daemonsStore.patchDaemon(endpoint, { state });
+          // Active-daemon state changes drive the global status bar;
+          // background-daemon changes just update the per-row badge
+          // via the sidebar re-render.
+          if (daemonsStore.store.get().activeDaemon === endpoint) {
+            setConnectionState(state);
+          }
+          updateSessionList();
+        },
+        onEvent: (ev) => dispatchAttachEvent({ ...ev, daemonEndpoint: endpoint }),
+      });
+
+      let session;
+      try {
+        session = await client.autoSelectSession();
+        await client.connect();
+      } catch (e) {
+        daemonsStore.patchDaemon(endpoint, {
+          state: 'disconnected',
+          lastError: e?.message || String(e),
+        });
+        throw e;
+      }
+
+      daemonsStore.addDaemon({
+        endpoint,
+        token: token || '',
+        alias: alias || aliasFor(endpoint),
+        addedAt: existingAddedAt(endpoint) || nowISO(),
+        state: 'connected',
+        client,
+      });
+
+      if (makeActive || !daemonsStore.store.get().activeDaemon) {
+        this._activateDaemon(endpoint, client, session.id);
+      }
+      // Populate this daemon's sessions cache in the background so
+      // the sidebar can render them under this daemon's group.
+      client.listSessions().then(
+        (sessions) => daemonsStore.patchDaemon(endpoint, { sessions: sessions || [] }),
+        () => {}
+      );
+      return { ok: true };
+    },
+
+    _activateDaemon(endpoint, client, sessionId) {
+      // Tear down the outgoing perms stream (perms are per-session,
+      // per-daemon). Do NOT tear down the outgoing client — it stays
+      // alive in the background so returning to it is instant.
       if (this.prompter) {
         try {
           this.prompter.disconnect();
@@ -387,34 +540,66 @@
         }
         this.prompter = null;
       }
-      if (this.client && typeof this.client.disconnect === 'function') {
-        try {
-          this.client.disconnect();
-        } catch {
-          /* best effort */
-        }
-        this.client = null;
-      }
-      const client = new window.AttachClient({
-        endpoint,
-        token,
-        onConnectionState: (state) => setConnectionState(state),
-        onEvent: (ev) => dispatchAttachEvent(ev),
-      });
-      const session = await client.autoSelectSession();
-      sessionStore.setCurrentSession(session.id);
-      await client.connect();
       this.client = client;
       connectionStore.setClient(client);
       connectionStore.setState('connected');
+      daemonsStore.setActiveDaemon(endpoint);
+      sessionStore.setCurrentSession(sessionId || '');
+      openPromptStream(client.endpoint, client.token, sessionId || '');
+    },
 
-      // Open the perms/stream subscription in parallel with the main
-      // event stream. If the agent has no PromptBrokerProvider the
-      // server 501s on subscribe; Prompter classifies that as
-      // terminal and quietly stays disconnected.
-      openPromptStream(endpoint, token, session.id);
+    async switchToDaemon(endpoint) {
+      const d = daemonsStore.getDaemon(endpoint);
+      if (!d) throw new Error(`switchToDaemon: no daemon ${endpoint}`);
+      if (!d.client) throw new Error(`switchToDaemon: daemon ${endpoint} not connected`);
+      if (daemonsStore.store.get().activeDaemon === endpoint) return;
+      clearTranscriptView();
+      // Reuse the daemon's already-selected session (its last known
+      // sid on its AttachClient). If none, autoSelectSession picks
+      // one; the sidebar re-renders after activation.
+      const sid = d.client.sessionId || '';
+      this._activateDaemon(endpoint, d.client, sid);
+      refreshAllSidebar();
+    },
 
-      return { ok: true };
+    async removeDaemon(endpoint) {
+      const d = daemonsStore.getDaemon(endpoint);
+      if (!d) return;
+      const wasActive = daemonsStore.store.get().activeDaemon === endpoint;
+      try {
+        if (d.client && typeof d.client.disconnect === 'function') d.client.disconnect();
+      } catch (e) {
+        console.warn('removeDaemon client teardown:', e);
+      }
+      if (wasActive && this.prompter) {
+        try {
+          this.prompter.disconnect();
+        } catch {
+          /* best effort */
+        }
+        this.prompter = null;
+      }
+      daemonsStore.removeDaemon(endpoint);
+
+      if (wasActive) {
+        // Hand off to the next daemon (removeDaemon set activeDaemon
+        // to the earliest-added survivor already). If nothing left,
+        // fall back to disconnected + setup modal.
+        const next = daemonsStore.getActiveDaemon();
+        if (next && next.client) {
+          this._activateDaemon(next.endpoint, next.client, next.client.sessionId || '');
+          refreshAllSidebar();
+        } else {
+          this.client = null;
+          connectionStore.setClient(null);
+          connectionStore.setState('disconnected');
+          setConnectionState('disconnected');
+          clearTranscriptView();
+        }
+      } else {
+        // Non-active daemon dropped — just refresh the sidebar row.
+        updateSessionList();
+      }
     },
 
     async listModels() {
@@ -747,6 +932,18 @@
   const pendingToolCallsByID = new Map();
 
   function dispatchAttachEvent(ev) {
+    // Multi-daemon gate — the SPA holds SSE connections to every
+    // added daemon; only the active daemon's events should paint the
+    // transcript. Non-active daemons' events still fire (their
+    // AttachClient is live) but drop here so switching daemons
+    // doesn't interleave transcripts. Aggregate state (session list,
+    // per-daemon status) is refreshed via explicit polling from the
+    // sidebar renderer, not from SSE. Ported from coretuiremote's
+    // active-peer routing (internal/coretuiremote/capabilities.go).
+    const activeEP = daemonsStore.store.get().activeDaemon;
+    if (ev.daemonEndpoint && activeEP && ev.daemonEndpoint !== activeEP) {
+      return;
+    }
     // Session-generation gate — drop events tagged with an outdated
     // stream generation. attach-core/client.js bumps sessionGen on
     // every connect()/selectSession() and tags each emitted event
@@ -1331,69 +1528,172 @@
   }
 
   async function updateSessionList() {
-    if (!connected) return;
     const container = document.getElementById('session-list');
+    if (!container) return;
     container.innerHTML = '';
-    try {
-      const sessions = await mast.listSessions();
-      if (!sessions || sessions.length === 0) {
-        container.innerHTML = '<div style="font-size:11px;color:var(--text-dim)">No sessions</div>';
-        return;
-      }
-      sessions.forEach((s) => {
-        const item = document.createElement('div');
-        item.className = 'server-item';
-        if (s.active) item.classList.add('active');
 
-        // Name + status badge. status is 'active' or 'idle' (v1.1.0+);
-        // idle sessions are lazy-resumed on attach.
-        const info = document.createElement('div');
-        const statusText = s.status === 'idle' ? 'idle' : '';
-        const badge = statusText
-          ? `<span class="status ${escapeHtml(s.status)}" title="lazy-resumes on attach">${escapeHtml(statusText)}</span>`
-          : '';
-        info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span> ${badge}`;
-        info.style.cursor = 'pointer';
-        info.onclick = async () => {
-          if (s.active) return; // no-op click on the current session
-          try {
-            clearTranscriptView();
-            await mast.switchSession(s.id);
-            refreshAllSidebar();
-            addSystemMessage(`Switched to session ${s.id}.`);
-          } catch (e) {
-            addSystemMessage('switch failed: ' + (e.message || e));
-          }
-        };
-        item.appendChild(info);
-
-        // Delete button — guard the bootstrap `default` sid client-side
-        // (server 403s anyway, but the message is nicer this way).
-        if (s.id !== 'default') {
-          const del = document.createElement('button');
-          del.className = 'remove-btn';
-          del.textContent = '×';
-          del.title = 'Delete session';
-          del.onclick = async (evt) => {
-            evt.stopPropagation();
-            if (!window.confirm(`Delete session "${s.id}"? This cannot be undone.`)) return;
-            try {
-              await mast.deleteSession(s.id);
-              addSystemMessage(`Deleted session ${s.id}.`);
-              updateSessionList();
-            } catch (e) {
-              addSystemMessage('delete failed: ' + (e.message || e));
-            }
-          };
-          item.appendChild(del);
-        }
-
-        container.appendChild(item);
-      });
-    } catch {
+    const daemons = daemonsStore.listDaemons();
+    const activeEP = daemonsStore.store.get().activeDaemon;
+    if (daemons.length === 0) {
       container.innerHTML =
-        '<div style="font-size:11px;color:var(--red)">Error loading sessions</div>';
+        '<div style="font-size:11px;color:var(--text-dim)">No daemons connected</div>';
+      return;
     }
+
+    // Fire per-daemon session-list refetch in parallel so the sidebar
+    // reflects the most recent server state. Uses each daemon's own
+    // client (not mast.client), so a background daemon's sessions
+    // still refresh even when it's not active.
+    await Promise.all(
+      daemons.map((d) => {
+        if (!d.client || typeof d.client.listSessions !== 'function') return Promise.resolve();
+        return d.client.listSessions().then(
+          (sessions) => daemonsStore.patchDaemon(d.endpoint, { sessions: sessions || [] }),
+          (e) => daemonsStore.patchDaemon(d.endpoint, { lastError: e?.message || String(e) })
+        );
+      })
+    );
+
+    // Re-read daemon list after refetch so we render the latest
+    // session arrays.
+    daemonsStore.listDaemons().forEach((d) => {
+      renderDaemonGroup(container, d, activeEP);
+    });
+  }
+
+  // One <div class="daemon-group"> per daemon. Header shows the
+  // daemon's alias + state badge + × remove button. Body lists each
+  // session (or "no sessions"). The active daemon's group renders
+  // without any peer badge; non-active daemons' sessions get a
+  // [peer:<alias>] tag on the row.
+  function renderDaemonGroup(container, d, activeEP) {
+    const isActive = d.endpoint === activeEP;
+    const group = document.createElement('div');
+    group.className = 'daemon-group';
+
+    const header = document.createElement('div');
+    header.className = 'daemon-header';
+    const alias = d.alias || aliasFor(d.endpoint);
+    const stateBadge = `<span class="status ${escapeHtml(d.state || 'disconnected')}">${escapeHtml(d.state || 'disconnected')}</span>`;
+    const peerBadge = isActive
+      ? '<span class="daemon-peer-badge active">active</span>'
+      : '<span class="daemon-peer-badge">peer</span>';
+    header.innerHTML =
+      '<span class="daemon-alias" title="' +
+      escapeHtml(d.endpoint) +
+      '">' +
+      escapeHtml(alias) +
+      '</span> ' +
+      peerBadge +
+      ' ' +
+      stateBadge;
+    header.style.cursor = 'pointer';
+    // Click header to make this daemon active (no-op if already).
+    header.onclick = async () => {
+      if (isActive) return;
+      try {
+        await mast.switchToDaemon(d.endpoint);
+        addSystemMessage(`Switched to daemon ${alias} (${d.endpoint}).`);
+      } catch (e) {
+        addSystemMessage('daemon switch failed: ' + (e.message || e));
+      }
+    };
+    // × removes the daemon (with confirm to guard against fat-finger).
+    // Only shown when there's more than one daemon so the operator
+    // can't accidentally strand the SPA with an empty registry via
+    // this button (they can still use /endpoint to fully reset).
+    if (daemonsStore.listDaemons().length > 1) {
+      const rm = document.createElement('button');
+      rm.className = 'remove-btn';
+      rm.textContent = '×';
+      rm.title = 'Remove daemon';
+      rm.onclick = async (evt) => {
+        evt.stopPropagation();
+        if (!window.confirm(`Remove daemon ${alias} (${d.endpoint})?`)) return;
+        try {
+          await mast.removeDaemon(d.endpoint);
+          addSystemMessage(`Removed daemon ${alias}.`);
+        } catch (e) {
+          addSystemMessage('remove failed: ' + (e.message || e));
+        }
+      };
+      header.appendChild(rm);
+    }
+    group.appendChild(header);
+
+    const sessions = d.sessions || [];
+    if (sessions.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:11px;color:var(--text-dim);padding:4px 8px';
+      empty.textContent = 'No sessions';
+      group.appendChild(empty);
+    } else {
+      sessions.forEach((s) => group.appendChild(renderSessionRow(d, s, isActive)));
+    }
+
+    container.appendChild(group);
+  }
+
+  function renderSessionRow(d, s, isActive) {
+    const activeSid = latest.currentSession;
+    const rowActive = isActive && s.id === activeSid;
+    const item = document.createElement('div');
+    item.className = 'server-item';
+    if (rowActive) item.classList.add('active');
+
+    const info = document.createElement('div');
+    const statusText = s.status === 'idle' ? 'idle' : '';
+    const badge = statusText
+      ? `<span class="status ${escapeHtml(s.status)}" title="lazy-resumes on attach">${escapeHtml(statusText)}</span>`
+      : '';
+    info.innerHTML = `<span class="name">${escapeHtml(s.label || s.id)}</span> ${badge}`;
+    info.style.cursor = 'pointer';
+    info.onclick = async () => {
+      if (rowActive) return;
+      try {
+        clearTranscriptView();
+        if (!isActive) {
+          // Cross-daemon jump — activate the daemon first, then
+          // switch to the target session on it.
+          await mast.switchToDaemon(d.endpoint);
+        }
+        await mast.switchSession(s.id);
+        refreshAllSidebar();
+        addSystemMessage(`Switched to session ${s.id}.`);
+      } catch (e) {
+        addSystemMessage('switch failed: ' + (e.message || e));
+      }
+    };
+    item.appendChild(info);
+
+    if (s.id !== 'default') {
+      const del = document.createElement('button');
+      del.className = 'remove-btn';
+      del.textContent = '×';
+      del.title = 'Delete session';
+      del.onclick = async (evt) => {
+        evt.stopPropagation();
+        if (!window.confirm(`Delete session "${s.id}" on ${d.alias || d.endpoint}?`)) return;
+        try {
+          // Delete on the owning daemon's client (not necessarily
+          // the active one) — but our mast.deleteSession assumes
+          // the active client. Route via the daemon's client
+          // directly for cross-daemon deletes.
+          if (!d.client) throw new Error('daemon not connected');
+          await d.client.deleteSession(s.app, s.id);
+          addSystemMessage(`Deleted session ${s.id}.`);
+          daemonsStore.patchDaemon(d.endpoint, {
+            sessions: (d.sessions || []).filter((x) => x.id !== s.id),
+          });
+          updateSessionList();
+        } catch (e) {
+          addSystemMessage('delete failed: ' + (e.message || e));
+        }
+      };
+      item.appendChild(del);
+    }
+
+    return item;
   }
 
   async function updateServerList() {
@@ -1805,7 +2105,7 @@
   function cmdHelp() {
     const localCommands = [
       '/help              — Show this help',
-      '/attach <url> [<token>] [<sid>]  — Switch to a different backend daemon',
+      '/attach <url> [<token>] [<sid>]  — Add a backend daemon (existing daemons stay connected)',
       '/model [name]      — List or switch model',
       '/sessions [list|switch <id>]  — Manage sessions',
       '/mcp list          — Show MCP servers (backend-configured; read-only)',
@@ -2014,22 +2314,18 @@
     document.getElementById('setup-modal').classList.add('open');
   }
 
-  // /attach <url> [<token>] — cross-daemon switch. Disconnects the
-  // current client + prompter, reconnects to a different backend, and
-  // stores the new endpoint in localStorage so a reload sticks. This
-  // is the minimum-viable form of cross-daemon /attach for v0.2.0 —
-  // one daemon at a time. Full multi-daemon session fan-out (with
-  // GET /peers-driven auto-discovery) is a v0.3.0+ item that grows
-  // this into a real peer-picker.
+  // /attach <url> [<token>] [<sid>] — v0.3.0: add-daemon (not swap-
+  // daemon). Existing daemons stay connected; the new one joins the
+  // registry and becomes active. Sidebar aggregates sessions across
+  // all daemons; each row is tagged with its owning daemon.
   //
-  // Optional third arg: an initial session ID to select on the new
-  // backend. Empty falls through to the default autoSelectSession()
-  // behavior (first session in the list).
+  // Removes v0.2.0's "one daemon at a time" constraint. Cross-daemon
+  // session switch is instant now — no reconnect on hop.
   async function cmdAttach(args) {
     const url = args[0];
     if (!url) {
       addSystemMessage(
-        'Usage: /attach <url> [<token>] [<sid>]  —  switch to a different backend daemon'
+        'Usage: /attach <url> [<token>] [<sid>]  —  add a backend daemon (existing daemons stay connected)'
       );
       return;
     }
@@ -2042,94 +2338,39 @@
     const token = args[1] || '';
     const initialSid = args[2] || '';
 
-    addSystemMessage(`Attaching to ${url}${initialSid ? ' (session ' + initialSid + ')' : ''}...`);
-
-    // Snapshot the current config so we can restore on failure — a
-    // failed /attach used to leave the operator with a persisted bad
-    // endpoint that auto-reconnected to on reload, bricking the SPA.
-    const prevConfig = getStoredConfig();
-
-    // Tear down the current client + prompter first so we don't leak
-    // an SSE stream after switching backends.
-    try {
-      if (mast.prompter) {
-        mast.prompter.disconnect();
-        mast.prompter = null;
-      }
-      if (mast.client && typeof mast.client.disconnect === 'function') {
-        mast.client.disconnect();
-      }
-      mast.client = null;
-      connectionStore.setClient(null);
-      connectionStore.setState('disconnected');
-      setConnectionState('disconnected');
-      // Clear the transcript view; a new backend means an unrelated
-      // context and the outgoing session's messages shouldn't linger.
-      clearTranscriptView();
-    } catch (e) {
-      // Best-effort teardown; log and continue with the reconnect.
-      console.warn('cmdAttach teardown:', e);
-    }
-
-    // Reconnect to the new backend BEFORE persisting. If the connect
-    // fails we restore the previous config so the operator isn't
-    // stuck with a broken auto-connect on reload. Only on a proven-
-    // working connection do we commit the new endpoint to
-    // localStorage.
-    let connectSucceeded = false;
-    try {
-      await connectToBackend(url, token);
-      // connectToBackend catches its own errors and sets `connected`
-      // via the connection state machine. If it didn't wire mast.client,
-      // the connection failed (setConnectionState('disconnected') was
-      // called + an "Connection failed" system message printed).
-      connectSucceeded = !!mast.client && connected;
-    } catch (e) {
-      // Belt-and-suspenders — connectToBackend shouldn't rethrow, but
-      // if it does we still want to reach the restore path.
-      addSystemMessage('/attach failed: ' + (e.message || e));
-    }
-
-    if (!connectSucceeded) {
-      // Restore the previous config so reload doesn't auto-connect
-      // to the bad endpoint. If there was no previous config (fresh
-      // /attach on a first-run SPA), clear it so the setup modal
-      // reopens on reload rather than looping on the bad URL.
+    // Guard against duplicate adds — re-attaching an already-added
+    // daemon just switches to it instead of tearing down and rebuild.
+    if (daemonsStore.getDaemon(url)) {
       try {
-        if (prevConfig && prevConfig.endpoint) {
-          setStoredConfig(prevConfig);
-          addSystemMessage(
-            `/attach: kept previous endpoint ${prevConfig.endpoint} — new URL didn't connect.`
-          );
-        } else {
-          setStoredConfig(null);
-          addSystemMessage('/attach: not connected — use /endpoint to reopen setup.');
-        }
+        await mast.switchToDaemon(url);
+        addSystemMessage(`/attach: switched to already-added daemon ${url}.`);
       } catch (e) {
-        console.warn('cmdAttach restore:', e);
+        addSystemMessage('/attach switch failed: ' + (e.message || e));
       }
       return;
     }
 
-    // Only persist the new endpoint after we know it works.
+    addSystemMessage(`Adding daemon ${url}${initialSid ? ' (session ' + initialSid + ')' : ''}...`);
+
     try {
-      setStoredConfig({ endpoint: url, token, sessionId: initialSid || null });
+      await mast.addDaemon({ endpoint: url, token, makeActive: true });
     } catch (e) {
-      console.warn('cmdAttach persist:', e);
+      addSystemMessage('/attach failed: ' + (e?.message || e));
+      return;
     }
 
-    if (initialSid && mast.client) {
+    if (initialSid) {
       clearTranscriptView();
       try {
         await mast.switchSession(initialSid);
-        refreshAllSidebar();
       } catch (e) {
         addSystemMessage(
           `/attach connected but /sessions/${initialSid} switch failed: ${e.message || e}`
         );
       }
     }
-    addSystemMessage(`Attached to ${url}.`);
+    refreshAllSidebar();
+    addSystemMessage(`Attached to ${url}. (${daemonsStore.listDaemons().length} daemon(s) total.)`);
   }
 
   // ─── Batch run ─────────────────────────────────────────────────────
@@ -2429,25 +2670,68 @@
   async function boot() {
     updateBackendInfo();
     setConnectionState('disconnected');
-    const cfg = getStoredConfig();
-    if (cfg && cfg.endpoint) {
-      await connectToBackend(cfg.endpoint, cfg.token || '');
-      // If the stored endpoint failed to connect, reopen the setup
-      // modal so the operator has a clear recovery path. Without this,
-      // a stale bad endpoint (e.g. from a previously-successful smoke
-      // run pointing at a mock that's now gone) bricks the SPA on
-      // reload — connection quietly fails, no modal, and slash
-      // commands used to be blocked too (fixed in this same PR).
-      if (!connected) {
-        addSystemMessage(
-          'Auto-connect to ' +
-            cfg.endpoint +
-            ' failed — reopening setup so you can fix the endpoint.'
-        );
-        document.getElementById('setup-modal').classList.add('open');
+
+    // v0.3.0: hydrate the full daemon registry from localStorage.
+    // On upgrade from a v0.2.x SPA the daemons array may be empty
+    // but the legacy single-daemon config is present; seed the
+    // array from it so the reload experience is seamless.
+    let daemonsList = getStoredDaemons();
+    if (daemonsList.length === 0) {
+      const cfg = getStoredConfig();
+      if (cfg && cfg.endpoint) {
+        daemonsList = [
+          {
+            endpoint: cfg.endpoint,
+            token: cfg.token || '',
+            alias: aliasFor(cfg.endpoint),
+            addedAt: nowISO(),
+          },
+        ];
       }
-    } else {
+    }
+
+    if (daemonsList.length === 0) {
       checkFirstRun();
+      return;
+    }
+
+    // Fan-out: connect every daemon in parallel. First-successful-
+    // in-order becomes active (matches the operator's mental model —
+    // the primary daemon they added first is the one that surfaces
+    // on reload). Failed connects stay in the registry with state=
+    // 'disconnected' + lastError so they render in the sidebar (with
+    // an X button to remove or an implicit retry on next reload).
+    const results = await Promise.all(
+      daemonsList.map((row, idx) =>
+        mast
+          .addDaemon({
+            endpoint: row.endpoint,
+            token: row.token || '',
+            alias: row.alias || aliasFor(row.endpoint),
+            makeActive: idx === 0,
+          })
+          .then(
+            () => ({ ok: true, endpoint: row.endpoint }),
+            (e) => ({ ok: false, endpoint: row.endpoint, err: e })
+          )
+      )
+    );
+
+    const oks = results.filter((r) => r.ok).length;
+    const fails = results.filter((r) => !r.ok);
+    if (fails.length > 0) {
+      addSystemMessage(
+        `Auto-connected ${oks}/${results.length} daemon(s). Failed: ${fails
+          .map((f) => f.endpoint)
+          .join(', ')}. Use /attach to retry or × in the sidebar to remove.`
+      );
+    }
+
+    // If nothing connected and we have no active daemon, reopen the
+    // setup modal so the operator can recover. Otherwise the SPA
+    // would sit at "disconnected" with no obvious path forward.
+    if (oks === 0) {
+      document.getElementById('setup-modal').classList.add('open');
     }
   }
 

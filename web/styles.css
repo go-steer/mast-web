@@ -220,6 +220,64 @@ body {
   color: var(--red);
 }
 
+/* Multi-daemon sidebar grouping (v0.3.0 PR 2). Each daemon renders
+   as a group with a header (alias + state badge + × remove) and a
+   nested list of its sessions. The active daemon's header shows an
+   "active" pill; non-active daemons show a "peer" pill so the
+   provenance of each session row is unambiguous. */
+.daemon-group {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  margin-top: 6px;
+}
+
+.daemon-group:first-child {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.daemon-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 0;
+  color: var(--text-dim);
+}
+
+.daemon-header .daemon-alias {
+  color: var(--brand-yellow);
+  font-weight: 600;
+  flex: 1;
+}
+
+.daemon-header .daemon-peer-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.daemon-header .daemon-peer-badge.active {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.daemon-header .remove-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.daemon-header .remove-btn:hover {
+  color: var(--red);
+}
+
 #add-server-btn,
 .sidebar-btn {
   display: block;

@@ -12,63 +12,187 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// mast-web-server — minimal static-file server for the mast-web SPA,
-// with optional reverse-proxy to a mast / core-agent backend so the
-// browser only ever talks to same-origin URLs (eliminates CORS as a
-// concern entirely).
+// mast-web-server — Go binary that serves the mast-web SPA in one of
+// three modes:
 //
-// Built to be packaged into a distroless container image
-// (~10MB) per docs/web-design.md's container-deployment option.
+//	proxy  — SPA + reverse-proxy to a real mast / core-agent backend.
+//	         Same-origin, no CORS. Container-image deployment shape.
+//	mock   — SPA + local mock backend fed from JSONL conformance
+//	         fixtures. Zero external deps, no credentials, no daemon.
+//	         Used by `make smoke` for local end-to-end testing and
+//	         by cloud dev-environment operators (Cloud Workstations,
+//	         Codespaces, gitpod) who can't cross subdomain auth.
+//	static — SPA only. Operator points the SPA at a backend of their
+//	         choice via the setup modal; useful when iterating on
+//	         SPA source against a running real backend.
 //
-// Configuration via environment variables:
+// Configuration via flags (each also honors an env var):
 //
-//	LISTEN          ":8080"   — bind address
-//	BACKEND_URL     ""        — if set, proxy <API_PREFIX>/* to this URL
-//	API_PREFIX      "/attach" — request prefix routed to the backend proxy
-//	BACKEND_TOKEN   ""        — if set, server injects `Authorization: Bearer <token>`
-//	                            into proxied requests; SPA sends none. When unset
-//	                            the proxy passes through whatever the SPA sent
-//	                            (per-operator tokens). Honors both modes.
+//	--listen=:8080             (LISTEN)             bind address
+//	--mode=proxy|mock|static   (MODE)               explicit mode; if unset,
+//	                                                proxy when BACKEND_URL is set,
+//	                                                else static
+//	--web-dir=<path>           (WEB_DIR)            serve SPA from this filesystem
+//	                                                path instead of the embedded
+//	                                                bundle; useful for dev iteration
+//	--api-prefix=/attach       (API_PREFIX)         request prefix routed to the
+//	                                                proxy in proxy mode
+//	--backend-url=<url>        (BACKEND_URL)        target for proxy mode
+//	--backend-token=<token>    (BACKEND_TOKEN)      server-injected bearer token
+//	                                                for proxied requests
+//	--fixture=<name>           (MOCK_FIXTURE)       default fixture in mock mode
+//	--frame-delay-ms=150       (MOCK_FRAME_DELAY_MS) SSE frame pacing in mock mode
+//	--fixtures-dir=<path>      (MOCK_FIXTURES_DIR)  fixture source dir; defaults to
+//	                                                <web-dir>/attach-core/conformance/
+//	                                                fixtures/ when web-dir is set
 //
-// Routes:
+// Routes (present in every mode):
 //
 //	GET /healthz       — liveness probe (always 200)
-//	GET /readyz        — readiness probe (always 200; backend reachability
-//	                     deliberately not gated here — surface as Unavailable
-//	                     from the proxy itself if it actually breaks)
-//	<API_PREFIX>/*     — reverse proxy to BACKEND_URL (if configured)
-//	/*                 — embedded SPA static assets
+//	GET /readyz        — readiness probe (always 200)
+//	GET /*             — SPA static assets (from embed or --web-dir)
+//
+// Mode-specific routes are documented in proxy.go / mock.go.
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
-	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-steer/mast-web/internal/webui"
 )
 
+// Mode names. Kept as constants so tests + flag parsing agree on the
+// exact strings we accept.
+const (
+	modeProxy  = "proxy"
+	modeMock   = "mock"
+	modeStatic = "static"
+)
+
+type config struct {
+	listen       string
+	mode         string
+	webDir       string
+	apiPrefix    string
+	backendURL   string
+	backendToken string
+	fixture      string
+	frameDelayMs int
+	fixturesDir  string
+}
+
 func main() {
-	listen := envOrDefault("LISTEN", ":8080")
-	backendURL := os.Getenv("BACKEND_URL")
-	apiPrefix := envOrDefault("API_PREFIX", "/attach")
-	backendToken := os.Getenv("BACKEND_TOKEN")
-
-	if !strings.HasPrefix(apiPrefix, "/") {
-		apiPrefix = "/" + apiPrefix
+	cfg, err := parseFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
-	apiPrefix = strings.TrimRight(apiPrefix, "/")
+	if err := run(cfg); err != nil {
+		log.Fatalf("mast-web-server: %v", err)
+	}
+}
 
+// parseFlags reads flags + env into a config, applies defaults, and
+// validates. Exposed for tests.
+func parseFlags(args []string) (config, error) {
+	fs := flag.NewFlagSet("mast-web-server", flag.ContinueOnError)
+	// Silence flag's own usage on parse errors — main handles output.
+	fs.SetOutput(os.Stderr)
+
+	cfg := config{}
+	fs.StringVar(&cfg.listen, "listen", envOr("LISTEN", ":8080"), "bind address (env: LISTEN)")
+	fs.StringVar(&cfg.mode, "mode", envOr("MODE", ""), "server mode: proxy | mock | static (env: MODE)")
+	fs.StringVar(&cfg.webDir, "web-dir", envOr("WEB_DIR", ""), "serve SPA from this filesystem path instead of the embedded bundle (env: WEB_DIR)")
+	fs.StringVar(&cfg.apiPrefix, "api-prefix", envOr("API_PREFIX", "/attach"), "proxy-mode request prefix routed to the backend (env: API_PREFIX)")
+	fs.StringVar(&cfg.backendURL, "backend-url", os.Getenv("BACKEND_URL"), "proxy-mode target URL (env: BACKEND_URL)")
+	fs.StringVar(&cfg.backendToken, "backend-token", os.Getenv("BACKEND_TOKEN"), "proxy-mode server-injected bearer token (env: BACKEND_TOKEN)")
+	fs.StringVar(&cfg.fixture, "fixture", envOr("MOCK_FIXTURE", "001-happy-turn"), "mock-mode default fixture name (env: MOCK_FIXTURE)")
+	frameDelayDefault, _ := strconv.Atoi(envOr("MOCK_FRAME_DELAY_MS", "150"))
+	fs.IntVar(&cfg.frameDelayMs, "frame-delay-ms", frameDelayDefault, "mock-mode delay between SSE frames (env: MOCK_FRAME_DELAY_MS)")
+	fs.StringVar(&cfg.fixturesDir, "fixtures-dir", os.Getenv("MOCK_FIXTURES_DIR"), "mock-mode fixture source dir; defaults to <web-dir>/attach-core/conformance/fixtures/ (env: MOCK_FIXTURES_DIR)")
+
+	if err := fs.Parse(args); err != nil {
+		return config{}, err
+	}
+
+	// Auto-select mode when unset: proxy if backend URL, else static.
+	// Explicitly recognizes empty string as "unset" so operators can
+	// override MODE=... with a --mode="" (rare).
+	if cfg.mode == "" {
+		if cfg.backendURL != "" {
+			cfg.mode = modeProxy
+		} else {
+			cfg.mode = modeStatic
+		}
+	}
+
+	// Normalize api-prefix — leading slash required, no trailing.
+	if !strings.HasPrefix(cfg.apiPrefix, "/") {
+		cfg.apiPrefix = "/" + cfg.apiPrefix
+	}
+	cfg.apiPrefix = strings.TrimRight(cfg.apiPrefix, "/")
+
+	// Fixture-dir default: derive from web-dir when possible so
+	// operators running mock mode against a checkout don't need two
+	// flags. Explicit --fixtures-dir always wins.
+	if cfg.mode == modeMock && cfg.fixturesDir == "" && cfg.webDir != "" {
+		cfg.fixturesDir = cfg.webDir + "/attach-core/conformance/fixtures"
+	}
+
+	// Mode-specific validation.
+	switch cfg.mode {
+	case modeProxy:
+		if cfg.backendURL == "" {
+			return config{}, errors.New("mode=proxy requires --backend-url or BACKEND_URL")
+		}
+	case modeMock:
+		if cfg.fixturesDir == "" {
+			return config{}, errors.New("mode=mock requires --fixtures-dir or --web-dir (which sets fixtures-dir automatically)")
+		}
+	case modeStatic:
+		// No required inputs.
+	default:
+		return config{}, fmt.Errorf("unknown --mode %q (want proxy | mock | static)", cfg.mode)
+	}
+	return cfg, nil
+}
+
+// run wires the HTTP server per config and blocks on ListenAndServe.
+// Split from main so tests can drive it against an httptest server.
+func run(cfg config) error {
+	mux, err := buildMux(cfg)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Addr:              cfg.listen,
+		Handler:           withLogging(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		// No WriteTimeout — SSE streams are long-lived. The reverse
+		// proxy handles its own flush-on-write via FlushInterval=-1.
+	}
+	log.Printf("mast-web-server: mode=%s listen=%s", cfg.mode, cfg.listen)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("listen: %w", err)
+	}
+	return nil
+}
+
+// buildMux constructs the HTTP handler set for the given mode without
+// binding a listener. Exposed for tests via httptest.NewServer.
+func buildMux(cfg config) (http.Handler, error) {
 	mux := http.NewServeMux()
 
-	// Health / readiness probes for K8s / Cloud Run.
+	// Health probes present in every mode.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -76,102 +200,51 @@ func main() {
 		_, _ = w.Write([]byte("ready"))
 	})
 
-	// Optional reverse proxy to the backend. When BACKEND_URL is unset,
-	// the SPA must hit the backend cross-origin (mast-web becomes a
-	// pure static host).
-	if backendURL != "" {
-		proxy, err := newBackendProxy(backendURL, apiPrefix, backendToken)
+	// Mode-specific handlers registered before the SPA fallthrough
+	// so their routes take precedence.
+	switch cfg.mode {
+	case modeProxy:
+		proxy, err := newBackendProxy(cfg.backendURL, cfg.backendToken)
 		if err != nil {
-			log.Fatalf("backend proxy: %v", err)
+			return nil, fmt.Errorf("backend proxy: %w", err)
 		}
-		mux.Handle(apiPrefix+"/", http.StripPrefix(apiPrefix, proxy))
-		log.Printf("backend proxy: %s -> %s", apiPrefix+"/*", backendURL)
-	} else {
-		log.Printf("no BACKEND_URL set; SPA must talk to its backend cross-origin")
+		mux.Handle(cfg.apiPrefix+"/", http.StripPrefix(cfg.apiPrefix, proxy))
+		log.Printf("proxy: %s/* -> %s", cfg.apiPrefix, cfg.backendURL)
+	case modeMock:
+		mockHandler, err := newMockHandler(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("mock: %w", err)
+		}
+		registerMockRoutes(mux, mockHandler)
+		log.Printf("mock: fixture=%s frame-delay=%dms fixtures-dir=%s", cfg.fixture, cfg.frameDelayMs, cfg.fixturesDir)
+	case modeStatic:
+		// No backend handlers; SPA-only. Operator points the SPA at
+		// a backend via the setup modal.
 	}
 
-	// Static assets — embedded SPA served from /.
-	staticFS, err := webui.FS()
+	// SPA static assets — always last (fallthrough).
+	spaFS, err := spaFS(cfg)
 	if err != nil {
-		log.Fatalf("embed dist subdir: %v", err)
+		return nil, fmt.Errorf("spa fs: %w", err)
 	}
-	mux.Handle("/", spaHandler(staticFS))
-
-	srv := &http.Server{
-		Addr:              listen,
-		Handler:           withLogging(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		// No WriteTimeout — SSE streams are long-lived. The reverse
-		// proxy handles its own flush-on-write via FlushInterval=-1.
-	}
-
-	log.Printf("mast-web-server listening on %s (api_prefix=%s)", listen, apiPrefix)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("listen: %v", err)
-	}
+	mux.Handle("/", spaHandler(spaFS))
+	return mux, nil
 }
 
-// newBackendProxy builds a httputil.ReverseProxy for the attach API.
-// FlushInterval=-1 is essential — without it the proxy buffers SSE
-// frames and the SPA never sees real-time updates.
-func newBackendProxy(rawURL, apiPrefix, injectedToken string) (*httputil.ReverseProxy, error) {
-	target, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse BACKEND_URL %q: %w", rawURL, err)
-	}
-	if target.Scheme != "http" && target.Scheme != "https" {
-		return nil, fmt.Errorf("BACKEND_URL must be http(s); got %q", target.Scheme)
-	}
-
-	rp := &httputil.ReverseProxy{
-		// Flush immediately on each chunk — required for SSE.
-		FlushInterval: -1,
-		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(target)
-			r.SetXForwarded()
-			// Server-injected token (when configured) wins over
-			// whatever the SPA sent. Lets operators run the proxy in
-			// "shared backend, single auth" mode where the SPA never
-			// handles tokens.
-			if injectedToken != "" {
-				r.Out.Header.Set("Authorization", "Bearer "+injectedToken)
-				r.Out.Header.Set("X-Attach-Token", injectedToken)
-			}
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("proxy error %s %s: %v", r.Method, r.URL.Path, err)
-			http.Error(w, "backend unreachable: "+err.Error(), http.StatusBadGateway)
-		},
-	}
-	return rp, nil
-}
-
-// spaHandler serves the embedded SPA. Unknown paths fall back to
-// index.html so client-side routes resolve (when we eventually add
-// them); known assets (anything with a file extension) 404 cleanly.
-func spaHandler(staticFS fs.FS) http.Handler {
-	fileServer := http.FileServer(http.FS(staticFS))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Try the requested path first.
-		clean := path.Clean(r.URL.Path)
-		if clean == "/" {
-			fileServer.ServeHTTP(w, r)
-			return
+// spaFS returns the filesystem the SPA is served from. Priority:
+// --web-dir (dev iteration) > embedded bundle (production).
+func spaFS(cfg config) (fs.FS, error) {
+	if cfg.webDir != "" {
+		info, err := os.Stat(cfg.webDir)
+		if err != nil {
+			return nil, fmt.Errorf("--web-dir %q: %w", cfg.webDir, err)
 		}
-		// If the path has no file extension, treat it as a client-side
-		// route and serve index.html.
-		if path.Ext(clean) == "" {
-			f, err := staticFS.Open(strings.TrimPrefix(clean, "/"))
-			if err != nil {
-				r2 := r.Clone(r.Context())
-				r2.URL.Path = "/"
-				fileServer.ServeHTTP(w, r2)
-				return
-			}
-			_ = f.Close()
+		if !info.IsDir() {
+			return nil, fmt.Errorf("--web-dir %q is not a directory", cfg.webDir)
 		}
-		fileServer.ServeHTTP(w, r)
-	})
+		return os.DirFS(cfg.webDir), nil
+	}
+	return webui.FS()
 }
 
 // withLogging wraps a handler with one-line access logging. No request
@@ -203,7 +276,7 @@ func (lw *loggingWriter) Flush() {
 	}
 }
 
-func envOrDefault(name, def string) string {
+func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
 	}

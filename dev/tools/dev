@@ -13,39 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Local development server for mast-web.
+# Local development server for mast-web — serves web/ statically on
+# :8000, without mock endpoints. Pair with a live core-agent / mast
+# backend that the SPA points at via the setup modal.
 #
-# Serves web/ on :8000 via Python's built-in HTTP server. Pair with a
-# backend agent running with --attach-listen — for example:
-#
-#   # Terminal 1: backend
-#   core-agent --attach-listen :7777 --session-db
-#
-#   # Terminal 2: this script
-#   make dev
-#
-# Browse to http://localhost:8000 and point the UI at http://localhost:7777.
-#
-# Why Python? Zero Go dependency in this repo. Once phase C ships and
-# mast embeds the assets via go:embed, the backend serves the UI on the
-# same port and this dev server is only used during local iteration.
+# Thin wrapper around `mast-web-server --mode=static`. For smoke
+# testing against a self-contained mock backend, use `make smoke`
+# (which invokes dev/tools/mock-backend) instead.
+
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
 
+if ! command -v go >/dev/null 2>&1; then
+  echo "dev: go not found on PATH" >&2
+  echo "Install Go (matches the mast-web-server runtime dependency)." >&2
+  exit 1
+fi
+
 PORT="${PORT:-8000}"
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "dev: python3 not found on PATH" >&2
-  echo "Install Python 3 or override PORT and serve web/ with any static HTTP server." >&2
-  exit 1
-fi
+echo "▸ mast-web dev server on http://localhost:${PORT} (serving web/, no backend)"
+echo "  Point the SPA at your running backend via the first-run setup modal."
 
-if [[ ! -d web ]] || [[ -z "$(ls -A web 2>/dev/null)" ]]; then
-  echo "dev: web/ is empty (pre-phase-A) — nothing to serve yet" >&2
-  exit 1
-fi
-
-echo "▸ mast-web dev server on http://localhost:${PORT} (serving web/)"
-cd web
-exec python3 -m http.server "$PORT"
+exec go run ./cmd/mast-web-server \
+  --mode=static \
+  --web-dir=web \
+  --listen=":${PORT}"

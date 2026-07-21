@@ -13,22 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Standalone smoke test — boots the mock backend and lets an operator
-# visually confirm the SPA renders + handles events end-to-end without
-# needing a real core-agent daemon or model credentials.
-#
-# The mock backend serves both the fake attach endpoints AND the SPA's
-# static assets from web/ on the same port. Same-origin means no CORS,
-# no cross-subdomain-cookie-auth issues in environments like Cloud
-# Workstations / Codespaces / gitpod that gate each proxied port
-# separately.
+# Standalone smoke test — SPA + mock backend on one port. No real
+# core-agent daemon, no credentials, no network. Purpose: exercise
+# the SPA's render + event handling end-to-end without external
+# dependencies.
 #
 # Usage:
 #     make smoke                   # via the Makefile
 #     dev/tools/smoke              # direct
 #     dev/tools/smoke --fixture 002-cost-ceiling-mid-turn
 #
-# Environment overrides:
+# Environment overrides (also settable as flags):
 #     MOCK_PORT             (default 7778)
 #     MOCK_FIXTURE          (default 001-happy-turn)
 #     MOCK_FRAME_DELAY_MS   (default 150)
@@ -36,15 +31,13 @@
 # Operator flow:
 #     1. Run this script.
 #     2. Open http://localhost:7778 in a browser.
-#     3. In the first-run setup modal, use `/` as the endpoint
-#        (same-origin, which is what the mock serves) and leave the
-#        token blank. Click Connect.
-#     4. SPA streams the canned fixture (default: happy-turn) — real
-#        markdown rendering, real tool-call chips, real per-turn footer.
-#     5. Try scenarios by reloading with `?fixture=<name>` on the URL,
-#        or restart the script with a different --fixture. Available
-#        fixtures live under web/attach-core/conformance/fixtures/.
-#     6. Ctrl-C tears down the mock cleanly.
+#     3. In the first-run setup modal, use `/` as the endpoint (same
+#        origin — the mock serves both the SPA and the fake attach
+#        endpoints on the same port). Leave the token blank.
+#     4. SPA streams the canned fixture — real markdown, tool-call
+#        chips, per-turn footer.
+#     5. Reload with ?fixture=<name> to switch scenarios.
+#     6. Ctrl-C stops the mock cleanly.
 
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -52,15 +45,6 @@ cd "$(repo_root)"
 
 MOCK_PORT="${MOCK_PORT:-7778}"
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "smoke: python3 not found on PATH" >&2
-  echo "Install Python 3 (matches the same requirement as dev/tools/dev)." >&2
-  exit 1
-fi
-
-# Run the mock in the foreground; its output goes straight to the
-# terminal so operators see request logs live. Ctrl-C sends SIGINT
-# to the Python process which exits cleanly via KeyboardInterrupt.
 cat <<EOF
 ▸ mast-web smoke test starting
   URL:      http://localhost:${MOCK_PORT}
@@ -73,4 +57,4 @@ $(cd web/attach-core/conformance/fixtures && ls *.jsonl | sed 's/\.jsonl$//' | s
   Ctrl-C to stop.
 EOF
 
-MOCK_PORT="$MOCK_PORT" exec ./dev/tools/mock-backend --port "$MOCK_PORT" "$@"
+MOCK_PORT="$MOCK_PORT" exec ./dev/tools/mock-backend "$@"

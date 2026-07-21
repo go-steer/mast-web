@@ -16,10 +16,16 @@
 """Standalone mock backend for mast-web smoke testing.
 
 Serves the endpoints mast-web's attach client hits during connect +
-basic operation. The SSE event stream is fed from the shared
-conformance fixtures under ``web/attach-core/conformance/fixtures/``,
-so the same JSONL files that lock down the wire protocol under
-``vitest`` also drive the smoke UI — one source of truth.
+basic operation, AND (since #TBD) serves the SPA's static assets from
+``web/`` as a fallthrough. Same origin means no CORS boundary and no
+cross-subdomain-cookie-auth issues on environments like Cloud
+Workstations / Codespaces / gitpod that gate each proxied port
+separately.
+
+The SSE event stream is fed from the shared conformance fixtures
+under ``web/attach-core/conformance/fixtures/``, so the same JSONL
+files that lock down the wire protocol under ``vitest`` also drive
+the smoke UI — one source of truth.
 
 Zero dependencies beyond the Python 3 standard library; matches the
 project convention of not adding dev-only Python packages.
@@ -28,14 +34,21 @@ Usage:
     dev/tools/mock-backend [--port 7778] [--fixture 001-happy-turn]
                            [--frame-delay-ms 150]
 
+Then open ``http://localhost:7778`` (or the proxied URL in a cloud
+IDE) — the SPA loads from the SAME port as the mock endpoints, so
+its setup modal can point at ``/`` (same-origin relative path) or the
+full URL of the mock. No separate ``dev/tools/dev`` needed for the
+smoke flow.
+
 Query parameter ``?fixture=<name>`` on ``/sessions/{sid}/events``
 overrides the default fixture per request, letting the operator flip
 between happy-turn, cost-ceiling, latency, observer, and forward-
-compat fixtures from the browser URL bar.
+compat fixtures without restarting.
 
-Everything is CORS-open (Access-Control-Allow-Origin: *) so the SPA
-served from a different port (dev/tools/dev on :8000) can talk to
-this without a proxy.
+Everything is CORS-open (Access-Control-Allow-Origin: *) so the
+two-port shape (``dev/tools/dev`` on :8000 + this on :7778) still
+works for anyone iterating on the SPA source without the same-port
+convenience.
 
 Not a substitute for a real backend — no state, no agent loop, no
 persistence. Purpose: exercise the SPA's render + event handling +
@@ -57,6 +70,24 @@ from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES_DIR = REPO_ROOT / "web" / "attach-core" / "conformance" / "fixtures"
+WEB_ROOT = REPO_ROOT / "web"
+
+# File extensions we serve as SPA statics via the fallthrough. Keep
+# minimal — anything outside this set falls through to the 404 path
+# instead of leaking arbitrary filesystem contents.
+STATIC_MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".mjs": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".map": "application/json; charset=utf-8",
+}
 
 # Canned session shape returned from GET /sessions. Kept minimal —
 # just enough for the SPA to auto-select it and open an SSE stream.
@@ -241,7 +272,73 @@ class Handler(BaseHTTPRequestHandler):
             self._write_json(200, {})
             return
 
+        # SPA static fallthrough — serve web/ files under the same
+        # origin as the mock endpoints. Same-origin means no CORS
+        # boundary + no cross-subdomain-cookie-auth issues on
+        # environments like Cloud Workstations / Codespaces / gitpod
+        # that gate each proxied port separately. Explicit MIME
+        # allowlist so we don't leak arbitrary filesystem contents
+        # (e.g. .py source files) even if someone drops them under
+        # web/.
+        if self._maybe_serve_spa(path):
+            return
+
         self._write_error(404, f"mock-backend: unknown GET {path}\n")
+
+    def _maybe_serve_spa(self, path: str) -> bool:
+        """Serve a static file from web/ if the URL path resolves.
+
+        Returns True when the file was served (headers + body written);
+        False when the path doesn't match a static resource — caller
+        then falls through to its own 404 handling.
+
+        Root path (/) redirects to index.html implicitly (SPA entry).
+        Extensionless paths route to index.html so a hypothetical SPA
+        with client-side routing still lands on the shell.
+        """
+        # Normalize + resolve. Reject anything with .. traversal
+        # attempts before touching the filesystem.
+        rel = path.lstrip("/")
+        if not rel or rel.endswith("/"):
+            rel = rel + "index.html"
+        if ".." in rel.split("/"):
+            return False
+        candidate = (WEB_ROOT / rel).resolve()
+        try:
+            candidate.relative_to(WEB_ROOT.resolve())
+        except ValueError:
+            # Escape attempt.
+            return False
+
+        if not candidate.is_file():
+            # No extension → try index.html (SPA client-routing fallback).
+            if "." not in candidate.name:
+                candidate = WEB_ROOT / "index.html"
+                if not candidate.is_file():
+                    return False
+            else:
+                return False
+
+        suffix = candidate.suffix.lower()
+        mime = STATIC_MIME.get(suffix)
+        if mime is None:
+            # Unlisted extension — refuse rather than guess.
+            return False
+
+        try:
+            body = candidate.read_bytes()
+        except OSError:
+            return False
+        self.send_response(200)
+        for k, v in cors_headers():
+            self.send_header(k, v)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        # No cache; devs want reloads to pick up edits.
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def do_POST(self) -> None:  # noqa: N802
         url = urlparse(self.path)
@@ -403,7 +500,10 @@ def main(argv: list[str]) -> int:
     sys.stderr.write(
         f"▸ mast-web mock backend on http://localhost:{args.port} "
         f"(fixture: {args.fixture}, frame delay: {args.frame_delay_ms}ms)\n"
-        f"  connect the SPA to http://localhost:{args.port} with no token\n"
+        f"  open http://localhost:{args.port} directly — the mock serves the SPA on the\n"
+        f"  same origin as the attach endpoints (no CORS, no cross-subdomain auth).\n"
+        f"  In the setup modal, use `/` as the endpoint (same-origin relative) or the\n"
+        f"  full URL of this port. Leave the token blank.\n"
     )
     try:
         server.serve_forever()

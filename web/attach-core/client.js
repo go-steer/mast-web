@@ -249,9 +249,31 @@ window.AttachClient = (function () {
       // accepts ?access_token=… for SSE per the attach-mode auth
       // contract (auth.go). Falls back to no-token for unauthenticated
       // dev backends.
-      const tokenParam = this.token ? '?access_token=' + encodeURIComponent(this.token) : '';
+      //
+      // Also forward any ?fixture=<name> present on the SPA's own
+      // URL. The smoke-test mock backend switches fixtures on this
+      // query — letting an operator reload with
+      // https://.../?fixture=002-cost-ceiling-mid-turn hits the mock's
+      // scenario switch without restarting `make smoke`. Real backends
+      // ignore unknown query params, so this is safe as a pass-through.
+      const params = new URLSearchParams();
+      if (this.token) params.set('access_token', this.token);
+      try {
+        if (typeof window !== 'undefined' && window.location && window.location.search) {
+          const spaQuery = new URLSearchParams(window.location.search);
+          const fixture = spaQuery.get('fixture');
+          if (fixture) params.set('fixture', fixture);
+        }
+      } catch {
+        /* ignore — non-browser or restricted environment */
+      }
+      const qs = params.toString();
       const url =
-        this.endpoint + '/sessions/' + encodeURIComponent(this.sessionId) + '/events' + tokenParam;
+        this.endpoint +
+        '/sessions/' +
+        encodeURIComponent(this.sessionId) +
+        '/events' +
+        (qs ? '?' + qs : '');
       try {
         this._sse = new EventSource(url);
       } catch (e) {

@@ -133,16 +133,13 @@
         <h2>mast-web Setup</h2>
         <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px">
           Connect to a running <code>core-agent</code> or <code>mast</code> backend with
-          <code>--attach-listen</code> enabled. See
-          <a href="https://github.com/go-steer/mast-web#quickstart">quickstart</a> for the backend
-          command.
+          <code>--attach-listen</code> enabled, or to the smoke-test mock (<code>make smoke</code>).
+          Use <code>/</code> (a single slash) for same-origin — works when the backend serves the
+          SPA on the same host, avoiding all CORS + cross-subdomain auth issues (Cloud Workstations,
+          Codespaces, gitpod, etc.). Otherwise use the full URL.
         </p>
         <label for="setup-endpoint">Backend endpoint</label>
-        <input
-          id="setup-endpoint"
-          placeholder="http://localhost:7777"
-          value="http://localhost:7777"
-        />
+        <input id="setup-endpoint" placeholder="/  or  http://localhost:7778" value="/" />
         <label for="setup-token">Auth token</label>
         <input
           id="setup-token"
@@ -152,7 +149,7 @@
         <label for="setup-token-source">
           <small style="color: var(--text-dim)">
             The backend prints this on startup when <code>--attach-token-env</code> is set. Leave
-            blank for unauthenticated dev backends.
+            blank for unauthenticated dev backends (including the smoke-test mock).
           </small>
         </label>
         <div class="btn-row">

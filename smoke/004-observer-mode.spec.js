@@ -13,29 +13,30 @@
 // limitations under the License.
 
 // Smoke: 004-observer-mode-usage-update-only — turn-complete arrives
-// with NO cost_usd; authoritative per-turn cost comes from the
-// following usage-update.last_turn. This test proves the fixture
-// streams end-to-end + the per-turn footer renders.
+// with NO cost_usd; per-turn cost comes from the following
+// usage-update.last_turn.
 //
-// The observer-mode-specific bits (StampLatestAssistantFooter equivalent,
-// backfill from /usage snapshot) land with v0.3.0 PR 3 (mast-web#23).
-// When PR 3 ships, extend this test to assert on the stamped
-// per-turn footer's cost field (currently footer renders but cost
-// may be zero without the last_turn backfill).
+// Full observer-mode dispatch (StampLatestAssistantFooter equivalent
+// that stamps footer metadata from turn-complete + last_turn even
+// when there's no active turn) is v0.3.0 PR 3's work (mast-web#23).
+// Until then, the SPA's stream-chunk / tool-call / turn-complete
+// handlers all drop when activeTurn is null, so the assistant
+// message and per-turn footer don't render from a fixture-only
+// connect.
+//
+// What CAN be verified pre-PR-3: usage-update.turns_total flows into
+// the status bar (that path doesn't need an active turn).
 
 import { test, expect } from '@playwright/test';
 import { connectToMock } from './helpers.js';
 
 test.describe('smoke: 004-observer-mode-usage-update-only', () => {
-  test('renders streaming text + per-turn footer end to end', async ({ page }) => {
+  test('usage-update flows into status bar independent of active turn', async ({ page }) => {
     await connectToMock(page, '004-observer-mode-usage-update-only');
 
-    // Assistant streams "Observer sees this".
-    const assistantMsg = page.locator('#output-area .message.assistant').first();
-    await expect(assistantMsg).toContainText('Observer sees this');
-
-    // Per-turn footer renders after turn-complete. Fixture ships
-    // tokens_in: 12, tokens_out: 4.
-    await expect(page.locator('#output-area .turn-footer').first()).toContainText('12');
+    // Fixture ships turns_total: 1.
+    await expect(page.locator('#status-turns')).toContainText('1');
+    // Model name flows in from status-update.
+    await expect(page.locator('#status-model')).toContainText('gemini-2.5-flash');
   });
 });

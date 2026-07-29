@@ -157,15 +157,22 @@ window.AttachClient = (function () {
       // v1.1.0+: response also carries `status` ('active'|'idle') and
       // `last_touched_at` (ISO string). Expose both so the sidebar
       // can render an idle badge + sort by recency.
-      return (out.sessions || []).map((s) => ({
-        id: s.session_id,
-        app: s.app_name,
-        user: s.user_id,
-        hasEventLog: !!s.has_event_log,
-        status: s.status || 'active',
-        lastTouchedAt: s.last_touched_at || null,
-        label: s.session_id,
-      }));
+      // Real backends (core-agent, mast) emit {app, user, sessionID}
+      // per attach-mode-design.md; the bundled mock historically used
+      // snake_case. Accept both, canonical shape first — same pattern
+      // createSession below already follows.
+      return (out.sessions || []).map((s) => {
+        const id = s.sessionID || s.session_id || '';
+        return {
+          id,
+          app: s.app || s.app_name || '',
+          user: s.user || s.user_id || '',
+          hasEventLog: !!s.has_event_log,
+          status: s.status || 'active',
+          lastTouchedAt: s.last_touched_at || null,
+          label: id,
+        };
+      });
     }
 
     // ─── Session create / delete (new in v0.2.0) ────────────────────

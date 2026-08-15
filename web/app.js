@@ -681,33 +681,102 @@
 
     async listMcpServers() {
       if (!this.client) return [];
-      // /tools returns the merged tool catalog; the MCP-namespaced
-      // entries are <server>_<tool>. Bucket them back into server
-      // groups for display.
+      // /tools returns the merged tool catalog. Each entry may carry
+      // explicit source/server attribution (source:'mcp', server:
+      // '<name>') — prefer that when present. As of 2026-08 core-
+      // agent's production adapter doesn't populate it yet for MCP
+      // tools (pkg/attachadapter/capabilities.go reports source:
+      // 'other' pending an upstream metadata pass), so fall back to
+      // the <server>_<tool> naming convention every MCP-namespaced
+      // tool still follows. This upgrades automatically once the
+      // backend starts sending real attribution — no client change
+      // needed then.
       const tools = await this.client.listTools();
       const byServer = new Map();
       (tools || []).forEach((t) => {
         const name = t.name || t;
-        const idx = name.indexOf('_');
-        if (idx <= 0) return;
-        const server = name.substring(0, idx);
+        let server = t.source === 'mcp' && t.server ? t.server : null;
+        if (!server) {
+          const idx = name.indexOf('_');
+          if (idx <= 0) return;
+          server = name.substring(0, idx);
+        }
         const bucket = byServer.get(server) || { name: server, status: 'connected', tools: [] };
-        bucket.tools.push(name.substring(idx + 1));
+        // Keep the full name (not stripped of its server prefix) —
+        // matches how core-tui's /mcp renderer lists it, since that's
+        // the name an operator would actually invoke.
+        bucket.tools.push({ name, description: t.description || '' });
         byServer.set(server, bucket);
       });
       return Array.from(byServer.values());
     },
 
+    async listTools() {
+      if (!this.client) return [];
+      return this.client.listTools();
+    },
+
+    // /specialists (legacy command name, kept for compat) — sourced
+    // from the configured-subagent catalog (core-agent#627/#634)
+    // rather than the live /agents roster: richer (model + modes) and
+    // reflects what's actually spawnable, not just what has run so
+    // far this session. Same underlying data as listConfiguredSubagents()
+    // below (used by /subagents); shaped for the /specialists renderer.
     async listSpecialists() {
       if (!this.client) return [];
-      // Specialists surface via /agents — each registered subagent is
-      // listed. Filter to the ones the backend marks as specialist-
-      // shaped when that field lands; for now, return all sub-agents.
-      const agents = await this.client.listAgents();
-      return (agents || []).map((a) => ({
-        name: a.name || a,
-        description: a.description || '',
+      const subs = await this.client.listConfiguredSubagents();
+      return (subs || []).map((s) => ({
+        name: s.name,
+        description: s.description || '',
+        model: s.model || '',
+        modes: s.modes || [],
       }));
+    },
+
+    // Configured subagent catalog ("what's spawnable") for /subagents
+    // (list + events drill-down). core-agent#627/#634.
+    async listConfiguredSubagents() {
+      if (!this.client) return [];
+      return this.client.listConfiguredSubagents();
+    },
+
+    // Resolves `app` for the current session from the last
+    // listSessions() snapshot — needed to build the qualified
+    // /sessions/{app}/{sid}/agents/{name}/events path (mirrors the
+    // lookup deleteSession() already does above).
+    _currentApp() {
+      const found = latest.sessions.find((s) => s.id === currentSession);
+      return found ? found.app : '';
+    },
+
+    async getSubagentEvents(name, opts) {
+      if (!this.client) throw new Error('not connected');
+      const app = this._currentApp();
+      if (!app) {
+        throw new Error(
+          `app unknown for session ${currentSession} — reload the sidebar first (/sessions list)`
+        );
+      }
+      return this.client.getSubagentEvents(app, name, opts);
+    },
+
+    // Guardrails read/reset (core-agent#670/#671) — unblocks the
+    // /reset-ceiling UX deferred in docs/v0.3-plan.md pending
+    // core-agent#331 design, which has since shipped.
+    async getGuardrails() {
+      if (!this.client) throw new Error('not connected');
+      return this.client.getGuardrails();
+    },
+
+    async resetGuardrails(opts) {
+      if (!this.client) throw new Error('not connected');
+      const r = await this.client.resetGuardrails(opts);
+      if (r.ok) {
+        // Clear the input-freezing banner state set on turn-error
+        // kind=cost_ceiling; a fresh turn can now proceed normally.
+        sessionStore.setCostCeilingHit(false);
+      }
+      return r;
     },
 
     async getStats() {
@@ -1071,13 +1140,13 @@
         const te = ev.data || {};
         const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
         // v1.2.0 kind=cost_ceiling — session refuses further turns until
-        // a server-side reset. No matching turn-complete will follow.
-        // Freeze input + show a persistent banner (reset UX will land
-        // when core-agent ships /reset-ceiling; issue core-agent#331).
+        // a reset (server-side reset UX shipped core-agent#670/#671).
+        // No matching turn-complete will follow.
         if (te.kind === 'cost_ceiling') {
           sessionStore.setCostCeilingHit(true);
           addSystemMessage(
-            'Cost ceiling reached — session paused. Contact your administrator to reset.'
+            'Cost ceiling reached — session paused. Run /guardrails reset to clear it ' +
+              '(requires GuardrailAdmin), or /guardrails for details.'
           );
         }
         if (activeTurn) activeTurn.finish(null, new Error(msg));
@@ -1220,18 +1289,25 @@
     return div;
   }
 
-  function addSystemMessage(text) {
-    addMessage('system', text);
+  // cmdOutput distinguishes genuine built-in command output (/help,
+  // /stats, /mcp, /guardrails, ...) from transient connection/status
+  // notices ("Not connected", "Session cleared.") — the former gets
+  // the accented .cmd-output treatment (see styles.css), the latter
+  // stays a plain muted line.
+  function addSystemMessage(text, cmdOutput) {
+    addMessage('system', text, cmdOutput ? 'cmd-output' : '');
   }
 
   // Insert a system message whose body is pre-rendered HTML. Used by
   // the generic server-slash dispatcher so responses can flow through
-  // SlashRender's markdown / json / text renderers. Contents come
-  // from SlashRender, which HTML-escapes its inputs — do NOT feed
-  // arbitrary user or server strings here without sanitization.
+  // SlashRender's markdown / json / text renderers, and by the /mcp,
+  // /tools, /specialists, /subagents renderListHTML() output. Always
+  // command output. Contents come from SlashRender or renderListHTML,
+  // both of which HTML-escape their inputs — do NOT feed arbitrary
+  // user or server strings here without sanitization.
   function addSystemMessageHTML(html) {
     const div = document.createElement('div');
-    div.className = 'message system';
+    div.className = 'message system cmd-output';
     div.innerHTML = html;
     outputArea.appendChild(div);
     outputArea.scrollTop = outputArea.scrollHeight;
@@ -1507,6 +1583,76 @@
     return div.innerHTML;
   }
 
+  // Formats a caught error for a system-message line. Special-cases
+  // BackendDrainingError (503 shutdown drain, core-agent#564/#567)
+  // with a friendlier, actionable message instead of the raw dump
+  // other errors get.
+  function describeError(e, prefix = 'Error: ') {
+    const Drain = window.AttachClient && window.AttachClient.BackendDrainingError;
+    if (Drain && e instanceof Drain) {
+      return e.retryAfterSeconds
+        ? `Backend is restarting — retry in ~${e.retryAfterSeconds}s.`
+        : 'Backend is restarting — retry shortly.';
+    }
+    return prefix + (e && e.message ? e.message : e);
+  }
+
+  // One-line summary of a persisted subagent turn event (same ADK
+  // Event shape as the SSE `agent` frame) for the /subagents events
+  // drill-down. Reuses the pure fanoutAgentFrame parser rather than
+  // re-deriving Content/parts field-variant handling.
+  function summarizeAgentEvent(event) {
+    if (!window.AttachCoreProtocol) return '(event)';
+    const parts = [];
+    window.AttachCoreProtocol.fanoutAgentFrame({ event }, (e) => parts.push(e));
+    if (parts.length === 0) return '(empty)';
+    return parts
+      .map((p) => {
+        if (p.type === 'stream-chunk') return `text: ${p.data.text.slice(0, 80)}`;
+        if (p.type === 'tool-call') return `call ${p.data.name}`;
+        if (p.type === 'tool-result') return `result ${p.data.name} (${p.data.latencyMs}ms)`;
+        return p.type;
+      })
+      .join('; ');
+  }
+
+  // Builds an HTML system-message block for a titled, optionally
+  // grouped list (MCP servers → their tools; a flat tool/specialist
+  // roster). Each item renders as a bulleted name line (+ dim tag
+  // suffix) with its description indented below — matches core-tui's
+  // renderToolList/renderMCPServers shape instead of the single-line-
+  // per-item text /mcp and /tools used to collapse into. Feed to
+  // addSystemMessageHTML; all fields are escaped here.
+  //
+  // groups: [{ header?: string, items: [{ name, tags?: string[], description?: string }] }]
+  function renderListHTML(title, groups) {
+    const parts = [`<div class="list-title">${escapeHtml(title)}</div>`];
+    groups.forEach((g) => {
+      if (g.header) {
+        parts.push(`<div class="list-group-header">${escapeHtml(g.header)}</div>`);
+      }
+      if (g.items.length === 0) {
+        parts.push('<div class="list-item-desc">(none)</div>');
+        return;
+      }
+      g.items.forEach((it) => {
+        const tags =
+          it.tags && it.tags.length
+            ? ` <span class="list-item-tags">[${escapeHtml(it.tags.join(', '))}]</span>`
+            : '';
+        parts.push(
+          `<div class="list-item">` +
+            `<div class="list-item-name">▸ ${escapeHtml(it.name)}${tags}</div>` +
+            (it.description
+              ? `<div class="list-item-desc">${escapeHtml(it.description)}</div>`
+              : '') +
+            `</div>`
+        );
+      });
+    });
+    return parts.join('');
+  }
+
   // ─── Sidebar: models, sessions, MCP servers, specialists ───────────
 
   async function updateModelSelect() {
@@ -1717,9 +1863,16 @@
               ? 'connecting'
               : 'error';
         const info = document.createElement('div');
+        const toolsLine =
+          (s.tools || []).length > 0
+            ? `<br><span class="status" style="color:var(--text-dim)">${escapeHtml(
+                s.tools.map((t) => t.name).join(', ')
+              )}</span>`
+            : '';
         info.innerHTML =
           `<span class="name">${escapeHtml(s.name)}</span><br>` +
-          `<span class="status ${statusClass}">${escapeHtml(s.status || 'unknown')}</span>`;
+          `<span class="status ${statusClass}">${escapeHtml(s.status || 'unknown')}</span>` +
+          toolsLine;
         item.appendChild(info);
         container.appendChild(item);
       });
@@ -1744,9 +1897,16 @@
         const item = document.createElement('div');
         item.className = 'server-item';
         const info = document.createElement('div');
+        const tagBits = [];
+        if (s.model) tagBits.push(s.model);
+        if (s.modes && s.modes.length) tagBits.push(s.modes.join('/'));
+        const tagLine = tagBits.length
+          ? `<br><span class="status" style="color:var(--text-dim)">${escapeHtml(tagBits.join(', '))}</span>`
+          : '';
         info.innerHTML =
           `<span class="name">${escapeHtml(s.name)}</span><br>` +
-          `<span class="status">${escapeHtml(s.description || '').slice(0, 60)}</span>`;
+          `<span class="status">${escapeHtml(s.description || '').slice(0, 60)}</span>` +
+          tagLine;
         item.appendChild(info);
         container.appendChild(item);
       });
@@ -1880,7 +2040,7 @@
       sessionStore.incrementTurnCount();
       updateStatusBar();
     } catch (e) {
-      addSystemMessage('Error: ' + e);
+      addSystemMessage(describeError(e));
     } finally {
       thinking.stop();
       stopElapsedTimer();
@@ -2025,7 +2185,7 @@
         hideStopButton();
       }
     } catch (e) {
-      addSystemMessage('interrupt failed: ' + (e.message || e));
+      addSystemMessage(describeError(e, 'interrupt failed: '));
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -2038,7 +2198,10 @@
     '/model': cmdModel,
     '/sessions': cmdSessions,
     '/mcp': cmdMcp,
+    '/tools': cmdTools,
     '/specialists': cmdSpecialists,
+    '/subagents': cmdSubagents,
+    '/guardrails': cmdGuardrails,
     '/stats': cmdStats,
     '/batch': cmdBatch,
     '/export': cmdExport,
@@ -2047,6 +2210,7 @@
     '/endpoint': cmdEndpoint,
     '/attach': cmdAttach,
     '/theme': cmdTheme,
+    '/layout': cmdLayout,
   };
 
   // Theme picker (v0.3.0 PR 7, mast-web#27). Themes are CSS-variable
@@ -2086,7 +2250,7 @@
     if (args.length === 0) {
       const cur = currentTheme();
       const list = THEMES.map((t) => `${t.id === cur ? '> ' : '  '}${t.id.padEnd(18)} ${t.label}`);
-      addSystemMessage('Themes:\n' + list.join('\n') + '\n\nUsage: /theme <id>');
+      addSystemMessage('Themes:\n' + list.join('\n') + '\n\nUsage: /theme <id>', true);
       return;
     }
     const id = args[0].toLowerCase();
@@ -2097,6 +2261,56 @@
     }
     applyTheme(id);
     addSystemMessage('Theme: ' + id);
+  }
+
+  // Layout picker — orthogonal to /theme (color) and independently
+  // switchable. Two transcript layouts:
+  //   chat (default) — user turns right-aligned, chat-bubble style.
+  //   log             — everything left-aligned like a terminal log;
+  //                     user turns get a "❯ " prompt-glyph prefix
+  //                     instead of alignment to stay distinguishable.
+  // Applied via <body data-layout="…">, same mechanism as /theme's
+  // data-theme. Persisted in localStorage under 'mast-web:layout'.
+  // CSS lives in web/styles.css (search for /* Layouts */).
+  const LAYOUTS = [
+    { id: 'chat', label: 'Chat (right-aligned user turns)' },
+    { id: 'log', label: 'Log (left-aligned, prompt-glyph prefixed)' },
+  ];
+
+  function applyLayout(id) {
+    const known = LAYOUTS.find((l) => l.id === id);
+    const chosen = known ? id : 'chat';
+    if (chosen === 'chat') {
+      document.body.removeAttribute('data-layout');
+    } else {
+      document.body.setAttribute('data-layout', chosen);
+    }
+    try {
+      localStorage.setItem('mast-web:layout', chosen);
+    } catch {
+      /* ignore quota errors */
+    }
+  }
+
+  function currentLayout() {
+    return document.body.getAttribute('data-layout') || 'chat';
+  }
+
+  function cmdLayout(args) {
+    if (args.length === 0) {
+      const cur = currentLayout();
+      const list = LAYOUTS.map((l) => `${l.id === cur ? '> ' : '  '}${l.id.padEnd(18)} ${l.label}`);
+      addSystemMessage('Layouts:\n' + list.join('\n') + '\n\nUsage: /layout <id>', true);
+      return;
+    }
+    const id = args[0].toLowerCase();
+    const known = LAYOUTS.find((l) => l.id === id);
+    if (!known) {
+      addSystemMessage(`Unknown layout "${id}". /layout with no args to list.`);
+      return;
+    }
+    applyLayout(id);
+    addSystemMessage('Layout: ' + id);
   }
 
   async function handleSlashCommand(input) {
@@ -2146,7 +2360,7 @@
         // Render as a system message with the rendered HTML inlined.
         addSystemMessageHTML(html);
       } else {
-        addSystemMessage(JSON.stringify(res, null, 2));
+        addSystemMessage(JSON.stringify(res, null, 2), true);
       }
     } catch (e) {
       addSystemMessage('/' + name + ' failed: ' + (e.message || e));
@@ -2159,8 +2373,11 @@
       '/attach <url> [<token>] [<sid>]  — Add a backend daemon (existing daemons stay connected)',
       '/model [name]      — List or switch model',
       '/sessions [list|switch <id>]  — Manage sessions',
-      '/mcp list          — Show MCP servers (backend-configured; read-only)',
+      '/mcp list          — Show MCP servers + their tools (backend-configured; read-only)',
+      '/tools             — Show the flat registered-tool catalog',
       '/specialists list  — Show registered specialists',
+      '/subagents [events <name> [since]]  — Configured subagent catalog / turn drill-down',
+      '/guardrails [reset [watchdog|cost_ceiling|all] [budget]]  — Watchdog + cost-ceiling status/reset',
       '/stats             — Show session stats',
       '/batch             — Open batch panel',
       '/export [fmt]      — Export session (json|md)',
@@ -2168,6 +2385,7 @@
       '/whoami            — Show backend identity',
       '/endpoint          — Reconfigure backend endpoint',
       '/theme [id]        — List or switch themes',
+      '/layout [id]       — List or switch transcript layout (chat|log)',
       '',
       'Press Ctrl+/ (Cmd+/ on macOS) to see all keyboard shortcuts.',
     ];
@@ -2188,7 +2406,7 @@
     if (serverLines.length > 0) {
       helpText += '\n\nServer-advertised:\n' + serverLines.join('\n');
     }
-    addSystemMessage(helpText);
+    addSystemMessage(helpText, true);
   }
 
   async function cmdModel(args) {
@@ -2201,7 +2419,7 @@
       const list = (models || [])
         .map((m) => `${m.id === currentModel ? '> ' : '  '}${m.id} (${m.label})`)
         .join('\n');
-      addSystemMessage('Models:\n' + list);
+      addSystemMessage('Models:\n' + list, true);
       return;
     }
     const name = args[0];
@@ -2231,7 +2449,7 @@
       const list = sessions
         .map((s) => `${s.active ? '> ' : '  '}${s.id}  ${s.label || ''}`)
         .join('\n');
-      addSystemMessage('Sessions:\n' + list);
+      addSystemMessage('Sessions:\n' + list, true);
     } else if (sub === 'switch') {
       const id = args[1];
       if (!id) {
@@ -2261,12 +2479,43 @@
         );
         return;
       }
-      const list = servers.map((s) => `  ${s.name}: ${s.status}`).join('\n');
-      addSystemMessage('MCP Servers (backend-configured, read-only):\n' + list);
+      const groups = servers.map((s) => ({
+        header: `${s.name} — ${s.status}`,
+        items: (s.tools || []).map((t) => ({ name: t.name, description: t.description })),
+      }));
+      addSystemMessageHTML(renderListHTML('MCP servers', groups));
     } else {
       addSystemMessage(
         'MCP server lifecycle is backend-controlled. /mcp list shows what the backend has configured.'
       );
+    }
+  }
+
+  // /tools — flat registered-tool catalog (GET /sessions/{sid}/tools).
+  // Distinct from /mcp list, which buckets the same catalog by MCP
+  // server; this is the ungrouped view, annotated with each tool's
+  // source classification and permission gate state where the
+  // backend provides them.
+  async function cmdTools(_args) {
+    if (!connected) {
+      addSystemMessage('Not connected to a backend');
+      return;
+    }
+    try {
+      const tools = await mast.listTools();
+      if (!tools || tools.length === 0) {
+        addSystemMessage('No tools registered on the backend.');
+        return;
+      }
+      const items = tools.map((t) => {
+        const tags = [];
+        if (t.source) tags.push(t.source === 'mcp' && t.server ? t.server : t.source);
+        if (t.gate_state) tags.push(t.gate_state);
+        return { name: t.name || t, tags, description: t.description };
+      });
+      addSystemMessageHTML(renderListHTML(`Tools (${items.length})`, [{ items }]));
+    } catch (e) {
+      addSystemMessage(describeError(e));
     }
   }
 
@@ -2280,8 +2529,130 @@
       addSystemMessage('No specialists registered on the backend.');
       return;
     }
-    const list = specs.map((s) => `  ${s.name}: ${s.description || ''}`).join('\n');
-    addSystemMessage('Specialists:\n' + list);
+    const items = specs.map((s) => {
+      const tags = [];
+      if (s.model) tags.push(s.model);
+      if (s.modes && s.modes.length) tags.push(s.modes.join('/'));
+      return { name: s.name, tags, description: s.description };
+    });
+    addSystemMessageHTML(renderListHTML('Specialists', [{ items }]));
+  }
+
+  // /subagents [list]              — configured subagent catalog
+  // /subagents events <name> [since] — a subagent's persisted turns
+  // (core-agent#627/#634 catalog + #638/#687 drill-down).
+  async function cmdSubagents(args) {
+    if (!connected) {
+      addSystemMessage('Not connected to a backend');
+      return;
+    }
+    const sub = (args[0] || 'list').toLowerCase();
+    if (sub === 'events') {
+      const name = args[1];
+      if (!name) {
+        addSystemMessage('Usage: /subagents events <name> [since]');
+        return;
+      }
+      const since = args[2] !== undefined ? Number(args[2]) : undefined;
+      try {
+        const out = await mast.getSubagentEvents(name, {
+          since: Number.isFinite(since) ? since : undefined,
+        });
+        const events = out.events || [];
+        if (events.length === 0) {
+          addSystemMessage(`No persisted events for subagent "${name}" yet.`);
+          return;
+        }
+        // Preview the tail — pagination further back is available via
+        // the `since` arg once next_since is known.
+        const preview = events
+          .slice(-10)
+          .map((e) => `  #${e.seq} ${summarizeAgentEvent(e.event)}`)
+          .join('\n');
+        addSystemMessage(
+          `Subagent "${name}" — ${events.length} event(s)` +
+            ` (next_since=${out.next_since}${out.truncated ? ', truncated' : ''}):\n` +
+            preview,
+          true
+        );
+      } catch (e) {
+        addSystemMessage(describeError(e));
+      }
+      return;
+    }
+    try {
+      const subs = await mast.listConfiguredSubagents();
+      if (!subs || subs.length === 0) {
+        addSystemMessage('No subagents configured on the backend.');
+        return;
+      }
+      const items = subs.map((s) => ({
+        name: s.name,
+        tags: s.modes && s.modes.length ? [s.modes.join('/')] : [],
+        description: s.description,
+      }));
+      addSystemMessageHTML(
+        renderListHTML('Configured subagents', [{ items }]) +
+          '<div class="list-item-desc" style="margin-top:8px">Usage: /subagents events &lt;name&gt; [since]</div>'
+      );
+    } catch (e) {
+      addSystemMessage(describeError(e));
+    }
+  }
+
+  // /guardrails                              — show watchdog + cost-ceiling state
+  // /guardrails reset [watchdog|cost_ceiling|all] [budget-usd]  — reset
+  // (core-agent#670/#671; unblocks the /reset-ceiling non-goal in
+  // docs/v0.3-plan.md).
+  async function cmdGuardrails(args) {
+    if (!connected) {
+      addSystemMessage('Not connected to a backend');
+      return;
+    }
+    if ((args[0] || '').toLowerCase() === 'reset') {
+      const guardrail = args[1] || undefined;
+      const budget = args[2] !== undefined ? Number(args[2]) : undefined;
+      try {
+        const r = await mast.resetGuardrails({
+          guardrail,
+          additionalBudgetUsd: Number.isFinite(budget) ? budget : undefined,
+        });
+        if (r.ok) {
+          addSystemMessage(
+            'Guardrails reset: ' +
+              (r.reset && r.reset.length ? r.reset.join(', ') : '(nothing tripped)'),
+            true
+          );
+        } else {
+          addSystemMessage(
+            r.message ||
+              'Reset would immediately re-trip — pass a budget: /guardrails reset cost_ceiling <usd>',
+            true
+          );
+        }
+      } catch (e) {
+        addSystemMessage(describeError(e, 'guardrails reset failed: '));
+      }
+      return;
+    }
+    try {
+      const g = await mast.getGuardrails();
+      const w = g.watchdog || {};
+      const c = g.cost_ceiling || {};
+      addSystemMessage(
+        `Guardrails:\n` +
+          `  Watchdog:      mode=${w.mode || 'off'} tripped=${!!w.tripped}` +
+          `${w.reason ? ' (' + w.reason + ')' : ''}\n` +
+          `  Cost ceiling:  $${(c.session_cost_usd || 0).toFixed(2)} / ` +
+          `$${(c.max_session_usd || 0).toFixed(2)} tripped=${!!c.tripped}` +
+          `${c.reason ? ' (' + c.reason + ')' : ''}\n` +
+          `  Halted:        ${!!g.halted}\n\n` +
+          `Usage: /guardrails reset [watchdog|cost_ceiling|all] [additional-budget-usd]`,
+        true
+      );
+    } catch (e) {
+      addSystemMessage(describeError(e));
+    }
   }
 
   async function cmdStats() {
@@ -2299,7 +2670,8 @@
           `  Tool calls:  ${s.totalToolCalls}\n` +
           `  Cost:        $${(s.totalCostUSD || 0).toFixed(4)}\n` +
           `  Avg TTFB:    ${s.avgTtfbMs.toFixed(0)}ms\n` +
-          `  Avg total:   ${s.avgTotalMs.toFixed(0)}ms`
+          `  Avg total:   ${s.avgTotalMs.toFixed(0)}ms`,
+        true
       );
     } catch (e) {
       addSystemMessage('Error: ' + e);
@@ -2352,7 +2724,8 @@
     try {
       const info = await mast.fetchIdentity();
       addSystemMessage(
-        `Identity:\n  Email:   ${info.email || '(unknown)'}\n  Source:  ${info.source || '(unknown)'}`
+        `Identity:\n  Email:   ${info.email || '(unknown)'}\n  Source:  ${info.source || '(unknown)'}`,
+        true
       );
     } catch (e) {
       addSystemMessage('Cannot reach backend: ' + e.message);
@@ -3108,6 +3481,11 @@
       applyTheme(localStorage.getItem('mast-web:theme') || 'default');
     } catch {
       applyTheme('default');
+    }
+    try {
+      applyLayout(localStorage.getItem('mast-web:layout') || 'chat');
+    } catch {
+      applyLayout('chat');
     }
     installKeyboardShortcuts();
 

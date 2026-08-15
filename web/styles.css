@@ -455,9 +455,33 @@ body {
 }
 
 .message.user {
-  background: var(--bg-elevated);
+  /* Tinted with the active theme's own --blue (rather than a flat
+     --bg-elevated, which .cmd-output also uses) so user turns read as
+     visually distinct at a glance, not just "the blue text one" —
+     color-mix keeps this correct across all six themes without a
+     hardcoded rgba per theme. */
+  background: color-mix(in srgb, var(--blue) 16%, var(--bg-elevated));
+  border-left: 4px solid var(--blue);
   align-self: flex-end;
   color: var(--blue);
+  font-weight: 500;
+}
+
+/* ─── Layouts (/layout slash command) ────────────────────────────────
+   Default 'chat' layout is the flex-end rule above (right-aligned
+   user turns, chat-bubble style) — no data-layout attribute needed.
+   'log' layout left-aligns everything like a terminal transcript;
+   user turns lose the alignment cue so they get a "❯ " prompt-glyph
+   prefix instead to stay distinguishable from system/assistant rows.
+   Applied to <body data-layout="…">, same mechanism as /theme's
+   data-theme. Persistence + slash command wiring live in web/app.js. */
+body[data-layout='log'] .message.user {
+  align-self: flex-start;
+}
+
+body[data-layout='log'] .message.user::before {
+  content: '❯ ';
+  color: var(--text-dim);
 }
 
 .message.assistant {
@@ -614,10 +638,75 @@ body {
 
 .message.system {
   color: var(--text-dim);
-  font-size: 11px;
-  font-style: italic;
-  align-self: center;
-  text-align: center;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+
+  /* Slash-command output (e.g. /help, /subagents, /theme) is built as
+     multi-line text with padEnd()-aligned columns — pre-wrap preserves
+     both the newlines and the alignment, which the previous
+     single-line-notice styling (italic, center-aligned, no
+     white-space rule) collapsed into one run-on line. */
+  white-space: pre-wrap;
+
+  /* Anchor to the left edge like assistant messages, not centered as
+     a floating toast — a short one-line notice reads fine either way,
+     but multi-line command output (lists, stats, help) looked
+     disconnected from everything else in the transcript when centered. */
+  align-self: flex-start;
+  text-align: left;
+}
+
+/* Built-in command output (vs. plain connection/status notices, which
+   keep the muted default above) — /mcp, /tools, /specialists,
+   /subagents, /stats, /help, /guardrails, /whoami. Marked via the
+   `cmd-output` class (see addSystemMessage's cmdOutput flag /
+   addSystemMessageHTML in app.js) so it reads as distinct, structured
+   data rather than a transient toast. */
+.message.system.cmd-output {
+  color: var(--text);
+  background: var(--bg-elevated);
+  border-left: 3px solid var(--green);
+  padding: 10px 14px;
+}
+
+/* Structured system-message lists — /mcp, /tools, /specialists,
+   /subagents. Rendered via app.js's renderListHTML() + addSystemMessageHTML
+   rather than a plain-text run-on line, so a bulleted name + tags sits
+   on its own line with the description indented below it (mirrors
+   core-tui's renderToolList / MCP-server renderer). */
+.message.system .list-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.message.system .list-group-header {
+  margin: 10px 0 4px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.message.system .list-group-header:first-of-type {
+  margin-top: 0;
+}
+
+.message.system .list-item {
+  margin: 0 0 8px 12px;
+}
+
+.message.system .list-item-name {
+  color: var(--text);
+}
+
+.message.system .list-item-tags {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.message.system .list-item-desc {
+  margin: 2px 0 0 16px;
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 .message.tool-call {

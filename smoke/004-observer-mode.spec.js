@@ -48,6 +48,6 @@ test.describe('smoke: 004-observer-mode', () => {
     // the "$…" segment.
     const footer = page.locator('#output-area .turn-footer').last();
     await expect(footer).toContainText('$0.000040');
-    await expect(footer).toContainText('12 in / 4 out tokens');
+    await expect(footer).toContainText('12↑ / 4↓ tokens');
   });
 });

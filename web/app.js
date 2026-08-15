@@ -2422,6 +2422,8 @@
     { id: 'high-contrast', label: 'High Contrast (WCAG AAA)' },
     { id: 'mono', label: 'Monochrome' },
     { id: 'paper', label: 'Paper (soft light)' },
+    { id: 'grayscale-dark', label: 'Google Grayscale Dark + Gemini Aurora' },
+    { id: 'grayscale-light', label: 'Google Grayscale Light + Gemini Aurora' },
   ];
 
   function applyTheme(id) {

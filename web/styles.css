@@ -38,6 +38,53 @@
   --glow-amt: 34%;
   --frame-amt: 46%;
   --scan: rgb(255 255 255 / 2.5%);
+
+  /* Panel hue slots. The spatial shell colors each terminal from one of
+     four slots. They default to the status palette so existing themes
+     are unchanged, but a theme can now recolor terminals without
+     dragging every "connected" dot and error line along with them. */
+  --hue-1: var(--accent);
+  --hue-2: var(--green);
+  --hue-3: var(--yellow);
+  --hue-4: var(--red);
+
+  /* Gemini Aurora. One gradient, spent sparingly on the active terminal
+     and the wordmark; its stops are also what the Google themes hand to
+     the four hue slots above. */
+  --aurora: linear-gradient(90deg, #217bfe 0%, #078efb 33%, #a770ef 66%, #ff5e62 100%);
+  --aurora-1: #217bfe;
+  --aurora-2: #078efb;
+  --aurora-3: #a770ef;
+  --aurora-4: #ff5e62;
+  --brand-image: none;
+  --brand-color: var(--accent);
+
+  /* Room lighting model, consumed only by spatial.css. The defaults
+     below reproduce the current dark room verbatim, so a theme that
+     says nothing about the room still gets the neon one.
+
+     Only hue-independent knobs belong here. A custom property's own
+     var() references are resolved on the element that *declares* it,
+     not where it is used — so anything mentioning the per-panel --hue
+     has to be declared on .panel / .panel-cast (see the companion
+     blocks under each theme below), or it computes to nothing. */
+  --room-core: #0a1a22;
+  --room-mid: #04070a;
+  --room-edge: #000;
+  --room-vignette: rgb(0 0 0 / 72%);
+  --room-surface: rgb(0 0 0 / 94%);
+  --room-surface-bar: rgb(0 0 0 / 70%);
+  --room-on-hue: #000;
+  --room-tint: 6%;
+  --room-tint-bar: 22%;
+  --cast-opacity: 0.55;
+  --cast-opacity-active: 0.85;
+
+  /* How far a non-focused terminal falls back into the room. Fading
+     toward black hides a panel much faster than fading toward white
+     does the reverse, so light rooms hold theirs higher. */
+  --panel-recede: 0.42;
+  --panel-recede-busy: 0.72;
 }
 
 /* ─── Themes (v0.3.0 PR 7) ──────────────────────────────────────────
@@ -143,6 +190,142 @@ body[data-theme='paper'] {
   --glow-amt: 13%;
   --frame-amt: 34%;
   --scan: rgb(0 0 0 / 1.5%);
+}
+
+/* ─── Google palettes + Gemini Aurora ───────────────────────────────
+   The room chrome stays grayscale (Google Material greys); the color
+   budget is spent entirely on the terminals, which take one Aurora
+   stop each. See google-colors.md. */
+
+body[data-theme='grayscale-dark'] {
+  --bg: #202124; /* Grey 900 */
+  --bg-surface: #1a1b1e;
+  --bg-elevated: #2a2b2e;
+  --border: #3c4043; /* Grey 800 */
+  --border-soft: #5f6368; /* Grey 700 */
+  --text: #e8eaed; /* Grey 200 */
+  --text-dim: #9aa0a6; /* Grey 500 */
+  --accent: #bdc1c6; /* Grey 400 — the room stays grey … */
+  --accent-hover: #e8eaed;
+  --green: #81c995;
+  --red: #f28b82;
+  --yellow: #fdd663;
+  --blue: #8ab4f8;
+
+  /* … and the color lives in the terminals. */
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 20%;
+  --frame-amt: 40%;
+  --scan: rgb(255 255 255 / 1.8%);
+  --room-core: #2a2b2e;
+  --room-mid: #202124;
+  --room-edge: #121212;
+  --room-vignette: rgb(0 0 0 / 58%);
+  --room-surface: rgb(18 18 18 / 94%);
+  --room-surface-bar: rgb(32 33 36 / 82%);
+  --room-on-hue: #202124;
+}
+
+body[data-theme='grayscale-light'] {
+  --bg: #f8f9fa; /* Grey 50 */
+  --bg-surface: #fff;
+  --bg-elevated: #f1f3f4;
+  --border: #dadce0; /* Grey 300 */
+  --border-soft: #bdc1c6; /* Grey 400 — Grey 300 vanishes on a white HUD */
+  --text: #202124;
+  --text-dim: #5f6368;
+  --accent: #5f6368; /* Grey 700 */
+  --accent-hover: #202124;
+  --green: #188038;
+  --red: #d50000;
+  --yellow: #dc6d00;
+  --blue: #1a73e8;
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 13%;
+  --frame-amt: 34%;
+  --scan: transparent;
+}
+
+/* Companion block: everything the Aurora themes change about a panel
+   or its floor cast has to be declared *on* those elements, because
+   .panel is where --hue exists and because a declaration on the element
+   itself always beats one inherited from <body>. */
+body:is([data-theme='grayscale-dark'], [data-theme='grayscale-light']) :is(.panel, .panel-cast) {
+  --panel-edge-active: var(--aurora);
+  --bar-fill-active: var(--aurora);
+  --cast-fill-active: var(--aurora);
+
+  /* Matches the grazing-angle falloff of the default radial cast; the
+     gradient supplies the color, the mask supplies the shape. */
+  --cast-mask-active: radial-gradient(
+    ellipse 42% 100% at 50% 50%,
+    #000 0%,
+    rgb(0 0 0 / 62%) 38%,
+    transparent 100%
+  );
+}
+
+/* box-shadow cannot take a gradient, so the active panel's Aurora edge
+   is approximated by three directional casts: blue off the left edge,
+   coral off the right, amethyst behind. */
+body[data-theme='grayscale-dark'] .panel {
+  --panel-shadow-active:
+    -20px 0 36px color-mix(in srgb, var(--aurora-1) 45%, transparent),
+    20px 0 36px color-mix(in srgb, var(--aurora-4) 40%, transparent),
+    0 0 76px color-mix(in srgb, var(--aurora-3) 26%, transparent),
+    inset 0 0 30px rgb(255 255 255 / 6%);
+}
+
+/* Every light theme wants the same room: pale gradient, grey grid,
+   paper panels, drop shadows instead of a neon halo. Declaring it once
+   here is also the repair for solarized-light and paper, which until
+   now floated light panels in a black void. */
+body.spatial:is(
+    [data-theme='grayscale-light'],
+    [data-theme='solarized-light'],
+    [data-theme='paper']
+  ) {
+  --room-core: var(--bg-surface);
+  --room-mid: var(--bg);
+  --room-edge: color-mix(in srgb, var(--text) 12%, var(--bg));
+  --room-vignette: color-mix(in srgb, var(--text) 14%, transparent);
+  --room-surface: color-mix(in srgb, var(--bg-surface) 96%, transparent);
+  --room-surface-bar: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  --room-on-hue: #fff;
+  --room-tint: 2%;
+  --room-tint-bar: 8%;
+  --cast-opacity: 0.18;
+  --cast-opacity-active: 0.3;
+  --panel-recede: 0.66;
+  --panel-recede-busy: 0.88;
+}
+
+/* Material elevation instead of neon: two grey drop shadows plus a
+   hue-tinted hairline, which is all the panel identity a light room
+   needs once the glow is gone. Scoped to .panel because --hue only
+   exists there. */
+body.spatial:is(
+    [data-theme='grayscale-light'],
+    [data-theme='solarized-light'],
+    [data-theme='paper']
+  )
+  .panel {
+  --panel-shadow:
+    0 1px 2px rgb(60 64 67 / 30%), 0 6px 18px rgb(60 64 67 / 15%),
+    0 0 0 1px color-mix(in srgb, var(--hue) 38%, var(--border));
+  --panel-shadow-active:
+    0 2px 6px rgb(60 64 67 / 30%), 0 12px 34px rgb(60 64 67 / 20%),
+    0 0 24px color-mix(in srgb, var(--hue) 26%, transparent);
 }
 
 body {

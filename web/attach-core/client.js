@@ -23,20 +23,30 @@
 // status-update.capabilities merge) plus the /whoami endpoint +
 // slash-response `_render` / `_schema` reserved keys.
 //
+// 2026-08-14 sync: added guardrails read/reset (core-agent#670/#671,
+// unblocks the /reset-ceiling non-goal from mast-web docs/v0.3-plan.md),
+// the configured-subagent catalog (core-agent#627/#634), the subagent
+// turn drill-down (core-agent#638/#687), and BackendDrainingError for
+// 503 + Retry-After on shutdown drain (core-agent#564/#567).
+//
 // Depends on sibling modules (loaded ahead of this file in index.html):
-//   attach-core/errors.js    — PermanentStreamError
+//   attach-core/errors.js    — PermanentStreamError, BackendDrainingError
 //   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
 //   attach-core/replay.js    — ReplayFilter (attach cutoff)
 //
 // Endpoints consumed (all under <endpoint>):
-//   GET  /sessions                         → list sessions
-//   GET  /sessions/{sid}/events            → SSE stream
-//   POST /sessions/{sid}/inject            → queue operator prompt
-//   POST /sessions/{sid}/wake              → resume agent after inject
-//   POST /sessions/{sid}/interrupt         → cancel in-flight turn
-//   GET  /sessions/{sid}/status            → current state snapshot
-//   GET  /sessions/{sid}/tools             → registered tools
-//   GET  /sessions/{sid}/agents            → registered agents
+//   GET  /sessions                              → list sessions
+//   GET  /sessions/{sid}/events                 → SSE stream
+//   POST /sessions/{sid}/inject                 → queue operator prompt
+//   POST /sessions/{sid}/wake                   → resume agent after inject
+//   POST /sessions/{sid}/interrupt               → cancel in-flight turn
+//   GET  /sessions/{sid}/status                 → current state snapshot
+//   GET  /sessions/{sid}/tools                  → registered tools
+//   GET  /sessions/{sid}/agents                 → registered (live) agents
+//   GET  /sessions/{sid}/subagents              → configured subagent catalog
+//   GET  /sessions/{app}/{sid}/agents/{n}/events → subagent turn drill-down
+//   GET  /sessions/{sid}/guardrails             → watchdog / cost-ceiling state
+//   POST /sessions/{sid}/guardrails/reset       → operator reset
 //
 // SSE event types (per spec v1.4.0 §2):
 //   capabilities    — first frame; protocol_version + event_types +
@@ -75,12 +85,25 @@ window.AttachClient = (function () {
   // errors.js + protocol.js + replay.js before this file.
   const PermanentStreamError =
     (window.AttachCoreErrors && window.AttachCoreErrors.PermanentStreamError) || null;
+  const BackendDrainingError =
+    (window.AttachCoreErrors && window.AttachCoreErrors.BackendDrainingError) || null;
   const fanoutAgentFrame =
     (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
   const ReplayFilter = (window.AttachCoreReplay && window.AttachCoreReplay.ReplayFilter) || null;
-  if (!PermanentStreamError || !fanoutAgentFrame || !ReplayFilter) {
+  if (!PermanentStreamError || !BackendDrainingError || !fanoutAgentFrame || !ReplayFilter) {
     throw new Error(
       'attach-core/client.js: missing dependencies — errors.js, protocol.js, and replay.js must load first'
+    );
+  }
+
+  // Builds a BackendDrainingError from a 503 response, extracting the
+  // Retry-After header (seconds) when present. Shared by every write
+  // call that can hit routeSessionDrainGated server-side.
+  function drainError(r, text) {
+    const retryAfter = parseInt(r.headers.get('Retry-After') || '', 10);
+    return new BackendDrainingError(
+      text || 'backend is shutting down',
+      Number.isFinite(retryAfter) ? retryAfter : null
     );
   }
 
@@ -137,6 +160,14 @@ window.AttachClient = (function () {
         headers: { ...this._headers(), 'Content-Type': 'application/json' },
         body: body ? JSON.stringify(body) : null,
       });
+      if (r.status === 503) {
+        // Daemon is draining for shutdown — /inject, /wake, and other
+        // session-scoped write routes refuse intake rather than queue
+        // a message that would be lost. Transient; not classified as
+        // PermanentStreamError since the reconnect loop should keep
+        // running and a retry after the daemon restarts will succeed.
+        throw drainError(r, await r.text());
+      }
       if (!r.ok) {
         const text = await r.text();
         const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
@@ -422,6 +453,9 @@ window.AttachClient = (function () {
         // condition — just tells the caller to hide the affordance.
         return { ok: false, unsupported: true };
       }
+      if (r.status === 503) {
+        throw drainError(r, await r.text());
+      }
       if (!r.ok) {
         const text = await r.text();
         const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
@@ -492,12 +526,107 @@ window.AttachClient = (function () {
     async whoami() {
       return this._get('/whoami');
     }
+
+    // GET /sessions/{sid}/guardrails — current watchdog + cost-ceiling
+    // trip state. Always 200 (zero-value shape when the agent has no
+    // GuardrailProvider):
+    //   { watchdog: { mode, tripped, reason? },
+    //     cost_ceiling: { max_turn_usd, max_session_usd,
+    //                     session_cost_usd, tripped, reason?,
+    //                     would_retrip },
+    //     halted }
+    // mode ∈ 'off' | 'warn' | 'feedback' | 'enforce'.
+    // See core-agent pkg/attach/guardrails.go.
+    async getGuardrails() {
+      return this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/guardrails');
+    }
+
+    // POST /sessions/{sid}/guardrails/reset — operator-facing reset
+    // for a tripped watchdog and/or cost ceiling (unblocks the
+    // /reset-ceiling UX deferred pending core-agent#331 design).
+    // `guardrail` selects which one ('watchdog' | 'cost_ceiling' |
+    // 'all', default 'all'); `additionalBudgetUsd` raises the cost
+    // ceiling before re-checking so the reset doesn't immediately
+    // re-trip on a session whose usage already exceeds it.
+    //
+    // A 409 means the reset would immediately re-trip (more budget
+    // needed) — a structured refusal, not a transport failure, so it
+    // resolves with `ok: false` rather than throwing; callers branch
+    // on `ok`. See core-agent pkg/attach/handlers_operator.go:256-331.
+    async resetGuardrails({ guardrail, additionalBudgetUsd } = {}) {
+      const body = {};
+      if (guardrail) body.guardrail = guardrail;
+      if (typeof additionalBudgetUsd === 'number') body.additional_budget_usd = additionalBudgetUsd;
+      const path = '/sessions/' + encodeURIComponent(this.sessionId) + '/guardrails/reset';
+      const r = await fetch(this.endpoint + path, {
+        method: 'POST',
+        headers: { ...this._headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 503) {
+        throw drainError(r, await r.text());
+      }
+      if (r.status === 409) {
+        const data = await r.json();
+        return { ...data, ok: false };
+      }
+      if (!r.ok) {
+        const text = await r.text();
+        const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
+        if (PermanentStreamError.isPermanentStatus(r.status)) {
+          throw new PermanentStreamError(msg, r.status);
+        }
+        throw new Error(msg);
+      }
+      const data = await r.json();
+      return { ...data, ok: true };
+    }
+
+    // GET /sessions/{sid}/subagents — the CONFIGURED subagent catalog
+    // ("what's spawnable"), distinct from listAgents() above (the
+    // LIVE roster of subagent instances that have actually run).
+    // Always 200; empty array when the agent has no
+    // SubagentCatalogProvider. Each entry:
+    //   { name, description?, model?, root?, modes }
+    // modes elements are 'sync' | 'async' (async-only for sessions
+    // created via POST /sessions, since core-agent#741).
+    // See core-agent pkg/attach/handlers.go:759-770.
+    async listConfiguredSubagents() {
+      const out = await this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/subagents');
+      return out.subagents || [];
+    }
+
+    // GET /sessions/{app}/{sid}/agents/{name}/events — a subagent's
+    // persisted inner turns (ADK events, same shape as the SSE
+    // `agent` frame). Paged via since/limit (defaults 0 / 500 server-
+    // side, max 5000); response carries next_since + truncated for
+    // resuming. 404 means the name isn't a known live or historical
+    // subagent (body includes an `available` roster). 412 means the
+    // backend has no event log (started without --session-db).
+    // See core-agent pkg/attach/handlers_subagent_events.go.
+    async getSubagentEvents(app, name, { since, limit } = {}) {
+      const params = new URLSearchParams();
+      if (since) params.set('since', String(since));
+      if (limit) params.set('limit', String(limit));
+      const qs = params.toString();
+      const path =
+        '/sessions/' +
+        encodeURIComponent(app) +
+        '/' +
+        encodeURIComponent(this.sessionId) +
+        '/agents/' +
+        encodeURIComponent(name) +
+        '/events' +
+        (qs ? '?' + qs : '');
+      return this._get(path);
+    }
   }
 
-  // Re-export the error class as a static on the constructor so
+  // Re-export the error classes as statics on the constructor so
   // callers can do `err instanceof AttachClient.PermanentStreamError`
   // without pulling in window.AttachCoreErrors directly.
   AttachClient.PermanentStreamError = PermanentStreamError;
+  AttachClient.BackendDrainingError = BackendDrainingError;
 
   return AttachClient;
 })();

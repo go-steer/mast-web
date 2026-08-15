@@ -37,5 +37,24 @@ window.AttachCoreErrors = (function () {
     }
   }
 
-  return { PermanentStreamError };
+  // Thrown by client._post (and other session-scoped write calls) on
+  // HTTP 503 — the daemon is draining for shutdown and is refusing to
+  // accept messages it can't guarantee delivery of (queued messages
+  // live in memory only). This is transient and self-resolving once
+  // the daemon restarts; consumers should surface a "retry shortly"
+  // message rather than a generic error, and may use
+  // retryAfterSeconds (from the Retry-After header) to time a retry.
+  // See core-agent pkg/attach/handlers.go (routeSessionDrainGated).
+  class BackendDrainingError extends Error {
+    constructor(message, retryAfterSeconds) {
+      super(message);
+      this.name = 'BackendDrainingError';
+      this.retryAfterSeconds =
+        typeof retryAfterSeconds === 'number' && Number.isFinite(retryAfterSeconds)
+          ? retryAfterSeconds
+          : null;
+    }
+  }
+
+  return { PermanentStreamError, BackendDrainingError };
 })();

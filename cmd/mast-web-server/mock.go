@@ -57,11 +57,19 @@ var (
 		"context_pct": 8,
 		"perm_mode":   "prompt",
 	}
+	// Includes a couple of <server>_<tool>-namespaced entries with
+	// source:"other" (no explicit `server` field) — mirrors the real
+	// backend's current behavior (pkg/attachadapter/capabilities.go
+	// doesn't populate MCP attribution yet) so the SPA's name-prefix
+	// fallback bucketing in mast.listMcpServers() is exercised against
+	// the mock, not just the aspirational fully-attributed shape.
 	stubTools = map[string]any{
 		"tools": []map[string]any{
-			{"name": "fs_read", "description": "Read files"},
-			{"name": "fs_write", "description": "Write files"},
-			{"name": "bash_exec", "description": "Run shell commands"},
+			{"name": "fs_read", "description": "Read files", "source": "builtin", "gate_state": "allowed"},
+			{"name": "fs_write", "description": "Write files", "source": "builtin", "gate_state": "prompted"},
+			{"name": "bash_exec", "description": "Run shell commands", "source": "builtin", "gate_state": "prompted"},
+			{"name": "kube_get", "description": "kubectl get", "source": "other", "gate_state": "allowed"},
+			{"name": "kube_apply", "description": "kubectl apply", "source": "other", "gate_state": "prompted"},
 		},
 	}
 	stubAgents = map[string]any{
@@ -77,6 +85,45 @@ var (
 		},
 		"per_turn": []any{},
 	}
+	// stubGuardrails backs GET /sessions/{sid}/guardrails (core-agent
+	// #670/#671). Untripped by default so the smoke happy-path doesn't
+	// show a paused session; fixtures that want to exercise the
+	// cost-ceiling reset UX can still hit turn-error separately.
+	stubGuardrails = map[string]any{
+		"watchdog": map[string]any{"mode": "warn", "tripped": false},
+		"cost_ceiling": map[string]any{
+			"max_turn_usd":     1.0,
+			"max_session_usd":  10.0,
+			"session_cost_usd": 0.02,
+			"tripped":          false,
+			"would_retrip":     false,
+		},
+		"halted": false,
+	}
+	// stubSubagentsCatalog backs GET /sessions/{sid}/subagents — the
+	// configured/spawnable roster (core-agent#627/#634), distinct from
+	// stubAgents (the live roster returned by GET .../agents).
+	stubSubagentsCatalog = map[string]any{
+		"subagents": []map[string]any{
+			{
+				"name":        "researcher",
+				"description": "Research + summarize",
+				"model":       "mock-model-1.5",
+				"modes":       []string{"sync", "async"},
+			},
+			{
+				"name":        "implementer",
+				"description": "Write + edit code",
+				"model":       "mock-model-1.5",
+				"modes":       []string{"async"},
+			},
+		},
+	}
+	// knownSubagentNames gates the subagent turn drill-down stub —
+	// mirrors the names in stubAgents / stubSubagentsCatalog so the
+	// 404 + `available` roster path (core-agent#638/#687) is
+	// exercisable against an unknown name too.
+	knownSubagentNames = []string{"researcher", "implementer"}
 )
 
 func newMockHandler(cfg config) (*mockHandler, error) {
@@ -162,8 +209,8 @@ func sessionSegments(path string) (app, sid string, tail []string, ok bool) {
 func isKnownSessionEndpoint(name string) bool {
 	switch name {
 	case "events", "inject", "wake", "interrupt", "status", "tools",
-		"agents", "usage", "context", "memory", "skills", "mcp",
-		"pricing", "perms", "reload", "slash":
+		"agents", "subagents", "guardrails", "usage", "context", "memory",
+		"skills", "mcp", "pricing", "perms", "reload", "slash":
 		return true
 	}
 	return false
@@ -200,10 +247,12 @@ func (h *mockHandler) deleteSession(w http.ResponseWriter, r *http.Request) {
 
 // sessionGet dispatches on the endpoint segment for GET requests
 // against /sessions/... . Handles events (SSE), perms/stream (idle
-// SSE), sidebar reads (status/tools/agents/usage), and a fallthrough
-// {} for optional-endpoint reads (memory/skills/mcp/pricing/perms).
+// SSE), sidebar reads (status/tools/agents/subagents/guardrails/usage),
+// the subagent turn drill-down (agents/{name}/events), and a
+// fallthrough {} for optional-endpoint reads (memory/skills/mcp/
+// pricing/perms).
 func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
-	_, _, tail, ok := sessionSegments(r.URL.Path)
+	_, sid, tail, ok := sessionSegments(r.URL.Path)
 	if !ok || len(tail) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
@@ -224,7 +273,20 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 	case "tools":
 		writeJSON(w, http.StatusOK, stubTools)
 	case "agents":
+		// GET .../agents/{name}/events — subagent turn drill-down
+		// (core-agent#638/#687). GET .../agents alone is the live
+		// roster (unchanged).
+		if len(tail) >= 3 && tail[1] != "" && tail[2] == "events" {
+			h.subagentEvents(w, sid, tail[1])
+			return
+		}
 		writeJSON(w, http.StatusOK, stubAgents)
+	case "subagents":
+		// Configured/spawnable roster (core-agent#627/#634), distinct
+		// from the live roster above.
+		writeJSON(w, http.StatusOK, stubSubagentsCatalog)
+	case "guardrails":
+		writeJSON(w, http.StatusOK, stubGuardrails)
 	case "usage":
 		writeJSON(w, http.StatusOK, stubUsage)
 	default:
@@ -232,6 +294,43 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 		// on optional endpoints we haven't explicitly modeled.
 		writeJSON(w, http.StatusOK, map[string]any{})
 	}
+}
+
+// subagentEvents backs GET /sessions/{app}/{sid}/agents/{name}/events
+// (core-agent#638/#687). Returns a one-event stub for known names
+// (knownSubagentNames); 404 + `available` roster otherwise, matching
+// the real backend's contract so the SPA's error path is exercisable.
+func (h *mockHandler) subagentEvents(w http.ResponseWriter, sid, name string) {
+	for _, known := range knownSubagentNames {
+		if name == known {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"agent":             name,
+				"parent_session_id": sid,
+				"branches":          []string{},
+				"events": []map[string]any{
+					{
+						"seq": 1,
+						"event": map[string]any{
+							"Author": name,
+							"Content": map[string]any{
+								"parts": []map[string]any{{"text": "mock subagent turn output from " + name}},
+							},
+						},
+					},
+				},
+				"next_since": 2,
+				"truncated":  false,
+			})
+			return
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{
+		"error":             "unknown agent",
+		"agent":             name,
+		"parent_session_id": sid,
+		"branches":          []string{},
+		"available":         knownSubagentNames,
+	})
 }
 
 // sessionPost dispatches on the endpoint segment for POST requests
@@ -268,6 +367,17 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 			"body":    "**mock**: /slash/" + name + " accepted (no side effect).",
 		})
 		return
+	case "guardrails":
+		// POST .../guardrails/reset (core-agent#670/#671). Always
+		// succeeds against the mock's permanently-untripped
+		// stubGuardrails — there's nothing to actually re-trip.
+		if len(tail) >= 2 && tail[1] == "reset" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"reset":      []string{"watchdog", "cost_ceiling"},
+				"guardrails": stubGuardrails,
+			})
+			return
+		}
 	}
 	// Everything else (inject / wake / perms/allow / perms/deny /
 	// perms/respond / pricing/* / reload) — accept as no-op.

@@ -327,6 +327,13 @@ body.spatial.dragging-camera #scene-world {
      floor pool is often too light to read at 11px: light themes point
      this at --text, dark ones lift it toward white. */
   --hue-ink: var(--hue);
+
+  /* Magnification for the reading surface. The centred panel raises it
+     so its transcript keeps the apparent type size the old z-push used
+     to give it for free — but as layout zoom, which re-lays-out and
+     re-rasterises the text, rather than as a transform, which would
+     just enlarge the same blurry bitmap. See CENTER_Z in spatial.js. */
+  --term-zoom: 1;
   --panel-border-w: 2px;
   --panel-fill: color-mix(in srgb, var(--hue) var(--room-tint), var(--room-surface));
   --panel-shadow:
@@ -390,6 +397,12 @@ body.spatial.dragging-camera #scene-world {
      from it, and this selector is the more specific of the two
      declarations on the same element. */
   --panel-edge: var(--panel-edge-active);
+
+  /* 1.25 is the factor the centred panel's layout box grew by when
+     CENTER_Z went to 0, handed back to the terminal so the transcript
+     keeps its ~89 columns and its apparent type size — drawn at native
+     resolution now instead of rasterised at 12px and enlarged. */
+  --term-zoom: 1.25;
 }
 
 /* While one terminal is centered the rest fall back into the room —
@@ -529,6 +542,12 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   color: var(--text);
   font-size: 12px;
   text-shadow: none;
+
+  /* One knob for the whole terminal subtree, including the transcript
+     primitives it borrows from styles.css. Those are sized in absolute
+     px and shared with the classic shell, so they can't be rewritten in
+     em here; zoom scales them without touching them. */
+  zoom: var(--term-zoom);
 }
 
 .term-screen {

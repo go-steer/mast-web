@@ -286,12 +286,19 @@
   // with the transcript you just asked to read. Clicking any panel
   // hands it the active slot; Escape sends it back to its parking spot.
 
-  // The centred panel sits forward of the origin, and #scene-viewport's
-  // perspective magnifies anything it pulls toward the camera. A CSS
-  // box authored at N px therefore lands on screen at N × this factor —
-  // size it in raw pixels and it overflows the window. Everything below
-  // is authored in on-screen pixels and divided back through.
-  const CENTER_Z = 250;
+  // The centred panel stays at z = 0, and it is the one number in this
+  // file worth defending. Pulling it toward the camera instead is the
+  // obvious way to say "this is the one you're reading", and it was how
+  // this worked: z = 250 under a 1250px perspective magnifies by 1.26.
+  // But the browser rasterises a panel at its *layout* size and lets
+  // the 3D pipeline resample the result, so 1.26× magnification is
+  // 1.26× upscaling of already-rendered text — which is exactly the
+  // soft, smeared transcript this was reported for. Growing --pw/--ph
+  // instead lands the same rectangle on screen with every glyph drawn
+  // at native resolution. The depth cue survives: the other panels
+  // still recede 240px when one goes active, so the active one reads as
+  // nearest without being blown up.
+  const CENTER_Z = 0;
 
   function centerMagnification() {
     return fitScale() * (PERSPECTIVE / (PERSPECTIVE - CENTER_Z));
@@ -314,12 +321,16 @@
     // this a workspace rather than a full-screen page. Wide enough to
     // read comfortably, narrow enough that the corner slots still show
     // past it.
+    //
+    // The bounds are on-screen pixels, clamped before the divide, so
+    // they keep meaning the same thing whatever CENTER_Z and fitScale()
+    // do to the magnification.
     const m = centerMagnification();
     const availW = (window.innerWidth - stageInset() - 96) * 0.72;
     const availH = (window.innerHeight - 128) * 0.88;
     return {
-      w: clamp(availW / m, 380, 900),
-      h: clamp(availH / m, 280, 660),
+      w: clamp(availW, 480, 1140) / m,
+      h: clamp(availH, 354, 835) / m,
     };
   }
 

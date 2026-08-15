@@ -35,9 +35,10 @@ type mockHandler struct {
 	frameDelayMs int
 }
 
-// mockSession is the canned session returned from GET /sessions.
-// Kept minimal — just enough for the SPA to auto-select it and open
-// an SSE stream.
+// mockSession is the canned session the SPA auto-selects on connect.
+// Kept minimal — just enough to open an SSE stream. Always first in
+// mockSessions so single-session consumers (smoke tests, index.html's
+// auto-select) keep landing on it.
 var mockSession = map[string]any{
 	"app_name":        "mast-web-mock",
 	"user_id":         "smoke@example.com",
@@ -45,6 +46,50 @@ var mockSession = map[string]any{
 	"has_event_log":   true,
 	"status":          "active",
 	"last_touched_at": "2026-07-20T12:00:00Z",
+}
+
+// mockSessions is the roster returned from GET /sessions. More than
+// one because spatial.html opens a live terminal per session — a
+// single-entry list makes the multi-panel workspace impossible to see
+// without hand-forging session IDs. Each extra session streams a
+// different fixture (sessionFixtures) so the panels don't all show
+// the same transcript.
+var mockSessions = []map[string]any{
+	mockSession,
+	{
+		"app_name":        "core-agent",
+		"user_id":         "smoke@example.com",
+		"session_id":      "ops-triage",
+		"has_event_log":   true,
+		"status":          "active",
+		"last_touched_at": "2026-07-20T11:52:00Z",
+	},
+	{
+		"app_name":        "core-agent",
+		"user_id":         "smoke@example.com",
+		"session_id":      "docs-writer",
+		"has_event_log":   true,
+		"status":          "idle",
+		"last_touched_at": "2026-07-20T09:14:00Z",
+	},
+	{
+		"app_name":        "mast",
+		"user_id":         "smoke@example.com",
+		"session_id":      "repo-indexer",
+		"has_event_log":   true,
+		"status":          "active",
+		"last_touched_at": "2026-07-20T11:59:00Z",
+	},
+}
+
+// sessionFixtures picks a per-session fixture for GET .../events when
+// the request doesn't name one explicitly. Unlisted session IDs
+// (including smoke-session) fall through to the server's --fixture,
+// so the smoke suite's expectations are unaffected.
+var sessionFixtures = map[string]string{
+	"ops-triage":   "003-tool-result-with-latency",
+	"docs-writer":  "004-observer-mode-usage-update-only",
+	"repo-indexer": "002-cost-ceiling-mid-turn",
 }
 
 // Sidebar-stub payloads. Values chosen so the sidebar panels populate
@@ -219,7 +264,11 @@ func isKnownSessionEndpoint(name string) bool {
 // ─── Handlers ────────────────────────────────────────────────────────
 
 func (h *mockHandler) listSessions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": []any{mockSession}})
+	out := make([]any, 0, len(mockSessions))
+	for _, s := range mockSessions {
+		out = append(out, s)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
 
 func (h *mockHandler) createSession(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +466,14 @@ func (h *mockHandler) preflight(w http.ResponseWriter, _ *http.Request) {
 func (h *mockHandler) sseEvents(w http.ResponseWriter, r *http.Request) {
 	fixture := r.URL.Query().Get("fixture")
 	if fixture == "" {
-		fixture = h.fixture
+		// No explicit fixture: give the demo sessions distinct
+		// transcripts, everything else the server default.
+		_, sid, _, _ := sessionSegments(r.URL.Path)
+		if named, ok := sessionFixtures[sid]; ok {
+			fixture = named
+		} else {
+			fixture = h.fixture
+		}
 	}
 	frames, err := loadFixture(h.fixturesDir, fixture)
 	if err != nil {

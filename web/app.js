@@ -2424,6 +2424,7 @@
     { id: 'paper', label: 'Paper (soft light)' },
     { id: 'grayscale-dark', label: 'Google Grayscale Dark + Gemini Aurora' },
     { id: 'grayscale-light', label: 'Google Grayscale Light + Gemini Aurora' },
+    { id: 'cloud-light', label: 'Google Cloud Light + Gemini Aurora' },
   ];
 
   function applyTheme(id) {

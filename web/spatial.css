@@ -90,8 +90,8 @@ body.spatial.dragging-camera #scene-world {
   height: 4000px;
   margin: -2000px 0 0 -2000px;
   background-image:
-    repeating-linear-gradient(to right, var(--accent) 0 2px, transparent 2px var(--grid-step)),
-    repeating-linear-gradient(to bottom, var(--accent) 0 2px, transparent 2px var(--grid-step));
+    repeating-linear-gradient(to right, var(--grid-line) 0 2px, transparent 2px var(--grid-step)),
+    repeating-linear-gradient(to bottom, var(--grid-line) 0 2px, transparent 2px var(--grid-step));
   mask-image: radial-gradient(ellipse at center, #000 0%, #000 22%, transparent 62%);
   pointer-events: none;
 

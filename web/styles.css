@@ -256,11 +256,52 @@ body[data-theme='grayscale-light'] {
   --scan: transparent;
 }
 
+/* Google Cloud's brand palette rather than the console's: it builds
+   from white, and its accent is Blue 500 instead of a neutral grey. */
+body[data-theme='cloud-light'] {
+  --bg: #f8f9fc; /* Google Grey 10 */
+  --bg-surface: #fff; /* "build from white" — panels are pure white */
+  --bg-elevated: #eef1f8;
+  --border: #dadce0;
+  --border-soft: #b9bfcc; /* a Grey 300 hairline vanishes on a white HUD */
+  --text: #212226; /* Google Grey 1000; the brand avoids pure black */
+  --text-dim: #5f6368;
+  --accent: #3186ff; /* Google Blue 500 */
+  --accent-hover: #1967d2;
+
+  /* Brand Green/Red/Yellow 500 (#00af57 / #fc413d / #fec700) are fill
+     colours — as text on white they run 2.5–3.5:1 and fail WCAG AA.
+     These four vars drive error lines, warning text and connection
+     labels, so they take the accessible Pantheon equivalents; the
+     brand tones stay where they belong, on fills and accents. */
+  --green: #188038;
+  --red: #d50000;
+  --yellow: #dc6d00;
+  --blue: #1a73e8;
+
+  /* Terminals take the Aurora, same as the grayscale pair. */
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 13%;
+  --frame-amt: 30%;
+  --scan: transparent;
+
+  /* Softened, so the grid reads as Cloud rather than as a blue cage.
+     The horizon tint is a companion rule below — the shared light-room
+     block would outrank it here. */
+  --grid-line: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
 /* Companion block: everything the Aurora themes change about a panel
    or its floor cast has to be declared *on* those elements, because
    .panel is where --hue exists and because a declaration on the element
    itself always beats one inherited from <body>. */
-body:is([data-theme='grayscale-dark'], [data-theme='grayscale-light']) :is(.panel, .panel-cast) {
+body:is([data-theme='grayscale-dark'], [data-theme='grayscale-light'], [data-theme='cloud-light'])
+  :is(.panel, .panel-cast) {
   --panel-edge-active: var(--aurora);
   --bar-fill-active: var(--aurora);
   --cast-fill-active: var(--aurora);
@@ -286,15 +327,14 @@ body[data-theme='grayscale-dark'] .panel {
     inset 0 0 30px rgb(255 255 255 / 6%);
 }
 
-/* Every light theme wants the same room: pale gradient, grey grid,
+/* Every light theme wants the same room: pale gradient, quiet grid,
    paper panels, drop shadows instead of a neon halo. Declaring it once
    here is also the repair for solarized-light and paper, which until
-   now floated light panels in a black void. */
-body.spatial:is(
-    [data-theme='grayscale-light'],
-    [data-theme='solarized-light'],
-    [data-theme='paper']
-  ) {
+   now floated light panels in a black void.
+
+   Matched by the `-light` suffix rather than by name so a new light
+   theme joins by being named one; `paper` predates the convention. */
+body.spatial:is([data-theme$='-light'], [data-theme='paper']) {
   --room-core: var(--bg-surface);
   --room-mid: var(--bg);
   --room-edge: color-mix(in srgb, var(--text) 12%, var(--bg));
@@ -310,16 +350,19 @@ body.spatial:is(
   --panel-recede-busy: 0.88;
 }
 
+/* Cloud's horizon is tinted with the brand blue rather than the
+   neutral grey the block above derives from --text. Separate rule
+   because that block would otherwise outrank the palette. */
+body.spatial[data-theme='cloud-light'] {
+  --room-edge: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  --room-vignette: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* Material elevation instead of neon: two grey drop shadows plus a
    hue-tinted hairline, which is all the panel identity a light room
    needs once the glow is gone. Scoped to .panel because --hue only
    exists there. */
-body.spatial:is(
-    [data-theme='grayscale-light'],
-    [data-theme='solarized-light'],
-    [data-theme='paper']
-  )
-  .panel {
+body.spatial:is([data-theme$='-light'], [data-theme='paper']) .panel {
   --panel-shadow:
     0 1px 2px rgb(60 64 67 / 30%), 0 6px 18px rgb(60 64 67 / 15%),
     0 0 0 1px color-mix(in srgb, var(--hue) 38%, var(--border));
@@ -341,6 +384,14 @@ body {
      the theme's --accent (themes override it on body, not :root). */
   --glow: color-mix(in srgb, var(--accent) var(--glow-amt), transparent);
   --frame: color-mix(in srgb, var(--accent) var(--frame-amt), transparent);
+
+  /* The floor and ceiling grids, split from --accent so a theme can
+     keep a saturated accent for buttons and links while the room it
+     draws stays quiet — a full-strength brand blue tiled across a
+     4000px floor is a very different amount of colour. Same reason as
+     above for living on body: in :root it would resolve --accent
+     against the default palette and hand every theme a cyan grid. */
+  --grid-line: var(--accent);
 }
 
 /* Layout */

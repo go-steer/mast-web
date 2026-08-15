@@ -1185,6 +1185,7 @@
     { id: 'default', label: 'Go brand' },
     { id: 'grayscale-dark', label: 'Google grayscale · dark' },
     { id: 'grayscale-light', label: 'Google grayscale · light' },
+    { id: 'cloud-light', label: 'Google Cloud · light' },
     { id: 'solarized-dark', label: 'Solarized dark' },
     { id: 'solarized-light', label: 'Solarized light' },
     { id: 'high-contrast', label: 'High contrast' },

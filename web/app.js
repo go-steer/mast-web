@@ -2425,6 +2425,8 @@
     { id: 'grayscale-dark', label: 'Google Grayscale Dark + Gemini Aurora' },
     { id: 'grayscale-light', label: 'Google Grayscale Light + Gemini Aurora' },
     { id: 'cloud-light', label: 'Google Cloud Light + Gemini Aurora' },
+    { id: 'pantheon-light', label: 'Google Pantheon Light + Gemini Aurora' },
+    { id: 'pantheon-dark', label: 'Google Pantheon Dark + Gemini Aurora' },
   ];
 
   function applyTheme(id) {

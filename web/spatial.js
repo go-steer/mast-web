@@ -254,6 +254,9 @@
     const cast = document.createElement('div');
     cast.className = 'panel-cast';
     cast.style.setProperty('--hue', 'var(' + HUES[p.index % HUES.length] + ')');
+    // Mirrors the panel's own slot pair, so a theme that paints the
+    // panel edge as a gradient slice can put the same slice on the floor.
+    cast.style.setProperty('--hue-next', 'var(' + HUES[(p.index + 1) % HUES.length] + ')');
     castLayer.appendChild(cast);
     return cast;
   }
@@ -405,6 +408,11 @@
     panel.className = 'panel';
     panel.dataset.kind = 'term';
     panel.style.setProperty('--hue', 'var(' + HUES[index % HUES.length] + ')');
+    // The following slot, so a theme can paint this panel's edge as a
+    // slice of a gradient running between the two. Only the themes that
+    // ask for it read this; the rest never mention --hue-next and get a
+    // flat edge from --hue alone.
+    panel.style.setProperty('--hue-next', 'var(' + HUES[(index + 1) % HUES.length] + ')');
     panel.style.setProperty('--pw', PANEL_W + 'px');
     panel.style.setProperty('--ph', PANEL_H + 'px');
     // Negative delay desynchronises the drift so the panels never
@@ -1186,6 +1194,8 @@
     { id: 'grayscale-dark', label: 'Google grayscale · dark' },
     { id: 'grayscale-light', label: 'Google grayscale · light' },
     { id: 'cloud-light', label: 'Google Cloud · light' },
+    { id: 'pantheon-light', label: 'Google Pantheon · light' },
+    { id: 'pantheon-dark', label: 'Google Pantheon · dark' },
     { id: 'solarized-dark', label: 'Solarized dark' },
     { id: 'solarized-light', label: 'Solarized light' },
     { id: 'high-contrast', label: 'High contrast' },

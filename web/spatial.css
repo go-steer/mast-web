@@ -180,6 +180,7 @@ body.spatial.dragging-camera #scene-world {
      grazing angle over near-black, so anything that spends most of its
      area below ~0.3 effective alpha simply doesn't register. */
   background-image: var(--cast-fill);
+  mask-image: var(--cast-mask);
   opacity: var(--cast-opacity);
   pointer-events: none;
   transition:
@@ -187,19 +188,24 @@ body.spatial.dragging-camera #scene-world {
     opacity 0.6s ease;
 
   --hue: var(--accent);
+
+  /* The following panel's slot; see .panel. Defaults to this cast's own
+     hue so any gradient written between the two collapses to a solid. */
+  --hue-next: var(--hue);
   --cast-fill: radial-gradient(
     ellipse 42% 100% at 50% 50%,
     color-mix(in srgb, var(--hue) 100%, transparent) 0%,
     color-mix(in srgb, var(--hue) 62%, transparent) 38%,
     transparent 100%
   );
+  --cast-mask: none;
 
   /* Overridden per-theme: an Aurora theme puts the gradient itself on
      the floor and moves the falloff into the mask. mix-blend-mode is
      not an option — #panel-casts is preserve-3d, which makes it a
      stacking context and would isolate the blend from the grid. */
   --cast-fill-active: var(--cast-fill);
-  --cast-mask-active: none;
+  --cast-mask-active: var(--cast-mask);
 }
 
 /* The active terminal's pool is the one place the gradient meets the
@@ -274,16 +280,24 @@ body.spatial.dragging-camera #scene-world {
   margin: calc(var(--ph, 320px) / -2) 0 0 calc(var(--pw, 440px) / -2);
   display: flex;
   flex-direction: column;
-  border: 2px solid var(--hue);
+
+  /* Transparent, because the edge is painted by the border-box layer
+     of the double background below. */
+  border: 2px solid transparent;
   border-radius: 8px;
 
-  /* Near-opaque: at 80% the panel behind bleeds through and the stack
-     reads as a rendering fault rather than as glass. --panel-fill is
-     named so the active panel's gradient border can reuse the exact
-     same fill in its padding-box layer. */
-  background: var(--panel-fill);
+  /* Double background: the fill clipped to padding-box, the edge to
+     border-box behind that transparent border. Keeps border-radius,
+     needs no pseudo-element — and a pseudo-element would be the wrong
+     tool anyway, since .panel is both overflow:hidden and preserve-3d.
+
+     Near-opaque: at 80% the panel behind bleeds through and the stack
+     reads as a rendering fault rather than as glass. */
+  background:
+    linear-gradient(var(--panel-fill), var(--panel-fill)) padding-box,
+    var(--panel-edge) border-box;
   box-shadow: var(--panel-shadow);
-  color: var(--hue);
+  color: var(--hue-ink);
   font-size: 11px;
   overflow: hidden;
   transform-style: preserve-3d;
@@ -299,6 +313,18 @@ body.spatial.dragging-camera #scene-world {
      declares it — and --hue only exists from .panel down. Themes
      override these with .panel-scoped rules in styles.css. */
   --hue: var(--accent);
+
+  /* The slot after this panel's own, written by spatial.js. Only used
+     by themes that want each terminal to wear a slice of a gradient
+     rather than a flat colour; it defaults to --hue, which collapses
+     every such gradient back to a solid. */
+  --hue-next: var(--hue);
+
+  /* Chrome text — the title bar, the SEND label, the elapsed counter.
+     Separate from --hue because a colour that works as a 2px edge or a
+     floor pool is often too light to read at 11px: light themes point
+     this at --text, dark ones lift it toward white. */
+  --hue-ink: var(--hue);
   --panel-fill: color-mix(in srgb, var(--hue) var(--room-tint), var(--room-surface));
   --panel-shadow:
     0 0 2px var(--hue), 0 0 18px color-mix(in srgb, var(--hue) 55%, transparent),
@@ -311,7 +337,9 @@ body.spatial.dragging-camera #scene-world {
 
   /* Two identical stops render exactly like the solid hue border they
      replace; the Aurora themes swap in the gradient. */
+  --panel-edge: linear-gradient(var(--hue), var(--hue));
   --panel-edge-active: linear-gradient(var(--hue), var(--hue));
+  --bar-fill: color-mix(in srgb, var(--hue) var(--room-tint-bar), var(--room-surface-bar));
   --bar-fill-active: var(--hue);
 }
 
@@ -340,14 +368,10 @@ body.spatial.dragging-camera #scene-world {
   animation: none;
   box-shadow: var(--panel-shadow-active);
 
-  /* Double background: the fill clipped to padding-box, the edge to
-     border-box behind a transparent border. Keeps border-radius, needs
-     no pseudo-element — and a pseudo-element would be the wrong tool
-     anyway, since .panel is both overflow:hidden and preserve-3d. */
-  border-color: transparent;
-  background:
-    linear-gradient(var(--panel-fill), var(--panel-fill)) padding-box,
-    var(--panel-edge-active) border-box;
+  /* Swapping the variable is enough — .panel already paints the edge
+     from it, and this selector is the more specific of the two
+     declarations on the same element. */
+  --panel-edge: var(--panel-edge-active);
 }
 
 /* While one terminal is centered the rest fall back into the room —
@@ -382,7 +406,7 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   align-items: center;
   gap: 8px;
   padding: 4px 7px;
-  background: color-mix(in srgb, var(--hue) var(--room-tint-bar), var(--room-surface-bar));
+  background: var(--bar-fill);
   border-bottom: 1px solid color-mix(in srgb, var(--hue) 60%, transparent);
   cursor: grab;
   user-select: none;
@@ -623,7 +647,7 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
 }
 
 .term-send {
-  color: var(--hue);
+  color: var(--hue-ink);
 }
 
 .term-send:hover:not(:disabled) {
@@ -668,7 +692,7 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
 }
 
 .term-elapsed.active {
-  color: var(--hue);
+  color: var(--hue-ink);
 }
 
 /* ─── Sidebar ────────────────────────────────────────────────────────

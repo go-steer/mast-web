@@ -48,6 +48,11 @@
   const statusClock = document.getElementById('status-clock');
   const daemonList = document.getElementById('daemon-list');
   const sidebar = document.getElementById('spatial-sidebar');
+  // Up here with the rest of the lookups rather than down in the radar
+  // section: applyCamera() writes the heading, and it runs during init
+  // before that section's declarations would have been evaluated.
+  const radar = document.getElementById('hud-radar');
+  const radarBlips = radar.querySelector('.radar-blips');
 
   // ─── Camera ───────────────────────────────────────────────────────
   // Orbit is applied to the world, not to a camera object: rotateY is
@@ -144,7 +149,10 @@
     world.style.setProperty('--cam-scale', fitScale().toFixed(3));
     // The HUD reports where *you* put the camera, not where the lean
     // happens to be this frame — otherwise the readout never settles.
+    // Same argument for the radar wedge: it is a heading, and a heading
+    // that wobbles a couple of degrees with the mouse is not one.
     hudCamera.textContent = 'yaw ' + Math.round(cam.yaw) + '° pitch ' + Math.round(cam.pitch) + '°';
+    radar.style.setProperty('--radar-yaw', cam.yaw.toFixed(2) + 'deg');
   }
 
   // Camera limits live here so nudging, orbiting and restoring a saved
@@ -245,6 +253,7 @@
     el.style.setProperty('--rx', p.pos.rx.toFixed(1) + 'deg');
     el.style.setProperty('--fog', fogFor(p.pos.z).toFixed(3));
     placeCast(p);
+    placeBlip(p);
   }
 
   // ─── Floor casts ──────────────────────────────────────────────────
@@ -295,6 +304,54 @@
     p.cast.classList.toggle('cast-busy', !!p.term.state.running);
     p.cast.classList.toggle('cast-active', active === p);
     p.cast.dataset.conn = p.term.state.connState;
+    updateBlip(p);
+  }
+
+  // ─── Radar ────────────────────────────────────────────────────────
+  // An overhead plan of the room. The scene answers "what is this
+  // terminal saying" and answers it well; nothing in it answers "what
+  // else is out there and which way am I facing", and once the camera
+  // has yawed 40° the panels behind you have left the frame entirely.
+  // The radar is the cheap fix — every position it needs is already in
+  // p.pos, so plotting one costs two divisions.
+
+  // The plotted box, deliberately wider and deeper than the authored
+  // slots: SLOTS spans x ±450 and z −520…+30, wrapping steps 180px
+  // further back each time, and dragging has no bounds at all. Sizing
+  // the dish to the slots alone would pin half a busy room to its rim.
+  const RADAR_X = 1000;
+  const RADAR_Z_NEAR = 320;
+  const RADAR_Z_FAR = -1400;
+
+  function makeBlip(p) {
+    const b = document.createElement('div');
+    b.className = 'radar-blip';
+    b.style.setProperty('--hue', 'var(' + HUES[p.index % HUES.length] + ')');
+    radarBlips.appendChild(b);
+    return b;
+  }
+
+  function placeBlip(p) {
+    if (!p.blip) return;
+    // The eye sits at the bottom of the dish looking up it, so near is
+    // the bottom edge and the back wall is the top. Clamped into the
+    // dish rather than dropped: a panel dragged out of range is still
+    // open, and "there is one over there somewhere" beats no blip.
+    const bx = clamp((p.pos.x / RADAR_X + 1) / 2, 0.05, 0.95);
+    const by = clamp((p.pos.z - RADAR_Z_FAR) / (RADAR_Z_NEAR - RADAR_Z_FAR), 0.05, 0.95);
+    p.blip.style.setProperty('--bx', (bx * 100).toFixed(1) + '%');
+    p.blip.style.setProperty('--by', (by * 100).toFixed(1) + '%');
+  }
+
+  function updateBlip(p) {
+    if (!p.blip) return;
+    p.blip.classList.toggle('blip-active', active === p);
+    p.blip.classList.toggle('blip-busy', !!p.term.state.running);
+    // Read the panel's own damage class rather than connState directly.
+    // That class is already gated on the boot window, and a radar that
+    // showed every terminal as dead for the first second of its life
+    // would be worse than no radar.
+    p.blip.classList.toggle('blip-dead', p.panel.classList.contains('panel-dead'));
   }
 
   // ─── Focus model ──────────────────────────────────────────────────
@@ -516,6 +573,10 @@
 
     function updateDamage() {
       panel.classList.toggle('panel-dead', booted && panel.dataset.conn === 'disconnected');
+      // The radar blip reads this class, so it has to be told whenever
+      // the class moves — including from the boot timeout below, which
+      // is the only caller that isn't already on the onChange path.
+      if (p) updateBlip(p);
     }
 
     // Power-on. opts.bootDelay staggers a batch so "open all" reads as
@@ -568,6 +629,7 @@
       home: slotFor(index),
       parked: null,
       cast: null,
+      blip: null,
     };
     if (opts && opts.pos) {
       // Restored: drop it back where it was, re-deriving the facing
@@ -577,6 +639,7 @@
       p.parked = Object.assign({}, p.pos);
     }
     p.cast = makeCast(p);
+    p.blip = makeBlip(p);
     place(p);
     updateCast(p);
     panels.set(key, p);
@@ -657,6 +720,10 @@
       window.setTimeout(function () {
         cast.remove();
       }, 320);
+    }
+    if (p.blip) {
+      p.blip.remove();
+      p.blip = null;
     }
     if (active === p) {
       active = null;
@@ -800,6 +867,101 @@
     { passive: false }
   );
 
+  // ─── Free-look ────────────────────────────────────────────────────
+  // The arrow keys move the camera one fixed step per press, which is
+  // the right shape for a small correction and the wrong one for
+  // crossing the room: it takes a dozen taps to get from the back wall
+  // out to a corner slot, and the OS key-repeat rate that would
+  // otherwise cover the gap is both slow and configured somewhere else.
+  //
+  // WASD is held instead of tapped, driven off rAF, and ramps: a stab
+  // is a nudge, a hold builds to full speed in half a second. Same
+  // clamps as every other camera
+  // path — nudgeCamera, orbit and the restored view all agree on what a
+  // legal camera is, and free-look is not the one that gets to differ.
+
+  const LOOK_KEYS = {
+    w: [0, 0, 1],
+    s: [0, 0, -1],
+    a: [-1, 0, 0],
+    d: [1, 0, 0],
+    q: [0, 1, 0],
+    e: [0, -1, 0],
+  };
+
+  // Rates are per *second*, and the step below integrates against the
+  // clock rather than counting frames. Per-frame rates would fly the
+  // camera twice as fast on a 120Hz display as on a 60Hz one and crawl
+  // in a throttled tab, and unlike the parallax ease — which is bounded
+  // by its target however often it runs — free-look travel is open
+  // ended, so the difference is the whole width of the room.
+  const LOOK_YAW_DPS = 33;
+  const LOOK_PITCH_DPS = 21;
+  const LOOK_DOLLY_PPS = 540;
+  const LOOK_RAMP_S = 0.5;
+
+  // A frame longer than this was a stall — a tab coming back from the
+  // background, a long paint — and integrating it whole would teleport
+  // the camera. Clamped, the stall costs travel instead.
+  const LOOK_MAX_STEP = 0.05;
+
+  const held = new Set();
+  let lookFrame = 0;
+  let lookSpeed = 0;
+  let lookLast = 0;
+  let lookSaveTimer = 0;
+
+  function stepLook(now) {
+    if (!held.size) {
+      lookFrame = 0;
+      lookSpeed = 0;
+      lookLast = 0;
+      return;
+    }
+    const dt = Math.min(lookLast ? (now - lookLast) / 1000 : 1 / 60, LOOK_MAX_STEP);
+    lookLast = now;
+    lookSpeed = Math.min(1, lookSpeed + dt / LOOK_RAMP_S);
+    let dy = 0;
+    let dp = 0;
+    let dd = 0;
+    // Summed rather than switched, so opposing keys cancel and W+D is a
+    // curve rather than whichever one the browser reported last.
+    held.forEach(function (k) {
+      const v = LOOK_KEYS[k];
+      dy += v[0];
+      dp += v[1];
+      dd += v[2];
+    });
+    const step = lookSpeed * dt;
+    cam.yaw = clamp(cam.yaw + dy * LOOK_YAW_DPS * step, -YAW_LIMIT, YAW_LIMIT);
+    cam.pitch = clamp(cam.pitch + dp * LOOK_PITCH_DPS * step, PITCH_MIN, PITCH_MAX);
+    cam.dolly = clamp(cam.dolly + dd * LOOK_DOLLY_PPS * step, DOLLY_MIN, DOLLY_MAX);
+    // Deliberately not nudgeCamera(): that saves the workspace, and this
+    // runs every frame. The save happens on release.
+    applyCamera();
+    lookFrame = window.requestAnimationFrame(stepLook);
+  }
+
+  function releaseLook(k) {
+    if (!held.delete(k)) return;
+    window.clearTimeout(lookSaveTimer);
+    lookSaveTimer = window.setTimeout(saveWorkspace, 220);
+  }
+
+  document.addEventListener('keyup', function (e) {
+    releaseLook(e.key.toLowerCase());
+  });
+
+  // A key held while the tab loses focus never delivers its keyup, and
+  // the camera would still be travelling when you came back.
+  window.addEventListener('blur', function () {
+    if (!held.size) return;
+    held.clear();
+    lookSpeed = 0;
+    lookLast = 0;
+    saveWorkspace();
+  });
+
   document.addEventListener('keydown', function (e) {
     // Escape works from inside a prompt — it's the way back out of a
     // centered terminal. Every other binding yields to the text field.
@@ -813,6 +975,21 @@
       return;
     }
     if (e.target.closest('input, textarea')) return;
+
+    // Free-look, before the switch: these are held keys, and letting the
+    // browser's auto-repeat drive them would move the camera at the
+    // user's key-repeat setting instead of at the frame rate. Modified
+    // presses are the browser's (⌘D, ⌃W) and are left alone.
+    const look = !e.metaKey && !e.ctrlKey && !e.altKey && LOOK_KEYS[e.key.toLowerCase()];
+    if (look) {
+      if (!held.has(e.key.toLowerCase())) {
+        held.add(e.key.toLowerCase());
+        if (!lookFrame) lookFrame = window.requestAnimationFrame(stepLook);
+      }
+      e.preventDefault();
+      return;
+    }
+
     switch (e.key) {
       case 'ArrowLeft':
         nudgeCamera(-4, 0, 0);
@@ -838,8 +1015,10 @@
       case '0':
         resetView();
         break;
-      case 'a':
-      case 'A':
+      // 'o' rather than 'a': WASD wants the left hand's home row, and
+      // "open all" is a once-a-session command that can afford to move.
+      case 'o':
+      case 'O':
         daemons.forEach(openAll);
         break;
       default:
@@ -1151,7 +1330,7 @@
       all.type = 'button';
       all.className = 'side-icon';
       all.textContent = '⊞';
-      all.title = 'Open all ' + d.sessions.length + ' sessions on ' + d.alias + '  (a)';
+      all.title = 'Open all ' + d.sessions.length + ' sessions on ' + d.alias + '  (o)';
       all.disabled = d.sessions.length === 0;
       all.addEventListener('click', function () {
         openAll(d);

@@ -67,10 +67,24 @@
         <button type="submit" class="hud-btn side-wide">attach</button>
       </form>
       <p class="side-hint">
-        Click a session to open its terminal, or press <b>a</b> (the <b>&#8862;</b> button) to open
-        them all. Click a terminal to bring it forward; drag its title bar to move it.
+        Click a session to open its terminal, or press <b>o</b> (the <b>&#8862;</b> button) to open
+        them all. Click a terminal to bring it forward; drag its title bar to move it. Hold
+        <b>WASD</b> to fly the camera, <b>Q</b>/<b>E</b> to tilt.
       </p>
     </aside>
+
+    <!-- Overhead plan of the room. The scene answers "what is this
+         terminal saying"; the radar answers "what else is out there and
+         which way am I facing", which orbiting past ±40° otherwise
+         makes you guess at. spatial.js keeps one blip per open terminal,
+         plus a wedge for the camera's heading. -->
+    <div id="hud-radar" aria-hidden="true">
+      <div class="radar-grid"></div>
+      <div class="radar-sweep"></div>
+      <div class="radar-wedge"></div>
+      <div class="radar-blips"></div>
+      <div class="radar-eye"></div>
+    </div>
 
     <footer id="spatial-status">
       <span class="status-item" id="status-focus">active: —</span>
@@ -81,9 +95,11 @@
       <span class="hud-sep">|</span>
       <span class="status-item">drag floor: orbit</span>
       <span class="hud-sep">|</span>
+      <span class="status-item">wasd: fly</span>
+      <span class="hud-sep">|</span>
       <span class="status-item">esc: send back</span>
       <span class="hud-sep">|</span>
-      <span class="status-item">a: open all</span>
+      <span class="status-item">o: open all</span>
       <span class="hud-spacer"></span>
       <span class="status-item" id="status-clock">--:--:--</span>
     </footer>

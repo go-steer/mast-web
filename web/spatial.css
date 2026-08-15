@@ -16,6 +16,13 @@
    Reference: 3d-basic-terminal.jpeg. */
 
 body.spatial {
+  /* What a terminal wears once its session is gone: half the theme's
+     red, half its dimmest text. A dead terminal should read as drained
+     rather than as an alert — the alert already happened, this is the
+     aftermath. Room-level rather than per-.panel because it depends on
+     nothing per-panel, and because the radar blip has to reach it too. */
+  --hue-dead: color-mix(in srgb, var(--red) 42%, var(--text-dim));
+
   display: block;
   position: relative;
   overflow: hidden;
@@ -417,12 +424,10 @@ body.spatial.dragging-camera #scene-world {
     color-mix(in srgb, var(--hue) 42%, transparent)
   );
 
-  /* What a panel wears once its session is gone. Declared here with the
-     rest of the hue-dependent set, consumed by the .panel-dead rules
-     below. Half the theme's red, half its dimmest text: a dead terminal
-     should read as drained rather than as an alert — the alert already
-     happened, this is the aftermath. */
-  --hue-dead: color-mix(in srgb, var(--red) 42%, var(--text-dim));
+  /* The two shapes --hue-dead (declared on body.spatial) has to take to
+     stand in for --panel-edge and --panel-shadow, which are a gradient
+     and a shadow list respectively. Consumed by the .panel-dead rules
+     below. */
   --edge-dead: linear-gradient(var(--hue-dead), var(--hue-dead));
   --shadow-dead:
     0 0 1px var(--hue-dead), 0 0 14px color-mix(in srgb, var(--hue-dead) 22%, transparent);
@@ -1491,6 +1496,179 @@ body.spatial.side-hidden #spatial-sidebar {
   color: var(--text);
 }
 
+/* ─── Radar ──────────────────────────────────────────────────────────
+   An overhead plan of the room, drawn from the same numbers place()
+   uses. Once the camera can yaw past ±40° the panels behind you leave
+   the frame entirely, and "how many terminals are open" stops being
+   answerable by looking. The radar answers it, and answers "which way
+   am I facing" at the same time.
+
+   DOM blips rather than a canvas, for the same reason the room itself
+   is DOM: at a handful of panels the elements are free, they inherit
+   the theme through the same custom properties everything else does,
+   and each one can carry the panel's own --hue instead of being
+   repainted in a draw loop. */
+
+#hud-radar {
+  position: absolute;
+  right: 14px;
+  bottom: 38px;
+  z-index: 4;
+  width: 132px;
+  height: 132px;
+  border: 1px solid var(--frame);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 18px -8px var(--glow),
+    inset 0 0 22px -10px var(--glow);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Two range rings and the centre line. Purely a scale reference — they
+   are what make a blip halfway up read as "halfway to the back wall"
+   rather than just "up a bit". */
+.radar-grid {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0.5;
+  background:
+    radial-gradient(
+      circle at 50% 100%,
+      transparent 0 31%,
+      var(--frame) 31% calc(31% + 1px),
+      transparent calc(31% + 1px) 64%,
+      var(--frame) 64% calc(64% + 1px),
+      transparent calc(64% + 1px)
+    ),
+    linear-gradient(to right, transparent calc(50% - 0.5px), var(--frame) 50%, transparent);
+}
+
+/* The sweep is the one thing on the radar that isn't information, and
+   it earns its place: a still radar reads as a diagram, a turning one
+   reads as an instrument that is switched on.
+
+   A bright leading edge decaying over 70° — a *trail*, not a pie slice.
+   The flat-topped version this replaced read as a second wedge and had
+   to be told apart from the heading one, which is the only thing on the
+   dish that's actually saying something. */
+.radar-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(
+    from -70deg,
+    transparent 0deg,
+    color-mix(in srgb, var(--accent) 4%, transparent) 40deg,
+    color-mix(in srgb, var(--accent) 15%, transparent) 68deg,
+    color-mix(in srgb, var(--accent) 24%, transparent) 70deg,
+    transparent 71deg
+  );
+  animation: radar-sweep 4.6s linear infinite;
+}
+
+@keyframes radar-sweep {
+  to {
+    rotate: 360deg;
+  }
+}
+
+/* Where the camera is pointed, fanned from the eye at the bottom.
+   --radar-yaw is the camera yaw straight through: the blips are plotted
+   in unrotated world space, so the heading has to rotate rather than
+   the plan. */
+.radar-wedge {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 96px;
+  height: 118px;
+  margin-left: -48px;
+  transform-origin: 50% 100%;
+  rotate: var(--radar-yaw, 0deg);
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 30%, transparent),
+    color-mix(in srgb, var(--accent) 5%, transparent) 78%,
+    transparent
+  );
+  clip-path: polygon(50% 100%, 12% 0, 88% 0);
+  transition: rotate 0.12s linear;
+}
+
+.radar-eye {
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--glow);
+}
+
+.radar-blips {
+  position: absolute;
+  inset: 0;
+}
+
+/* One per open terminal, at the panel's own hue. Positioned in percent
+   so the radar can be resized without touching spatial.js. */
+.radar-blip {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  left: var(--bx);
+  top: var(--by);
+  border-radius: 50%;
+  background: var(--hue);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--hue) 70%, transparent);
+  transition:
+    left 0.5s cubic-bezier(0.18, 1.16, 0.32, 1),
+    top 0.5s cubic-bezier(0.18, 1.16, 0.32, 1),
+    opacity 0.3s ease;
+}
+
+/* The active panel is at the stage centre, where it would otherwise be
+   one more dot among six. The ring is what makes "this is the one you
+   are reading" legible at 7px. */
+.radar-blip.blip-active {
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--hue) 34%, transparent),
+    0 0 12px var(--hue);
+}
+
+.radar-blip.blip-busy {
+  animation: radar-ping 1.5s ease-out infinite;
+}
+
+@keyframes radar-ping {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--hue) 62%, transparent);
+  }
+
+  70%,
+  100% {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+/* Matches the panel's own damage: drained, and hollow rather than lit. */
+.radar-blip.blip-dead {
+  background: transparent;
+  border: 1px solid var(--hue-dead);
+  box-shadow: none;
+  animation: none;
+}
+
 /* Flat panels and a still camera for anyone who asked for less motion. */
 @media (prefers-reduced-motion: reduce) {
   .panel {
@@ -1513,6 +1691,23 @@ body.spatial.side-hidden #spatial-sidebar {
   .panel-anchor.active .panel::before {
     animation: none;
     opacity: 0;
+  }
+
+  /* The radar keeps every blip and the heading wedge — those are the
+     readout. What goes is the decoration: the sweep exists only to make
+     the instrument look switched on, and the busy ping has a twin in
+     the panel's own title spinner. */
+  .radar-sweep {
+    animation: none;
+    opacity: 0.28;
+  }
+
+  .radar-blip {
+    transition: none;
+  }
+
+  .radar-blip.blip-busy {
+    animation: none;
   }
 
   /* A terminal still appears and still settles — it just does it

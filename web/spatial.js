@@ -352,6 +352,27 @@
     };
   }
 
+  // Secondary motion: the panel's frame banks against the direction it
+  // is travelling and catches up. Restarting the animation needs the
+  // class off for a frame — assigning the same animation name to an
+  // element already running it is a no-op, so a second activate inside
+  // half a second would otherwise do nothing.
+  const SETTLE_MS = 460;
+
+  function settle(p, fromX) {
+    const dir = p.pos.x < fromX ? -1 : 1;
+    p.el.style.setProperty('--settle-dir', String(dir));
+    p.el.classList.remove('settling');
+    // Read a layout property to force the removal to take effect before
+    // the class goes back on; without it both mutations coalesce.
+    void p.el.offsetWidth;
+    p.el.classList.add('settling');
+    window.clearTimeout(p.settleTimer);
+    p.settleTimer = window.setTimeout(function () {
+      p.el.classList.remove('settling');
+    }, SETTLE_MS);
+  }
+
   function activate(p) {
     if (active === p) return;
     if (active) park(active);
@@ -365,24 +386,28 @@
     }
     p.el.classList.add('active');
     p.parked = Object.assign({}, p.pos);
+    const fromX = p.pos.x;
     p.pos = centeredPos();
     resizeActive();
     place(p);
+    settle(p, fromX);
     updateCast(p);
     document.body.classList.add('has-active');
     statusFocus.textContent = 'active: ' + p.title;
     // The size change animates; pin the transcript to the bottom once
-    // it has settled, and hand over the keyboard.
+    // it has settled, and hand over the keyboard. Tracks the 0.52s
+    // spring on .panel's width/height, plus a frame of slack.
     window.setTimeout(function () {
       p.term.reflow();
       p.term.focusInput();
-    }, 460);
+    }, 560);
     updateSidebar();
     saveWorkspace();
   }
 
   function park(p) {
     p.el.classList.remove('active');
+    const fromX = p.pos.x;
     if (p.parked) p.pos = Object.assign({}, p.parked);
     p.panel.style.setProperty('--pw', PANEL_W + 'px');
     p.panel.style.setProperty('--ph', PANEL_H + 'px');
@@ -392,6 +417,7 @@
       statusFocus.textContent = 'active: —';
     }
     place(p);
+    settle(p, fromX);
     updateCast(p);
     saveWorkspace();
   }
@@ -411,12 +437,21 @@
     return endpoint + '#' + sessionId;
   }
 
+  // Tracks panel-boot's duration in spatial.css, plus a frame of slack.
+  const BOOT_MS = 700;
+
+  // How far apart a batch of terminals comes up. Long enough to read as
+  // a sequence, short enough that four of them are all on inside a
+  // second — any slower and it stops being flourish and starts being a
+  // wait.
+  const BOOT_STAGGER_MS = 110;
+
   // opts.focus === false opens the panel straight into its parking
   // slot instead of taking the centre — that's what lets "open all"
   // fill the room without every terminal fighting for the camera.
   // opts.index and opts.pos are the restore path: they pin the hue and
   // the resting spot a reloaded panel had before, instead of handing it
-  // the next free slot.
+  // the next free slot. opts.bootDelay staggers the power-on.
   function openTerminal(daemon, session, opts) {
     const focus = !opts || opts.focus !== false;
     const key = panelKey(daemon.endpoint, session.id);
@@ -471,6 +506,18 @@
     panel.appendChild(body);
     anchor.appendChild(panel);
     world.appendChild(anchor);
+
+    // Power-on. opts.bootDelay staggers a batch so "open all" reads as
+    // the room coming up one station at a time; the class comes back off
+    // once the keyframe is spent, because .booting owns .panel's single
+    // animation slot and would otherwise suppress the idle drift.
+    const bootDelay = (opts && opts.bootDelay) || 0;
+    anchor.classList.add('booting');
+    if (bootDelay) anchor.style.setProperty('--boot-delay', bootDelay + 'ms');
+    window.setTimeout(function () {
+      anchor.classList.remove('booting');
+      anchor.style.removeProperty('--boot-delay');
+    }, bootDelay + BOOT_MS);
 
     // Declared up here, not at the assignment below: MastTerminal.create
     // calls onChange synchronously while it builds (it seeds the status
@@ -560,8 +607,17 @@
   // only if nothing else already has it.
   function openAll(d) {
     const claim = !active;
+    // Only count the ones that will actually boot: re-running "open all"
+    // over an already-full room must not stagger the panels that are
+    // merely being re-focused.
+    let n = 0;
     d.sessions.forEach(function (s, i) {
-      openTerminal(d, s, { focus: claim && i === 0 });
+      const fresh = !panels.has(panelKey(d.endpoint, s.id));
+      openTerminal(d, s, {
+        focus: claim && i === 0,
+        bootDelay: fresh ? n * BOOT_STAGGER_MS : 0,
+      });
+      if (fresh) n += 1;
     });
   }
 
@@ -908,6 +964,7 @@
 
     restoring = true;
     let toFocus = null;
+    let boot = 0;
     mine.forEach(function (r) {
       const session = d.sessions.find(function (s) {
         return s.id === r.id;
@@ -917,7 +974,12 @@
         focus: false,
         index: r.index,
         pos: { x: r.x, y: r.y, z: r.z },
+        // A restored room powers back up in the order it was saved,
+        // which is a much better answer to "did my layout survive?"
+        // than four panels blinking into existence at once.
+        bootDelay: boot,
       });
+      boot += BOOT_STAGGER_MS;
       if (p && saved.active === p.key) toFocus = p;
     });
     restoring = false;

@@ -294,8 +294,15 @@ body.spatial.dragging-camera #scene-world {
   transform-style: preserve-3d;
   pointer-events: auto;
   transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--ry)) rotateX(var(--rx));
+
+  /* The curve overshoots its target by about 6% and settles back.
+     Ease-out alone lands a panel as if it were being placed by hand;
+     a little overshoot lands it as if it had mass and had to be caught,
+     which is the difference between a slide transition and an object
+     arriving. Opacity keeps a plain ease — an overshooting opacity
+     would have to pass through >1 and just clips. */
   transition:
-    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.52s cubic-bezier(0.18, 1.16, 0.32, 1),
     opacity 0.35s ease;
 
   --tx: 0px;
@@ -341,10 +348,15 @@ body.spatial.dragging-camera #scene-world {
   font-size: 11px;
   overflow: hidden;
   transform-style: preserve-3d;
+
+  /* Same spring as the anchor, so a panel growing into the centre and a
+     panel flying to the centre arrive together and with the same
+     weight. Size is a layout property, so this one genuinely reflows —
+     that is the price of the crisp text (see CENTER_Z in spatial.js). */
   transition:
-    width 0.45s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.45s cubic-bezier(0.22, 1, 0.36, 1),
-    margin 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    width 0.52s cubic-bezier(0.18, 1.16, 0.32, 1),
+    height 0.52s cubic-bezier(0.18, 1.16, 0.32, 1),
+    margin 0.52s cubic-bezier(0.18, 1.16, 0.32, 1);
   animation: panel-drift 19s ease-in-out infinite alternate;
   animation-delay: var(--drift-delay, 0s);
 
@@ -505,6 +517,111 @@ body.spatial.dragging-camera #scene-world {
      keeps its ~89 columns and its apparent type size — drawn at native
      resolution now instead of rasterised at 12px and enlarged. */
   --term-zoom: 1.25;
+}
+
+/* ─── Secondary motion ───────────────────────────────────────────────
+   The anchor's spring gets the panel to the right place; this is the
+   panel's own frame lagging behind it and catching up, which is what
+   sells the mass. spatial.js sets --settle-dir to the sign of the
+   horizontal travel, so a panel called in from the left banks the other
+   way first, the way anything with inertia does.
+
+   These three rules all write .panel's single `animation` slot and all
+   have the same (0,3,0) specificity, so source order is the priority
+   ladder: drift (on .panel) < active's `none` < settling < booting.
+
+   Removing .settling from a *parked* panel restarts panel-drift from
+   its delayed offset rather than from where it left off. The
+   discontinuity is at most a few px of an 8px drift, arriving at the
+   end of a 500px flight home, and it has never been visible; the
+   alternative is a wrapper element per panel. */
+.panel-anchor.settling .panel {
+  animation: panel-settle 0.46s cubic-bezier(0.3, 1.24, 0.4, 1);
+}
+
+@keyframes panel-settle {
+  0% {
+    transform: rotateY(calc(var(--settle-dir, 1) * -3.4deg)) rotateX(1.2deg) translateZ(-16px);
+  }
+
+  58% {
+    transform: rotateY(calc(var(--settle-dir, 1) * 1.1deg)) rotateX(-0.4deg) translateZ(7px);
+  }
+
+  100% {
+    transform: none;
+  }
+}
+
+/* ─── Boot ───────────────────────────────────────────────────────────
+   A terminal doesn't fade in, it comes on: the CRT collapse played
+   backwards, a line of light widening into a screen. It also does real
+   work — with a stagger, "open all" reads as a room powering up one
+   station at a time instead of four panels appearing at once, and the
+   eye gets told what order they arrived in. */
+
+.panel-anchor.booting .panel {
+  animation: panel-boot 0.66s cubic-bezier(0.2, 0.98, 0.3, 1) both;
+  animation-delay: var(--boot-delay, 0s);
+}
+
+@keyframes panel-boot {
+  0% {
+    opacity: 0;
+    transform: scale3d(0.84, 0.006, 1);
+  }
+
+  24% {
+    opacity: 1;
+    transform: scale3d(1, 0.01, 1);
+  }
+
+  52% {
+    transform: scale3d(1, 1.07, 1);
+  }
+
+  74% {
+    transform: scale3d(1, 0.98, 1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The glass overlay does double duty: the sheen band becomes the
+   horizontal line the picture opens out of. Placed after the sheen's
+   own rule so a panel that boots straight into focus flashes first and
+   starts sweeping afterwards. */
+.panel-anchor.booting .panel::before {
+  opacity: 1;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--flash) 47%,
+    var(--flash) 53%,
+    transparent 100%
+  );
+  animation: panel-boot-flash 0.66s ease-out both;
+  animation-delay: var(--boot-delay, 0s);
+}
+
+@keyframes panel-boot-flash {
+  0% {
+    opacity: 0;
+    transform: scale3d(1, 0.02, 1);
+  }
+
+  22% {
+    opacity: 1;
+    transform: scale3d(1, 0.05, 1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale3d(1, 1, 1);
+  }
 }
 
 /* While one terminal is centered the rest fall back into the room —
@@ -1223,6 +1340,18 @@ body.spatial.side-hidden #spatial-sidebar {
 
   .panel-anchor.active .panel::before {
     animation: none;
+    opacity: 0;
+  }
+
+  /* A terminal still appears and still settles — it just does it
+     without the CRT collapse or the inertial bank. */
+  .panel-anchor.settling .panel,
+  .panel-anchor.booting .panel,
+  .panel-anchor.booting .panel::before {
+    animation: none;
+  }
+
+  .panel-anchor.booting .panel::before {
     opacity: 0;
   }
 

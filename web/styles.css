@@ -27,6 +27,12 @@
   --green: var(--aqua);
   --red: var(--fuchsia);
   --yellow: var(--brand-yellow);
+
+  /* The semantic blue slot, and the only one anything outside this block
+     should paint text with. The nine Go brand colors above are fixed
+     pigments — no theme overrides them — so a rule that reaches for
+     --light-blue directly paints pale cyan on every background, including
+     the near-white ones. Every theme sets --blue. */
   --blue: var(--light-blue);
   --sidebar-w: 280px;
 
@@ -168,7 +174,11 @@ body[data-theme='mono'] {
   --accent: #d4d4d4;
   --accent-hover: #fff;
   --green: #7a7a7a;
-  --blue: #7a7a7a;
+
+  /* Lighter than --green even though mono flattens the palette: --blue is
+     the slot the status line, inline code and table headers paint text
+     with, and #7a7a7a is dimmer than --text-dim. */
+  --blue: #a8a8a8;
   --red: #d3574d;
   --yellow: #d9c467;
 }
@@ -1406,7 +1416,7 @@ body[data-layout='chat'] .message.user {
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;
-  color: var(--light-blue);
+  color: var(--blue);
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
 }
 
@@ -1433,7 +1443,7 @@ body[data-layout='chat'] .message.user {
 .message.assistant .md-content h2,
 .message.assistant .md-content h3,
 .message.assistant .md-content h4 {
-  color: var(--light-blue);
+  color: var(--blue);
   margin: 14px 0 6px;
   line-height: 1.3;
 }
@@ -1484,8 +1494,8 @@ body[data-layout='chat'] .message.user {
 }
 
 .message.assistant .md-content a:hover {
-  color: var(--light-blue);
-  border-bottom-color: var(--light-blue);
+  color: var(--blue);
+  border-bottom-color: var(--blue);
 }
 
 /* Blockquote */
@@ -1520,7 +1530,7 @@ body[data-layout='chat'] .message.user {
 
 .message.assistant .md-content th {
   background: var(--bg-elevated);
-  color: var(--light-blue);
+  color: var(--blue);
   font-weight: 600;
 }
 
@@ -1660,7 +1670,7 @@ body[data-layout='chat'] .message.user {
 
 .citation-pill a:hover {
   background: rgba(0, 162, 156, 0.28);
-  color: var(--light-blue);
+  color: var(--blue);
 }
 
 .citation-sources {
@@ -1689,7 +1699,7 @@ body[data-layout='chat'] .message.user {
 }
 
 .citation-sources a:hover {
-  color: var(--light-blue);
+  color: var(--blue);
   text-decoration: underline;
 }
 
@@ -1909,7 +1919,7 @@ body[data-layout='chat'] .message.user {
   padding: 8px 12px;
   font-size: 12px;
   font-style: italic;
-  color: var(--light-blue);
+  color: var(--blue);
   letter-spacing: 0.02em;
   animation: thinking-pulse 1.4s ease-in-out infinite;
 }
@@ -2109,7 +2119,7 @@ body[data-layout='chat'] .message.user {
   padding: 0 12px;
   margin: 0 -12px;
   font-size: 11px;
-  color: var(--light-blue);
+  color: var(--blue);
   gap: 16px;
 }
 
@@ -2120,7 +2130,7 @@ body[data-layout='chat'] .message.user {
 }
 
 #status-bar .status-item:not(.powered-by) {
-  color: var(--light-blue);
+  color: var(--blue);
 }
 
 #status-elapsed {
@@ -2519,7 +2529,7 @@ body.sidebar-collapsed #sidebar {
 }
 
 .slash-tree-key {
-  color: var(--light-blue, #4a9eff);
+  color: var(--blue, #4a9eff);
   font-weight: 600;
 }
 

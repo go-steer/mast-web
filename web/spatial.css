@@ -282,8 +282,10 @@ body.spatial.dragging-camera #scene-world {
   flex-direction: column;
 
   /* Transparent, because the edge is painted by the border-box layer
-     of the double background below. */
-  border: 2px solid transparent;
+     of the double background below. Width is a knob because a theme
+     that paints a gradient there needs more than 2px before the travel
+     from one stop to the next is legible at room distance. */
+  border: var(--panel-border-w) solid transparent;
   border-radius: 8px;
 
   /* Double background: the fill clipped to padding-box, the edge to
@@ -325,6 +327,7 @@ body.spatial.dragging-camera #scene-world {
      floor pool is often too light to read at 11px: light themes point
      this at --text, dark ones lift it toward white. */
   --hue-ink: var(--hue);
+  --panel-border-w: 2px;
   --panel-fill: color-mix(in srgb, var(--hue) var(--room-tint), var(--room-surface));
   --panel-shadow:
     0 0 2px var(--hue), 0 0 18px color-mix(in srgb, var(--hue) 55%, transparent),
@@ -341,6 +344,21 @@ body.spatial.dragging-camera #scene-world {
   --panel-edge-active: linear-gradient(var(--hue), var(--hue));
   --bar-fill: color-mix(in srgb, var(--hue) var(--room-tint-bar), var(--room-surface-bar));
   --bar-fill-active: var(--hue);
+
+  /* Title-bar text and its halo. A theme that fills the resting bar
+     with a saturated colour has to flip both: hue-coloured type on a
+     hue-coloured bar is unreadable, and the neon bloom that sells a
+     dark room looks like a printing fault on a solid fill. */
+  --bar-ink: var(--hue-ink);
+  --bar-title-shadow: 0 0 8px currentcolor;
+
+  /* The 1px frame around the transcript, split out for the same reason
+     as --panel-edge: it can be a gradient, and two identical stops
+     render exactly like the solid hairline they replace. */
+  --screen-edge: linear-gradient(
+    color-mix(in srgb, var(--hue) 42%, transparent),
+    color-mix(in srgb, var(--hue) 42%, transparent)
+  );
 }
 
 @keyframes panel-drift {
@@ -407,6 +425,7 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   gap: 8px;
   padding: 4px 7px;
   background: var(--bar-fill);
+  color: var(--bar-ink);
   border-bottom: 1px solid color-mix(in srgb, var(--hue) 60%, transparent);
   cursor: grab;
   user-select: none;
@@ -433,7 +452,7 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 0 8px currentcolor;
+  text-shadow: var(--bar-title-shadow);
 }
 
 .panel-anchor.active .panel-title {
@@ -517,9 +536,14 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   min-height: 0;
   display: flex;
   position: relative;
-  border: 1px solid color-mix(in srgb, var(--hue) 42%, transparent);
+
+  /* Same padding-box/border-box pair as .panel, one level in, so the
+     transcript's frame can carry a gradient too. */
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: var(--bg);
+  background:
+    linear-gradient(var(--bg), var(--bg)) padding-box,
+    var(--screen-edge) border-box;
   overflow: hidden;
 }
 

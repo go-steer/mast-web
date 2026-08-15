@@ -376,7 +376,20 @@ body[data-theme='pantheon-dark'] {
   --room-vignette: rgb(0 0 0 / 60%);
   --room-surface: rgb(42 43 46 / 94%);
   --room-surface-bar: rgb(48 49 52 / 88%);
-  --room-on-hue: #202124; /* "on primary" — Grey 900 on a colour fill */
+
+  /* "On primary". The console's own answer is Grey 900, but its
+     primaries are Blue 600/300; against the Aurora stops #202124 only
+     reaches 4.06:1 and a 10px bold title is not WCAG "large" text.
+     #121212 — the backing colour from the same elevation table — clears
+     4.7:1 on the darkest stop and 6.3:1 on the lightest. */
+  --room-on-hue: #121212;
+
+  /* Same reasoning as the light variant: the slice is the point, so the
+     pools stay strong and the unfocused terminals stay present. */
+  --cast-opacity: 0.72;
+  --cast-opacity-active: 0.95;
+  --panel-recede: 0.8;
+  --panel-recede-busy: 0.94;
 }
 
 /* Companion block: everything the Aurora themes change about a panel
@@ -425,20 +438,32 @@ body:is([data-theme='grayscale-dark'], [data-theme='pantheon-dark']) .panel {
 body:is([data-theme='pantheon-light'], [data-theme='pantheon-dark']) :is(.panel, .panel-cast) {
   /* Corner to corner: across a 440×320 panel a horizontal sweep spends
      most of its travel behind the title bar, where it can't be read as
-     a gradient at all. */
+     a gradient at all. 4px because 2px of gradient at room distance is
+     a coloured line, not a gradient. */
+  --panel-border-w: 4px;
   --panel-edge: linear-gradient(135deg, var(--hue) 0%, var(--hue-next) 100%);
 
-  /* The resting bar carries the same slice, washed back into the room
-     surface so it stays chrome instead of becoming a second accent. */
-  --bar-fill: linear-gradient(
-    100deg,
-    color-mix(in srgb, var(--hue) var(--room-tint-bar), var(--room-surface-bar)) 0%,
-    color-mix(in srgb, var(--hue-next) var(--room-tint-bar), var(--room-surface-bar)) 100%
+  /* Every title bar is filled with its slice at full strength, not a
+     tint of it — the console fills its own headers, and a wash only
+     reads once you're already looking at the panel. What separates the
+     active terminal is then the *whole* Aurora against its neighbours'
+     two stops, plus the halo and the fact that it has squared up. */
+  --bar-fill: linear-gradient(100deg, var(--hue) 0%, var(--hue-next) 100%);
+  --bar-ink: var(--room-on-hue);
+  --bar-title-shadow: none;
+
+  /* The transcript keeps a frame of the same slice, pulled back to 70%
+     so it reads as an inner edge rather than competing with the 4px
+     one it sits inside. */
+  --screen-edge: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--hue) 70%, transparent) 0%,
+    color-mix(in srgb, var(--hue-next) 70%, transparent) 100%
   );
 
-  /* …and so does the floor pool, which is the one place the slice is
-     seen at full strength. The radial falloff moves into the mask
-     because the fill is busy carrying the gradient. */
+  /* …and so does the floor pool, which is where the slice gets the most
+     room of anywhere. The radial falloff moves into the mask because
+     the fill is busy carrying the gradient. */
   --cast-fill: linear-gradient(100deg, var(--hue) 0%, var(--hue-next) 100%);
   --cast-mask: radial-gradient(
     ellipse 42% 100% at 50% 50%,
@@ -452,13 +477,23 @@ body:is([data-theme='pantheon-light'], [data-theme='pantheon-dark']) :is(.panel,
    own rule is coloured surfaces, neutral type. Light reads it off
    --text; dark can't (Grey 200 on a tinted panel loses the terminal's
    identity), so it keeps the hue but lifts it to the 300-level
-   lightness the dark palette uses everywhere else. */
+   lightness the dark palette uses everywhere else. Neither shows up in
+   the title bar, which is now a solid fill wearing --room-on-hue — this
+   is the SEND label, the elapsed counter and the caret. */
 body[data-theme='pantheon-light'] .panel {
   --hue-ink: var(--text);
 }
 
+/* Resting panels also light their own slice, rather than every panel
+   sharing one hue-coloured halo: this terminal's colour spills left,
+   the next one's right. It is what makes the run of four read as a
+   single sweep from the far side of the room. */
 body[data-theme='pantheon-dark'] .panel {
   --hue-ink: color-mix(in srgb, var(--hue) 62%, #fff);
+  --panel-shadow:
+    -14px 0 30px color-mix(in srgb, var(--hue) 38%, transparent),
+    14px 0 30px color-mix(in srgb, var(--hue-next) 34%, transparent),
+    0 0 60px color-mix(in srgb, var(--hue) 16%, transparent), inset 0 0 26px rgb(255 255 255 / 4%);
 }
 
 /* Every light theme wants the same room: pale gradient, quiet grid,
@@ -508,9 +543,22 @@ body.spatial[data-theme='cloud-light'] {
    terminal's colour and the next reads at all. */
 body.spatial[data-theme='pantheon-light'] {
   --room-edge: color-mix(in srgb, var(--accent) 12%, var(--bg));
-  --room-tint-bar: 14%;
-  --cast-opacity: 0.24;
-  --cast-opacity-active: 0.4;
+
+  /* Dark type on the filled bars, not the shared light block's white:
+     the Aurora stops are bright enough that white lands at 2.98:1. Same
+     value as the dark variant, same reasoning. */
+  --room-on-hue: #121212;
+
+  /* Strong, but short of the point where the pools stop being four
+     pools and become one wash that swallows the floor grid. */
+  --cast-opacity: 0.32;
+  --cast-opacity-active: 0.5;
+
+  /* Recede less than the other light themes. Four saturated title bars
+     are the whole idea; dimming the three you aren't typing into to
+     two-thirds throws most of it away. */
+  --panel-recede: 0.82;
+  --panel-recede-busy: 0.94;
 }
 
 /* Material elevation instead of neon: two grey drop shadows plus a
@@ -524,6 +572,22 @@ body.spatial:is([data-theme$='-light'], [data-theme='paper']) .panel {
   --panel-shadow-active:
     0 2px 6px rgb(60 64 67 / 30%), 0 12px 34px rgb(60 64 67 / 20%),
     0 0 24px color-mix(in srgb, var(--hue) 26%, transparent);
+}
+
+/* Pantheon light keeps Material's grey elevation but adds the slice to
+   it: this terminal's colour spills off the left of the card, the next
+   one's off the right. Has to sit after the shared block above — same
+   specificity, so source order is what decides it. */
+body.spatial[data-theme='pantheon-light'] .panel {
+  --panel-shadow:
+    0 1px 2px rgb(60 64 67 / 26%), 0 10px 28px rgb(60 64 67 / 14%),
+    -12px 6px 26px color-mix(in srgb, var(--hue) 32%, transparent),
+    12px 6px 26px color-mix(in srgb, var(--hue-next) 28%, transparent);
+  --panel-shadow-active:
+    0 2px 6px rgb(60 64 67 / 28%), 0 14px 40px rgb(60 64 67 / 18%),
+    -24px 0 44px color-mix(in srgb, var(--aurora-1) 42%, transparent),
+    24px 0 44px color-mix(in srgb, var(--aurora-4) 38%, transparent),
+    0 0 74px color-mix(in srgb, var(--aurora-3) 24%, transparent);
 }
 
 body {

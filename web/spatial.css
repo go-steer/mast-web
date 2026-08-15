@@ -416,6 +416,16 @@ body.spatial.dragging-camera #scene-world {
     color-mix(in srgb, var(--hue) 42%, transparent),
     color-mix(in srgb, var(--hue) 42%, transparent)
   );
+
+  /* What a panel wears once its session is gone. Declared here with the
+     rest of the hue-dependent set, consumed by the .panel-dead rules
+     below. Half the theme's red, half its dimmest text: a dead terminal
+     should read as drained rather than as an alert — the alert already
+     happened, this is the aftermath. */
+  --hue-dead: color-mix(in srgb, var(--red) 42%, var(--text-dim));
+  --edge-dead: linear-gradient(var(--hue-dead), var(--hue-dead));
+  --shadow-dead:
+    0 0 1px var(--hue-dead), 0 0 14px color-mix(in srgb, var(--hue-dead) 22%, transparent);
 }
 
 /* ─── Panel glass ────────────────────────────────────────────────────
@@ -651,6 +661,168 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   transform: translate3d(var(--tx), var(--ty), calc(var(--tz) - 420px)) scale(0.86);
   opacity: 0;
   pointer-events: none;
+}
+
+/* ─── State as damage ────────────────────────────────────────────────
+   Connection state is already in the status line of every terminal and
+   in the sidebar dot, both of which require walking over and reading
+   something. In a room you want to know which station is down from
+   across it, so a dead session shows as a damaged screen: the picture
+   loses its colour, the signal breaks up, a roll bar walks down it, and
+   the panel's neon drains out of the frame.
+
+   spatial.js gates this behind .panel-dead rather than reading
+   [data-conn] directly. A terminal is 'disconnected' for the first few
+   hundred ms of its life, before connect() has been anywhere, and
+   flashing static over every panel as it opens would turn a state
+   signal into a decoration. .panel-dead means "was up, or has had its
+   chance, and isn't" — which is what damage should mean. */
+
+.panel-dead {
+  --panel-edge: var(--edge-dead);
+  --panel-edge-active: var(--edge-dead);
+  --panel-shadow: var(--shadow-dead);
+  --panel-shadow-active: var(--shadow-dead);
+  --screen-edge: var(--edge-dead);
+  --bar-fill: color-mix(in srgb, var(--hue-dead) var(--room-tint-bar), var(--room-surface-bar));
+
+  /* Note the *resting* fill on both. A solid title bar is how this room
+     says "live and focused"; a dead terminal must not be able to earn
+     the loudest chrome on the stage by being clicked on. */
+  --bar-fill-active: var(--bar-fill);
+  --bar-ink: var(--hue-dead);
+  --bar-title-shadow: none;
+}
+
+/* …which leaves the ink. .panel-anchor.active .panel-bar hardcodes
+   --room-on-hue, the colour that reads against a *filled* bar — near
+   black in a dark theme, and invisible on the dim bar above. One more
+   class of specificity, since .panel-dead is the .panel that rule is
+   already matching. */
+.panel-anchor.active .panel-dead .panel-bar {
+  color: var(--hue-dead);
+}
+
+/* The chrome survives; the display is what lost signal. Safe to filter
+   here even though .panel is preserve-3d — .panel-body is `flat`, so
+   the subtree is already flattened into its own plane by this point. */
+.panel-dead .term-screen {
+  filter: grayscale(0.74) contrast(0.86) brightness(0.93);
+}
+
+/* Two crossed hatches: a 1px scanline pair that moirés against the
+   device grid, and an off-axis weave that reads as noise at this
+   scale. steps(1) on the flicker so the level jumps between values
+   instead of easing — a failing signal doesn't crossfade. */
+.panel-dead .term-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom, rgb(0 0 0 / 26%) 0 1px, transparent 1px 2px),
+    repeating-linear-gradient(
+      97deg,
+      color-mix(in srgb, var(--text) 9%, transparent) 0 1px,
+      transparent 1px 3px
+    );
+  animation: screen-static 3.7s steps(1) infinite;
+}
+
+@keyframes screen-static {
+  0%,
+  12%,
+  32%,
+  66%,
+  100% {
+    opacity: 0.5;
+  }
+
+  13% {
+    opacity: 0.18;
+  }
+
+  33% {
+    opacity: 0.95;
+  }
+
+  67% {
+    opacity: 0.32;
+  }
+
+  81% {
+    opacity: 0.86;
+  }
+}
+
+/* Loss of vertical hold. Percentages are of the bar's own height, so
+   -110% → 560% carries a 22%-tall band clear from above the screen to
+   below it. */
+.panel-dead .term-screen::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22%;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--text) 13%, transparent) 50%,
+    transparent
+  );
+  animation: screen-roll 5.4s linear infinite;
+}
+
+@keyframes screen-roll {
+  from {
+    transform: translateY(-110%);
+  }
+
+  to {
+    transform: translateY(560%);
+  }
+}
+
+/* Placed after the busy pip so a session that dies mid-turn reads as
+   dead rather than as still working. */
+.panel-dead .panel-title::after {
+  content: ' ⚠';
+  animation: none;
+  opacity: 0.85;
+}
+
+/* Reconnecting is the opposite signal, so it gets the opposite
+   treatment: not damage, but the panel visibly looking for its
+   session. One bar sweeping the screen, in the panel's own hue. */
+.panel[data-conn='connecting'] .term-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 44%,
+    var(--hue) 49.4%,
+    var(--hue) 50.6%,
+    transparent 56%
+  );
+  opacity: 0.5;
+  animation: screen-sync 2.1s ease-in-out infinite;
+}
+
+@keyframes screen-sync {
+  0%,
+  100% {
+    transform: translateY(-52%);
+  }
+
+  50% {
+    transform: translateY(52%);
+  }
 }
 
 /* ─── Panel chrome ───────────────────────────────────────────────── */
@@ -1353,6 +1525,18 @@ body.spatial.side-hidden #spatial-sidebar {
 
   .panel-anchor.booting .panel::before {
     opacity: 0;
+  }
+
+  /* A dead screen stays broken up and stays drained — the state is the
+     point. It just stops flickering and stops rolling. */
+  .panel-dead .term-screen::after {
+    animation: none;
+    opacity: 0.5;
+  }
+
+  .panel-dead .term-screen::before,
+  .panel[data-conn='connecting'] .term-screen::before {
+    animation: none;
   }
 
   /* The pool still brightens for a streaming session — it just holds

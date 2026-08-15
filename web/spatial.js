@@ -507,6 +507,17 @@
     anchor.appendChild(panel);
     world.appendChild(anchor);
 
+    // A terminal reports 'disconnected' from the moment it is built,
+    // before connect() has been anywhere, so damage has to wait for the
+    // boot window to close. After that the two cases the operator cares
+    // about — a session that dropped, and one that never came up —
+    // both land here and both show as a broken screen.
+    let booted = false;
+
+    function updateDamage() {
+      panel.classList.toggle('panel-dead', booted && panel.dataset.conn === 'disconnected');
+    }
+
     // Power-on. opts.bootDelay staggers a batch so "open all" reads as
     // the room coming up one station at a time; the class comes back off
     // once the keyframe is spent, because .booting owns .panel's single
@@ -517,6 +528,8 @@
     window.setTimeout(function () {
       anchor.classList.remove('booting');
       anchor.style.removeProperty('--boot-delay');
+      booted = true;
+      updateDamage();
     }, bootDelay + BOOT_MS);
 
     // Declared up here, not at the assignment below: MastTerminal.create
@@ -531,7 +544,10 @@
       sessionId: session.id,
       label: title,
       onChange: function (t, what) {
-        if (what === 'conn') panel.dataset.conn = t.state.connState;
+        if (what === 'conn') {
+          panel.dataset.conn = t.state.connState;
+          updateDamage();
+        }
         if (what === 'busy') panel.classList.toggle('panel-busy', t.state.running);
         if (p) updateCast(p);
       },

@@ -279,11 +279,19 @@ body[data-theme='cloud-light'] {
   --yellow: #dc6d00;
   --blue: #1a73e8;
 
-  /* Terminals take the Aurora, same as the grayscale pair. */
-  --hue-1: var(--aurora-1);
-  --hue-2: var(--aurora-2);
-  --hue-3: var(--aurora-3);
-  --hue-4: var(--aurora-4);
+  /* Where the grayscale pair gives every terminal an Aurora stop, this
+     one is a Google theme first: the roster is Blue, Red, Green and a
+     Gemini-leaning violet, and the Aurora is held back for whichever
+     terminal is active (its bar, edge and floor pool) plus the
+     wordmark. Weights are the GM2 600/700 tones, not the brand 500s:
+     --hue is real text here (.panel's colour, the SEND label, the
+     title bar), and every 500 fails AA on white — these four run
+     4.5-5.4:1, so they are also a legibility gain on the Aurora stops
+     they replace. */
+  --hue-1: #1a73e8; /* Google Blue 600 */
+  --hue-2: #d93025; /* Google Red 600 */
+  --hue-3: #188038; /* Google Green 700 */
+  --hue-4: #9334e6; /* Google Purple 600 — echoes the Aurora amethyst */
   --brand-image: var(--aurora);
   --brand-color: transparent;
   --glow-amt: 13%;
@@ -356,6 +364,16 @@ body.spatial:is([data-theme$='-light'], [data-theme='paper']) {
 body.spatial[data-theme='cloud-light'] {
   --room-edge: color-mix(in srgb, var(--accent) 14%, var(--bg));
   --room-vignette: color-mix(in srgb, var(--accent) 12%, transparent);
+
+  /* Four Google colours are only worth having if the room shows them.
+     The shared light values are tuned for hues that are decorative
+     here; these let each terminal put a legible pool of its own colour
+     on the floor and a wash of it in its title bar, which is where
+     most of the Blue/Red/Green actually lands. */
+  --room-tint: 3%;
+  --room-tint-bar: 15%;
+  --cast-opacity: 0.28;
+  --cast-opacity-active: 0.42;
 }
 
 /* Material elevation instead of neon: two grey drop shadows plus a

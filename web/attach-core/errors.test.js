@@ -38,6 +38,10 @@ describe('AttachCoreErrors', () => {
     expect(AttachCoreErrors.PermanentStreamError).toBeDefined();
   });
 
+  it('exports BackendDrainingError', () => {
+    expect(AttachCoreErrors.BackendDrainingError).toBeDefined();
+  });
+
   describe('PermanentStreamError', () => {
     it('is an Error with name, message, status', () => {
       const err = new AttachCoreErrors.PermanentStreamError('gone', 404);
@@ -65,6 +69,23 @@ describe('AttachCoreErrors', () => {
       expect(P.isPermanentStatus(502)).toBe(false);
       expect(P.isPermanentStatus(503)).toBe(false);
       expect(P.isPermanentStatus(504)).toBe(false);
+    });
+  });
+
+  describe('BackendDrainingError', () => {
+    it('is an Error with name, message, retryAfterSeconds', () => {
+      const err = new AttachCoreErrors.BackendDrainingError('draining', 5);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.name).toBe('BackendDrainingError');
+      expect(err.message).toBe('draining');
+      expect(err.retryAfterSeconds).toBe(5);
+    });
+
+    it('normalizes a missing/non-numeric retryAfterSeconds to null', () => {
+      expect(new AttachCoreErrors.BackendDrainingError('draining').retryAfterSeconds).toBeNull();
+      expect(
+        new AttachCoreErrors.BackendDrainingError('draining', NaN).retryAfterSeconds
+      ).toBeNull();
     });
   });
 });

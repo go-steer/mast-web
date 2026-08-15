@@ -143,6 +143,106 @@ func TestMock_SessionReadStubs(t *testing.T) {
 	}
 }
 
+func TestMock_Guardrails_ReadAndReset(t *testing.T) {
+	srv := newMockServer(t)
+
+	resp, err := http.Get(srv.URL + "/sessions/smoke-session/guardrails")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET guardrails: want 200, got %d", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["watchdog"]; !ok {
+		t.Fatalf("want watchdog field, got %v", got)
+	}
+	if _, ok := got["cost_ceiling"]; !ok {
+		t.Fatalf("want cost_ceiling field, got %v", got)
+	}
+
+	resetResp, err := http.Post(
+		srv.URL+"/sessions/smoke-session/guardrails/reset", "application/json", strings.NewReader("{}"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resetResp.Body.Close()
+	if resetResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST guardrails/reset: want 200, got %d", resetResp.StatusCode)
+	}
+	var resetBody map[string]any
+	if err := json.NewDecoder(resetResp.Body).Decode(&resetBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resetBody["reset"]; !ok {
+		t.Fatalf("want reset field, got %v", resetBody)
+	}
+}
+
+func TestMock_ConfiguredSubagents(t *testing.T) {
+	srv := newMockServer(t)
+	resp, err := http.Get(srv.URL + "/sessions/smoke-session/subagents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "researcher") {
+		t.Fatalf("want researcher in configured subagent catalog, got %q", string(body))
+	}
+}
+
+func TestMock_SubagentEvents_KnownName(t *testing.T) {
+	srv := newMockServer(t)
+	resp, err := http.Get(srv.URL + "/sessions/smoke-session/agents/researcher/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["agent"] != "researcher" {
+		t.Fatalf("want agent=researcher, got %v", got["agent"])
+	}
+	events, ok := got["events"].([]any)
+	if !ok || len(events) == 0 {
+		t.Fatalf("want at least one event, got %v", got["events"])
+	}
+}
+
+func TestMock_SubagentEvents_UnknownName404s(t *testing.T) {
+	srv := newMockServer(t)
+	resp, err := http.Get(srv.URL + "/sessions/smoke-session/agents/ghost/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("want 404 for unknown subagent, got %d", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	available, ok := got["available"].([]any)
+	if !ok || len(available) == 0 {
+		t.Fatalf("want non-empty available roster in 404 body, got %v", got["available"])
+	}
+}
+
 func TestMock_UnknownSessionReadReturnsEmptyObject(t *testing.T) {
 	srv := newMockServer(t)
 	resp, err := http.Get(srv.URL + "/sessions/smoke-session/memory")

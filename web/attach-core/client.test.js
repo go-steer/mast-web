@@ -400,6 +400,319 @@ describe('AttachClient', () => {
     });
   });
 
+  describe('BackendDrainingError — 503 shutdown-drain gating', () => {
+    it('is exposed as a static on the constructor', () => {
+      expect(AttachClient.BackendDrainingError).toBeDefined();
+      const err = new AttachClient.BackendDrainingError('draining', 5);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.name).toBe('BackendDrainingError');
+      expect(err.retryAfterSeconds).toBe(5);
+    });
+
+    it('_post throws BackendDrainingError on 503 with Retry-After parsed', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () =>
+          Promise.resolve(
+            'daemon is shutting down; queued messages would be lost — retry after restart'
+          ),
+        headers: { get: (name) => (name === 'Retry-After' ? '5' : null) },
+      });
+      let err;
+      try {
+        await client._post('/sessions/s1/inject', { message: 'hi' });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(AttachClient.BackendDrainingError);
+      expect(err.retryAfterSeconds).toBe(5);
+    });
+
+    it('_post defaults retryAfterSeconds to null when the header is absent', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () => Promise.resolve('draining'),
+        headers: { get: () => null },
+      });
+      let err;
+      try {
+        await client._post('/sessions/s1/inject', {});
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(AttachClient.BackendDrainingError);
+      expect(err.retryAfterSeconds).toBeNull();
+    });
+
+    it('interrupt throws BackendDrainingError on 503', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () => Promise.resolve('draining'),
+        headers: { get: (name) => (name === 'Retry-After' ? '3' : null) },
+      });
+      let err;
+      try {
+        await client.interrupt();
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(AttachClient.BackendDrainingError);
+      expect(err.retryAfterSeconds).toBe(3);
+    });
+  });
+
+  describe('guardrails — read + operator reset (core-agent#670/#671)', () => {
+    it('getGuardrails GETs /sessions/{sid}/guardrails and returns the shape verbatim', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      const shape = {
+        watchdog: { mode: 'enforce', tripped: true, reason: 'runaway tool loop' },
+        cost_ceiling: {
+          max_turn_usd: 1,
+          max_session_usd: 10,
+          session_cost_usd: 10.5,
+          tripped: true,
+          would_retrip: true,
+        },
+        halted: true,
+      };
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(shape),
+      });
+      const g = await client.getGuardrails();
+      expect(g).toEqual(shape);
+      const [url] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe('https://example/sessions/s1/guardrails');
+    });
+
+    it('resetGuardrails POSTs an empty body by default and returns { ok: true, ... } on 200', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ reset: ['watchdog', 'cost_ceiling'], guardrails: {} }),
+      });
+      const r = await client.resetGuardrails();
+      expect(r.ok).toBe(true);
+      expect(r.reset).toEqual(['watchdog', 'cost_ceiling']);
+      const [url, opts] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe('https://example/sessions/s1/guardrails/reset');
+      expect(JSON.parse(opts.body)).toEqual({});
+    });
+
+    it('resetGuardrails sends guardrail + additional_budget_usd when passed', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({ reset: ['cost_ceiling'], budget_added_usd: 5, guardrails: {} }),
+      });
+      await client.resetGuardrails({ guardrail: 'cost_ceiling', additionalBudgetUsd: 5 });
+      const [, opts] = globalThis.fetch.mock.calls[0];
+      expect(JSON.parse(opts.body)).toEqual({
+        guardrail: 'cost_ceiling',
+        additional_budget_usd: 5,
+      });
+    });
+
+    it('resetGuardrails resolves with { ok: false, ... } on 409 (would immediately re-trip)', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      const body409 = {
+        reset: [],
+        guardrails: { cost_ceiling: { tripped: true, would_retrip: true } },
+        message: 'reset would immediately re-trip; additional budget required',
+      };
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve(body409),
+      });
+      const r = await client.resetGuardrails();
+      expect(r.ok).toBe(false);
+      expect(r.reset).toEqual([]);
+      expect(r.message).toMatch(/re-trip/);
+    });
+
+    it('resetGuardrails throws BackendDrainingError on 503', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () => Promise.resolve('draining'),
+        headers: { get: (name) => (name === 'Retry-After' ? '5' : null) },
+      });
+      await expect(client.resetGuardrails()).rejects.toBeInstanceOf(
+        AttachClient.BackendDrainingError
+      );
+    });
+
+    it('resetGuardrails surfaces 501 (no GuardrailResetter) as a plain Error', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 501,
+        json: () => Promise.reject(new Error('not json')),
+        text: () => Promise.resolve('no GuardrailResetter wired'),
+      });
+      let err;
+      try {
+        await client.resetGuardrails();
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(AttachClient.PermanentStreamError);
+      expect(err).not.toBeInstanceOf(AttachClient.BackendDrainingError);
+    });
+  });
+
+  describe('configured-subagent catalog (core-agent#627/#634)', () => {
+    it('listConfiguredSubagents GETs /sessions/{sid}/subagents and returns the array', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      const subs = [
+        {
+          name: 'reviewer',
+          description: 'code review',
+          model: 'gemini-3.1-pro',
+          modes: ['sync', 'async'],
+        },
+        { name: 'triager', modes: ['async'] },
+      ];
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ subagents: subs }),
+      });
+      const out = await client.listConfiguredSubagents();
+      expect(out).toEqual(subs);
+      const [url] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe('https://example/sessions/s1/subagents');
+    });
+
+    it('listConfiguredSubagents defaults to [] when the field is absent', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      });
+      const out = await client.listConfiguredSubagents();
+      expect(out).toEqual([]);
+    });
+  });
+
+  describe('subagent turn drill-down (core-agent#638/#687)', () => {
+    it('getSubagentEvents GETs the qualified path with since/limit query params', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      const shape = {
+        agent: 'reviewer',
+        parent_session_id: 's1',
+        branches: [],
+        events: [{ seq: 3, event: { Content: { parts: [{ text: 'hi' }] } } }],
+        next_since: 4,
+        truncated: false,
+      };
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(shape),
+      });
+      const out = await client.getSubagentEvents('core-agent', 'reviewer', { since: 2, limit: 50 });
+      expect(out).toEqual(shape);
+      const [url] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe(
+        'https://example/sessions/core-agent/s1/agents/reviewer/events?since=2&limit=50'
+      );
+    });
+
+    it('getSubagentEvents omits the query string when since/limit are absent', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ agent: 'reviewer', events: [] }),
+      });
+      await client.getSubagentEvents('core-agent', 'reviewer');
+      const [url] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe('https://example/sessions/core-agent/s1/agents/reviewer/events');
+    });
+
+    it('getSubagentEvents propagates 404 as PermanentStreamError (unknown subagent)', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ error: 'unknown agent', agent: 'ghost', available: ['reviewer'] })
+          ),
+      });
+      await expect(client.getSubagentEvents('core-agent', 'ghost')).rejects.toBeInstanceOf(
+        AttachClient.PermanentStreamError
+      );
+    });
+  });
+
   describe('capabilities frame caching', () => {
     it('captures the first capabilities frame into client.capabilities', () => {
       const events = [];

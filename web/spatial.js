@@ -219,6 +219,23 @@
     return Object.assign(pos, facingFor(pos));
   }
 
+  // Aerial perspective. Everything else in this room says "further
+  // away" with size, and size alone is a weak cue when the panels are
+  // all the same size to begin with: the near slots read as big rather
+  // than as close. Hazing a panel toward the room's own colour as it
+  // recedes is the cue that actually lands, and it costs one number.
+  //
+  // FOG_NEAR is the nearest authored slot; FOG_FAR is past the second
+  // wrap, so even a heavily-populated room still has depth left to
+  // spend rather than saturating at the back. The CSS half of this sum
+  // is --fog-boost, which covers the 240px recede.
+  const FOG_NEAR = 40;
+  const FOG_FAR = -1200;
+
+  function fogFor(z) {
+    return clamp((FOG_NEAR - z) / (FOG_NEAR - FOG_FAR), 0, 1);
+  }
+
   function place(p) {
     const el = p.el;
     el.style.setProperty('--tx', Math.round(p.pos.x) + 'px');
@@ -226,6 +243,7 @@
     el.style.setProperty('--tz', Math.round(p.pos.z) + 'px');
     el.style.setProperty('--ry', p.pos.ry.toFixed(1) + 'deg');
     el.style.setProperty('--rx', p.pos.rx.toFixed(1) + 'deg');
+    el.style.setProperty('--fog', fogFor(p.pos.z).toFixed(3));
     placeCast(p);
   }
 

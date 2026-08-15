@@ -106,6 +106,7 @@ body.spatial.dragging-camera #scene-world {
   transform: translateY(420px) rotateX(90deg);
   opacity: 0.7;
   filter: drop-shadow(0 0 7px var(--glow));
+  animation: grid-drift-floor 21s linear infinite;
 
   /* The floor is the orbit target — it has to take the pointer. */
   pointer-events: auto;
@@ -114,6 +115,43 @@ body.spatial.dragging-camera #scene-world {
 #grid-ceiling {
   transform: translateY(-560px) rotateX(90deg);
   opacity: 0.12;
+  animation: grid-drift-ceiling 27s linear infinite;
+}
+
+/* A room with a perfectly stationary floor is a diorama. Drifting the
+   grid one full cell toward the camera makes the space feel like it's
+   being flown through rather than photographed — and because the travel
+   is exactly --grid-step, the loop point is invisible.
+
+   The static part of each transform is spelled out again rather than
+   composed from a variable: an animation replaces the whole `transform`
+   property, and animating a registered custom property inside one runs
+   on the main thread. This way both planes stay pure compositor work,
+   which matters when the layer is 4000px square. The 130px travel has
+   to track .scene-plane's --grid-step or the loop shows.
+
+   The back wall stays put: it is the far backdrop, and a wall that
+   drifted forward with the floor would have to arrive. */
+@keyframes grid-drift-floor {
+  from {
+    transform: translateY(420px) rotateX(90deg) translateY(0);
+  }
+
+  to {
+    transform: translateY(420px) rotateX(90deg) translateY(130px);
+  }
+}
+
+/* Slower, and the same direction: opposite directions read as the room
+   shearing apart rather than as one space moving. */
+@keyframes grid-drift-ceiling {
+  from {
+    transform: translateY(-560px) rotateX(90deg) translateY(0);
+  }
+
+  to {
+    transform: translateY(-560px) rotateX(90deg) translateY(130px);
+  }
 }
 
 /* Back wall — upright, far behind the panels. Keeps the top half of
@@ -368,6 +406,70 @@ body.spatial.dragging-camera #scene-world {
   );
 }
 
+/* ─── Panel glass ────────────────────────────────────────────────────
+   Two overlays clipped to the panel's rounded rectangle. Both have to
+   be absolutely positioned: .panel is a flex container, so a static
+   pseudo-element would become a flex item and push the terminal down.
+
+   ::before is the specular sweep — a narrow band of light travelling
+   across the surface, which is the cheapest way to say "there is glass
+   here" and the thing that stops a focused panel reading as a flat
+   rectangle of colour. ::after is the aerial-perspective wash. */
+
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: -60% -40%;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    104deg,
+    transparent 42%,
+    var(--sheen) 48%,
+    var(--sheen) 52%,
+    transparent 58%
+  );
+  opacity: 0;
+}
+
+/* Only the focused panel sweeps. Six of these going at once is a
+   disco; one is a highlight tracking across the screen you're reading. */
+.panel-anchor.active .panel::before {
+  opacity: 1;
+  animation: panel-sheen 9s cubic-bezier(0.42, 0, 0.58, 1) infinite;
+}
+
+/* Most of the timeline is the band parked off the left edge — the
+   sweep itself takes about 3.4s of the 9, so it registers as an
+   occasional glint rather than a strobe. */
+@keyframes panel-sheen {
+  0%,
+  62% {
+    transform: translate3d(-115%, 0, 0);
+  }
+
+  100% {
+    transform: translate3d(115%, 0, 0);
+  }
+}
+
+/* Aerial perspective: --fog is written per anchor by spatial.js from
+   that panel's z, and --fog-boost is the CSS half of the same sum, for
+   the extra 240px a panel recedes when another one takes the centre.
+   Painting the room's own mid-tone over the panel is what dissolves it
+   into the backdrop instead of merely dimming it — a dimmed panel reads
+   as switched off, a hazed one reads as far away. */
+.panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: var(--room-fog);
+  opacity: calc((var(--fog, 0) + var(--fog-boost, 0)) * var(--fog-max));
+  transition: opacity 0.45s ease;
+}
+
 @keyframes panel-drift {
   0% {
     transform: translate3d(-7px, -5px, 0) rotateY(-0.8deg);
@@ -413,6 +515,10 @@ body.spatial.has-active .panel-anchor:not(.active) {
   transform: translate3d(var(--tx), var(--ty), calc(var(--tz) - 240px)) rotateY(var(--ry))
     rotateX(var(--rx));
   opacity: var(--panel-recede);
+
+  /* 240px of the same span spatial.js divides by for --fog, so the haze
+     stays continuous with the recede rather than lagging behind it. */
+  --fog-boost: 0.19;
 }
 
 /* …but a background panel mid-turn keeps its presence, so you can see
@@ -1105,6 +1211,19 @@ body.spatial.side-hidden #spatial-sidebar {
   .panel-busy .panel-title::after,
   .term-caret {
     animation: none;
+  }
+
+  /* The room holds still. The haze stays — it is a static depth cue,
+     not motion — but the drifting grid and the travelling highlight are
+     exactly the kind of ambient movement this query is asking about. */
+  #grid-floor,
+  #grid-ceiling {
+    animation: none;
+  }
+
+  .panel-anchor.active .panel::before {
+    animation: none;
+    opacity: 0;
   }
 
   /* The pool still brightens for a streaming session — it just holds

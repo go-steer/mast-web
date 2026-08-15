@@ -86,6 +86,20 @@
   --cast-opacity: 0.55;
   --cast-opacity-active: 0.85;
 
+  /* Aerial perspective. A distant panel is seen through more of the
+     room, so it drifts toward the room's own colour — the oldest depth
+     cue there is, and the one that makes a flat-lit CSS scene read as
+     having air in it. --room-fog is what a panel dissolves *into*
+     (the backdrop's mid stop); --fog-max is how completely. */
+  --room-fog: var(--room-mid);
+  --fog-max: 0.62;
+
+  /* The travelling highlight on a focused panel's glass, and how bright
+     the boot flash burns. Both are "light on a surface", so both go up
+     in a dark room and nearly vanish on paper. */
+  --sheen: rgb(255 255 255 / 8%);
+  --flash: rgb(255 255 255 / 70%);
+
   /* How far a non-focused terminal falls back into the room. Fading
      toward black hides a panel much faster than fading toward white
      does the reverse, so light rooms hold theirs higher. */
@@ -537,6 +551,14 @@ body.spatial:is([data-theme$='-light'], [data-theme='paper']) {
   --cast-opacity-active: 0.3;
   --panel-recede: 0.66;
   --panel-recede-busy: 0.88;
+
+  /* Haze reads *harder* in a bright room — distant things go pale, not
+     dim — but it eats dark text far faster than it eats light text, so
+     the ceiling comes down rather than up. Sheen and flash are white on
+     near-white here, which is nothing; tint them with the room instead. */
+  --fog-max: 0.5;
+  --sheen: color-mix(in srgb, var(--accent) 9%, transparent);
+  --flash: color-mix(in srgb, var(--accent) 55%, #fff);
 }
 
 /* Cloud's horizon is tinted with the brand blue rather than the

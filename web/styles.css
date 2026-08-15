@@ -228,7 +228,13 @@ body[data-theme='grayscale-dark'] {
   --room-vignette: rgb(0 0 0 / 58%);
   --room-surface: rgb(18 18 18 / 94%);
   --room-surface-bar: rgb(32 33 36 / 82%);
-  --room-on-hue: #202124;
+
+  /* White, not Grey 900. Every Aurora theme puts white type on the
+     gradient, because dark lettering fights it — the stops are
+     saturated enough that near-black reads as a hole punched in the
+     sweep rather than as text on it. See the note in the Pantheon
+     block: this is a deliberate trade against a contrast measurement. */
+  --room-on-hue: #fff;
 }
 
 body[data-theme='grayscale-light'] {
@@ -377,12 +383,16 @@ body[data-theme='pantheon-dark'] {
   --room-surface: rgb(42 43 46 / 94%);
   --room-surface-bar: rgb(48 49 52 / 88%);
 
-  /* "On primary". The console's own answer is Grey 900, but its
-     primaries are Blue 600/300; against the Aurora stops #202124 only
-     reaches 4.06:1 and a 10px bold title is not WCAG "large" text.
-     #121212 — the backing colour from the same elevation table — clears
-     4.7:1 on the darkest stop and 6.3:1 on the lightest. */
-  --room-on-hue: #121212;
+  /* "On primary" — white across every Aurora theme, matching Cloud.
+     The console's own answer is Grey 900, and against these stops a
+     near-black is also the better *measurement* (4.7-6.3:1, where
+     white runs 2.98-3.96:1 and misses AA, since a 10px bold title is
+     not WCAG "large" text). It is the worse *result*: dark lettering
+     punches a hole in the gradient instead of sitting on it. Chosen
+     with the numbers on the table. If it needs rescuing later, a
+     text-shadow behind the title buys legibility without touching the
+     colour. */
+  --room-on-hue: #fff;
 
   /* Same reasoning as the light variant: the slice is the point, so the
      pools stay strong and the unfocused terminals stay present. */
@@ -544,10 +554,8 @@ body.spatial[data-theme='cloud-light'] {
 body.spatial[data-theme='pantheon-light'] {
   --room-edge: color-mix(in srgb, var(--accent) 12%, var(--bg));
 
-  /* Dark type on the filled bars, not the shared light block's white:
-     the Aurora stops are bright enough that white lands at 2.98:1. Same
-     value as the dark variant, same reasoning. */
-  --room-on-hue: #121212;
+  /* No --room-on-hue here: the shared light block's white is what this
+     theme wants, same as Cloud. See the note in the dark variant. */
 
   /* Strong, but short of the point where the pools stop being four
      pools and become one wash that swallows the floor grid. */

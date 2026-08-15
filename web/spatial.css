@@ -1481,6 +1481,20 @@ body.spatial.side-hidden #spatial-sidebar {
   line-height: 1;
 }
 
+/* Muted is the resting state, so it is the one that has to look
+   deliberate rather than broken: dimmed and un-framed, versus lit and
+   haloed when the room has a voice. */
+#btn-audio[aria-pressed='false'] {
+  border-color: color-mix(in srgb, var(--frame) 55%, transparent);
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+#btn-audio[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 12px -3px var(--glow);
+}
+
 /* The picker borrows .hud-btn wholesale; only the native select chrome
    needs correcting. The dropdown itself is painted by the OS, so it
    needs a real background or it renders white-on-white in some

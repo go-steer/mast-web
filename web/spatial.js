@@ -175,6 +175,14 @@
     return v < lo ? lo : v > hi ? hi : v;
   }
 
+  // spatial-audio.js is loaded by spatial.html and by nothing else, and
+  // it is allowed to be absent — a browser without Web Audio, or a page
+  // served without the tag, gets a silent room rather than an error.
+  // The module itself is muted until the operator asks for it.
+  function sound(name) {
+    if (window.MastRoomAudio) window.MastRoomAudio.play(name);
+  }
+
   // ─── Panels ───────────────────────────────────────────────────────
 
   const panels = new Map();
@@ -451,6 +459,7 @@
     updateCast(p);
     document.body.classList.add('has-active');
     statusFocus.textContent = 'active: ' + p.title;
+    sound('focus');
     // The size change animates; pin the transcript to the bottom once
     // it has settled, and hand over the keyboard. Tracks the 0.52s
     // spring on .panel's width/height, plus a frame of slack.
@@ -570,13 +579,26 @@
     // about — a session that dropped, and one that never came up —
     // both land here and both show as a broken screen.
     let booted = false;
+    let wasDead = false;
+    let wasRunning = false;
 
     function updateDamage() {
-      panel.classList.toggle('panel-dead', booted && panel.dataset.conn === 'disconnected');
+      // A terminal reports one last 'disconnected' as it is torn down,
+      // which arrives here looking exactly like a session that dropped.
+      // Closing a panel on purpose is not a failure and must not sound
+      // like one.
+      if (p && p.closing) return;
+      const dead = booted && panel.dataset.conn === 'disconnected';
+      panel.classList.toggle('panel-dead', dead);
       // The radar blip reads this class, so it has to be told whenever
       // the class moves — including from the boot timeout below, which
       // is the only caller that isn't already on the onChange path.
       if (p) updateBlip(p);
+      // Edge, not level: onChange fires on every connection report, and
+      // a session that stays down would otherwise sound the alarm on
+      // each one.
+      if (dead && !wasDead) sound('error');
+      wasDead = dead;
     }
 
     // Power-on. opts.bootDelay staggers a batch so "open all" reads as
@@ -586,6 +608,16 @@
     const bootDelay = (opts && opts.bootDelay) || 0;
     anchor.classList.add('booting');
     if (bootDelay) anchor.style.setProperty('--boot-delay', bootDelay + 'ms');
+    // The sweep runs with the CSS keyframe, not after it, so a staggered
+    // "open all" sounds like the room coming up one station at a time
+    // rather than four thuds once it already has.
+    if (bootDelay) {
+      window.setTimeout(function () {
+        sound('boot');
+      }, bootDelay);
+    } else {
+      sound('boot');
+    }
     window.setTimeout(function () {
       anchor.classList.remove('booting');
       anchor.style.removeProperty('--boot-delay');
@@ -609,7 +641,13 @@
           panel.dataset.conn = t.state.connState;
           updateDamage();
         }
-        if (what === 'busy') panel.classList.toggle('panel-busy', t.state.running);
+        if (what === 'busy') {
+          panel.classList.toggle('panel-busy', t.state.running);
+          // The falling edge is the interesting one: a turn landing is
+          // the event you'd otherwise sit watching a panel to catch.
+          if (wasRunning && !t.state.running) sound('turn');
+          wasRunning = t.state.running;
+        }
         if (p) updateCast(p);
       },
     });
@@ -630,6 +668,7 @@
       parked: null,
       cast: null,
       blip: null,
+      closing: false,
     };
     if (opts && opts.pos) {
       // Restored: drop it back where it was, re-deriving the facing
@@ -711,8 +750,13 @@
   }
 
   function closePanel(p) {
+    // Set before destroy(): tearing the client down reports a
+    // disconnect, and updateDamage reads this to tell "I closed it"
+    // apart from "it fell over".
+    p.closing = true;
     p.term.destroy();
     p.el.classList.add('closing');
+    sound('close');
     if (p.cast) {
       const cast = p.cast;
       p.cast = null;
@@ -1409,6 +1453,26 @@
   });
   document.getElementById('btn-reset').addEventListener('click', resetView);
   document.getElementById('btn-refresh').addEventListener('click', refreshAll);
+
+  const btnAudio = document.getElementById('btn-audio');
+
+  function paintAudioButton() {
+    const lit = !!(window.MastRoomAudio && window.MastRoomAudio.enabled());
+    btnAudio.setAttribute('aria-pressed', lit ? 'true' : 'false');
+    btnAudio.title = 'Room audio (' + (lit ? 'on' : 'off') + ')';
+  }
+
+  if (window.MastRoomAudio) {
+    btnAudio.addEventListener('click', function () {
+      window.MastRoomAudio.setEnabled(!window.MastRoomAudio.enabled());
+      paintAudioButton();
+    });
+    paintAudioButton();
+  } else {
+    // No audio module and no way to get one — a control that cannot do
+    // anything is worse than no control.
+    btnAudio.remove();
+  }
   document.getElementById('btn-sidebar').addEventListener('click', function () {
     const before = stageInset();
     document.body.classList.toggle('side-hidden');

@@ -47,6 +47,16 @@
       <span class="hud-spacer"></span>
       <!-- Options are filled in by spatial.js, which shares the theme
            list and the storage key with the classic shell's /theme. -->
+      <button
+        type="button"
+        class="hud-btn hud-toggle"
+        id="btn-audio"
+        title="Room audio (off)"
+        aria-label="Room audio"
+        aria-pressed="false"
+      >
+        &#9834;
+      </button>
       <select class="hud-btn" id="hud-theme" title="Theme" aria-label="Theme"></select>
       <button type="button" class="hud-btn" id="btn-tile">tile</button>
       <button type="button" class="hud-btn" id="btn-reset">reset view</button>
@@ -116,6 +126,9 @@
     <script src="attach-core/replay.js"></script>
     <script src="attach-core/client.js"></script>
     <script src="terminal.js"></script>
+    <!-- Spatial-only, and optional: spatial.js calls it through a guard,
+         so a browser without Web Audio just gets a silent room. -->
+    <script src="spatial-audio.js"></script>
     <script src="spatial.js"></script>
   </body>
 </html>

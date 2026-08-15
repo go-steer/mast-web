@@ -94,6 +94,21 @@
   // Timers are transient and don't belong in a store.
   let elapsedTimer = null;
 
+  // Presentation-only state: the link state last painted on the status
+  // bar (the HUD strip mirrors it), and the most recent user prompt
+  // (backs the per-message [RETRY] chip). Neither is protocol state,
+  // so neither belongs in MastState.
+  let linkState = 'disconnected';
+  let lastUserPrompt = '';
+
+  // Static markup for the boot banner, snapshotted from index.html so
+  // clearTranscriptView can restore it verbatim. Empty string if the
+  // banner element is absent (tests mounting a partial DOM).
+  const bootBannerHTML = (() => {
+    const el = document.querySelector('#output-area .boot-banner');
+    return el ? el.outerHTML : '';
+  })();
+
   // ─── mast: real attach-protocol backend (phase B) ──────────────────
   //
   // Wraps web/attach-client.js (the SSE consumer) and exposes the same
@@ -299,6 +314,7 @@
         status.textContent = 'attach protocol';
       }
     }
+    renderHUD();
   }
 
   function updateIdentityFromCapabilities(callerID) {
@@ -870,8 +886,7 @@
       // the per-row "Delete" button in the sidebar (POST /sessions +
       // DELETE /sessions/{app}/{sid} were wired in this PR — see the
       // deleteSession method below).
-      const output = document.getElementById('output-area');
-      if (output) output.innerHTML = '';
+      clearTranscriptView();
       addSystemMessage(
         'Browser view cleared. Server-side session state is untouched — use the sidebar delete button to remove the session on the backend.'
       );
@@ -943,6 +958,10 @@
     let streaming = null;
     const pendingToolEls = [];
     const startedAt = performance.now();
+    // Externally-driven turns get the same activity chrome as
+    // operator-driven ones — an observer should be able to tell at a
+    // glance that the agent is mid-turn.
+    setTurnActive(true);
 
     const turn = {
       observer: true,
@@ -977,6 +996,7 @@
         if (this.done) return;
         this.done = true;
         connectionStore.setActiveTurn(null);
+        setTurnActive(false);
         if (result) {
           const el = addTurnFooter(result);
           lastObserverFooter = el;
@@ -1273,15 +1293,48 @@
 
   const outputArea = document.getElementById('output-area');
 
+  // Wall-clock stamp for transcript rows: `14:02:15`. Local time —
+  // the operator correlates these against their own logs and their
+  // own clock, not against the daemon's.
+  function nowStamp() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  // `ROLE: [hh:mm:ss]` header shared by user + assistant rows.
+  function makeMsgHead(role) {
+    const head = document.createElement('div');
+    head.className = 'msg-head';
+    const r = document.createElement('span');
+    r.className = 'msg-role';
+    r.textContent = role + ':';
+    const t = document.createElement('span');
+    t.className = 'msg-time';
+    t.textContent = '[' + nowStamp() + ']';
+    head.appendChild(r);
+    head.appendChild(t);
+    return head;
+  }
+
   function addMessage(role, content, extraClass) {
     const div = document.createElement('div');
     div.className = 'message ' + role + (extraClass ? ' ' + extraClass : '');
     if (role === 'assistant') {
+      div.appendChild(makeMsgHead('AGENT'));
       const md = document.createElement('div');
       md.className = 'md-content';
       md.innerHTML = renderMarkdown(content);
       div.appendChild(md);
+      addMessageActions(div, content);
+    } else if (role === 'user') {
+      div.appendChild(makeMsgHead('USER'));
+      const body = document.createElement('div');
+      body.className = 'msg-body';
+      body.textContent = content;
+      div.appendChild(body);
     } else {
+      div.dataset.ts = nowStamp();
       div.textContent = content;
     }
     outputArea.appendChild(div);
@@ -1289,11 +1342,53 @@
     return div;
   }
 
+  // Bracketed [COPY] [RETRY] chips under an assistant row. `getText`
+  // is a thunk because a streaming row's final text isn't known when
+  // the chips are attached.
+  function addMessageActions(el, textOrGetter) {
+    const text = () => (typeof textOrGetter === 'function' ? textOrGetter() : textOrGetter);
+    const row = document.createElement('div');
+    row.className = 'msg-actions';
+
+    const copy = document.createElement('button');
+    copy.className = 'msg-action';
+    copy.textContent = 'COPY';
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(text() || '');
+        copy.textContent = 'COPIED';
+        copy.classList.add('done');
+        setTimeout(() => {
+          copy.textContent = 'COPY';
+          copy.classList.remove('done');
+        }, 1200);
+      } catch {
+        copy.textContent = 'BLOCKED';
+        setTimeout(() => {
+          copy.textContent = 'COPY';
+        }, 1200);
+      }
+    });
+
+    const retry = document.createElement('button');
+    retry.className = 'msg-action';
+    retry.textContent = 'RETRY';
+    retry.title = 'Re-send the prompt that produced this response';
+    retry.addEventListener('click', () => {
+      if (!lastUserPrompt || isRunning) return;
+      submitPrompt(lastUserPrompt);
+    });
+
+    row.appendChild(copy);
+    row.appendChild(retry);
+    el.appendChild(row);
+  }
+
   // cmdOutput distinguishes genuine built-in command output (/help,
   // /stats, /mcp, /guardrails, ...) from transient connection/status
   // notices ("Not connected", "Session cleared.") — the former gets
   // the accented .cmd-output treatment (see styles.css), the latter
-  // stays a plain muted line.
+  // stays a plain muted log line.
   function addSystemMessage(text, cmdOutput) {
     addMessage('system', text, cmdOutput ? 'cmd-output' : '');
   }
@@ -1308,6 +1403,7 @@
   function addSystemMessageHTML(html) {
     const div = document.createElement('div');
     div.className = 'message system cmd-output';
+    div.dataset.ts = nowStamp();
     div.innerHTML = html;
     outputArea.appendChild(div);
     outputArea.scrollTop = outputArea.scrollHeight;
@@ -1338,9 +1434,11 @@
     const tIn = Number(el.dataset.tokensIn) || 0;
     const tOut = Number(el.dataset.tokensOut) || 0;
     const cost = Number(el.dataset.costUsd) || 0;
-    const parts = [`${(totalMs / 1000).toFixed(2)}s`, `${tIn} in / ${tOut} out tokens`];
+    const parts = [`${(totalMs / 1000).toFixed(2)}s`, `${tIn}↑ / ${tOut}↓ tokens`];
     if (cost > 0) parts.push('$' + cost.toFixed(6));
-    el.textContent = '--- ' + parts.join(', ') + ' ---';
+    // The ::before/::after hairlines are drawn in CSS; the element's
+    // own text is just the metrics between them.
+    el.textContent = parts.join('  ·  ');
   }
 
   // Back-fills a stamped footer's cost once the authoritative
@@ -1418,7 +1516,10 @@
       stripContainer.appendChild(a);
     });
 
-    streamingRef.el.appendChild(stripContainer);
+    // Keep the sources strip above the action chips, which were
+    // appended when the streaming row was created.
+    const actions = streamingRef.el.querySelector('.msg-actions');
+    streamingRef.el.insertBefore(stripContainer, actions);
     outputArea.scrollTop = outputArea.scrollHeight;
   }
 
@@ -1426,6 +1527,10 @@
     items.forEach((item) => {
       const div = document.createElement('div');
       div.className = 'message builtin-tool';
+      const ts = document.createElement('span');
+      ts.className = 'tool-ts';
+      ts.textContent = '[' + nowStamp() + ']';
+      div.appendChild(ts);
       const labelSpan = document.createElement('span');
       labelSpan.className = 'builtin-tool-label';
       labelSpan.textContent = label;
@@ -1444,6 +1549,9 @@
     const headerRow = document.createElement('div');
     headerRow.className = 'tool-row';
     headerRow.innerHTML =
+      '<span class="tool-ts">[' +
+      nowStamp() +
+      ']</span>' +
       '<span class="tool-icon">⚒</span>' +
       '<span class="tool-verb">Using</span>' +
       '<code class="tool-name">' +
@@ -1506,11 +1614,16 @@
   function createStreamingMessage() {
     const div = document.createElement('div');
     div.className = 'message assistant';
+    div.appendChild(makeMsgHead('AGENT'));
     const md = document.createElement('div');
     md.className = 'md-content';
     div.appendChild(md);
     outputArea.appendChild(div);
-    return { el: div, md: md, text: '' };
+    const ref = { el: div, md: md, text: '' };
+    // Chips read the accumulated text at click time — the row is
+    // still streaming when they're attached.
+    addMessageActions(div, () => ref.text);
+    return ref;
   }
 
   const thinkingPhrases = [
@@ -1673,9 +1786,17 @@
     }
   }
 
+  // Bumped on every updateSessionList entry. The refetch below is
+  // async, so two overlapping calls (onConnectionState + a concurrent
+  // refreshAllSidebar, say) would each clear the container and then
+  // each append a full set of groups — the sidebar would show every
+  // session twice. The loser bails at the generation check instead.
+  let sessionListGen = 0;
+
   async function updateSessionList() {
     const container = document.getElementById('session-list');
     if (!container) return;
+    const gen = ++sessionListGen;
     container.innerHTML = '';
 
     const daemons = daemonsStore.listDaemons();
@@ -1700,8 +1821,13 @@
       })
     );
 
+    // A newer render started while we were refetching — it owns the
+    // container now; appending here would duplicate its rows.
+    if (gen !== sessionListGen) return;
+
     // Re-read daemon list after refetch so we render the latest
     // session arrays.
+    container.innerHTML = '';
     daemonsStore.listDaemons().forEach((d) => {
       renderDaemonGroup(container, d, activeEP);
     });
@@ -1901,11 +2027,13 @@
         if (s.model) tagBits.push(s.model);
         if (s.modes && s.modes.length) tagBits.push(s.modes.join('/'));
         const tagLine = tagBits.length
-          ? `<br><span class="status" style="color:var(--text-dim)">${escapeHtml(tagBits.join(', '))}</span>`
+          ? `<br><span class="item-tags">${escapeHtml(tagBits.join(', '))}</span>`
           : '';
+        // .item-desc / .item-tags, not .status — the state chips wear
+        // brackets and neither a description nor a model name is a state.
         info.innerHTML =
           `<span class="name">${escapeHtml(s.name)}</span><br>` +
-          `<span class="status">${escapeHtml(s.description || '').slice(0, 60)}</span>` +
+          `<span class="item-desc">${escapeHtml(s.description || '').slice(0, 60)}</span>` +
           tagLine;
         item.appendChild(info);
         container.appendChild(item);
@@ -1937,6 +2065,7 @@
   // ─── Status bar ────────────────────────────────────────────────────
 
   function setConnectionState(state) {
+    linkState = state === 'connected' || state === 'connecting' ? state : 'disconnected';
     const el = document.getElementById('status-connection');
     if (!el) return;
     el.classList.remove('connected', 'connecting', 'disconnected');
@@ -1944,6 +2073,7 @@
     const label =
       state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting…' : 'disconnected';
     el.textContent = `⬤ ${label}`;
+    renderHUD();
   }
 
   function updateBackendInfo() {
@@ -1955,9 +2085,63 @@
 
   function updateStatusBar() {
     document.getElementById('status-model').textContent = 'Model: ' + (currentModel || '—');
-    document.getElementById('status-session').textContent = 'Session: ' + (currentSession || '—');
+    // Session lives on the HUD strip's CONTEXT slot, not here.
     document.getElementById('status-turns').textContent = 'Turns: ' + turnCount;
     document.getElementById('status-cost').textContent = '$' + totalCostUSD.toFixed(2);
+    renderHUD();
+  }
+
+  // ─── HUD strip ─────────────────────────────────────────────────────
+  //
+  // The header answers "who am I talking to, and where" — agent,
+  // link state, session. Live telemetry (turns / cost / elapsed)
+  // deliberately stays on #status-bar; splitting them this way keeps
+  // either strip from having to re-render on every token.
+
+  function renderHUD() {
+    const header = document.getElementById('chat-header');
+    if (!header) return;
+
+    const caps = latest.capabilities || {};
+    const agent = caps.agent || {};
+    const cfg = getStoredConfig();
+    const agentName =
+      agent.name || caps.server || (cfg && cfg.endpoint ? aliasFor(cfg.endpoint) : '') || '—';
+    setText('hud-agent', agentName);
+
+    // linkState mirrors what setConnectionState last painted on the
+    // status bar. Reading connectionStore here instead would drift:
+    // not every setConnectionState call has a matching store write
+    // (the 'connecting' transitions don't).
+    header.classList.remove('connected', 'connecting', 'disconnected');
+    header.classList.add(linkState);
+    setText(
+      'hud-status',
+      linkState === 'connected' ? 'ONLINE' : linkState === 'connecting' ? 'LINKING' : 'OFFLINE'
+    );
+
+    setText('hud-context', '[' + (currentSession || 'no session') + ']');
+    setText('hud-activity', isRunning ? 'WORKING' : 'IDLE');
+    renderPromptPrefix();
+  }
+
+  function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  // Shell prefix on the prompt line: `[session] ~>`. Falls back to the
+  // product name before a session exists.
+  function renderPromptPrefix() {
+    const el = document.getElementById('prompt-prefix');
+    if (!el) return;
+    el.textContent = '[' + (currentSession || 'mast') + '] ~>';
+  }
+
+  // Body-level flag driving the activity sweep + HUD "WORKING" label.
+  function setTurnActive(active) {
+    document.body.classList.toggle('turn-active', !!active);
+    setText('hud-activity', active ? 'WORKING' : 'IDLE');
   }
 
   // ─── Prompt submission ─────────────────────────────────────────────
@@ -1986,6 +2170,8 @@
     }
 
     connectionStore.setIsRunning(true);
+    lastUserPrompt = text;
+    setTurnActive(true);
     document.getElementById('send-btn').disabled = true;
     // Show the Stop button while a turn is in flight (hidden by
     // default; interrupt handler restores hidden state on finally).
@@ -2048,6 +2234,7 @@
       pendingToolEls.forEach((el) => completeToolMessage(el, 0, 'turn ended', ''));
       pendingToolEls.length = 0;
       connectionStore.setIsRunning(false);
+      setTurnActive(false);
       document.getElementById('send-btn').disabled = false;
       hideStopButton();
     }
@@ -2265,22 +2452,23 @@
 
   // Layout picker — orthogonal to /theme (color) and independently
   // switchable. Two transcript layouts:
-  //   chat (default) — user turns right-aligned, chat-bubble style.
-  //   log             — everything left-aligned like a terminal log;
-  //                     user turns get a "❯ " prompt-glyph prefix
-  //                     instead of alignment to stay distinguishable.
-  // Applied via <body data-layout="…">, same mechanism as /theme's
-  // data-theme. Persisted in localStorage under 'mast-web:layout'.
-  // CSS lives in web/styles.css (search for /* Layouts */).
+  //   log (default) — everything left-aligned as a terminal log, with
+  //                   `USER:`/`AGENT: [hh:mm:ss]` heads per row.
+  //   chat          — user turns right-aligned, chat-bubble style.
+  // The console restyle made log the house style, so log is the
+  // attribute-less default and chat is the opt-in; before that the
+  // polarity was reversed. Applied via <body data-layout="…">, same
+  // mechanism as /theme's data-theme. Persisted in localStorage under
+  // 'mast-web:layout'. CSS lives in web/styles.css (search /* Layouts */).
   const LAYOUTS = [
+    { id: 'log', label: 'Log (left-aligned terminal transcript)' },
     { id: 'chat', label: 'Chat (right-aligned user turns)' },
-    { id: 'log', label: 'Log (left-aligned, prompt-glyph prefixed)' },
   ];
 
   function applyLayout(id) {
     const known = LAYOUTS.find((l) => l.id === id);
-    const chosen = known ? id : 'chat';
-    if (chosen === 'chat') {
+    const chosen = known ? id : 'log';
+    if (chosen === 'log') {
       document.body.removeAttribute('data-layout');
     } else {
       document.body.setAttribute('data-layout', chosen);
@@ -2293,7 +2481,7 @@
   }
 
   function currentLayout() {
-    return document.body.getAttribute('data-layout') || 'chat';
+    return document.body.getAttribute('data-layout') || 'log';
   }
 
   function cmdLayout(args) {
@@ -2713,7 +2901,7 @@
       addSystemMessage('Not connected to a backend');
       return;
     }
-    outputArea.innerHTML = '';
+    clearTranscriptView();
     await mast.clearSession();
     sessionStore.store.set({ turnCount: 0, totalCostUSD: 0 });
     addSystemMessage('Session cleared.');
@@ -3078,25 +3266,37 @@
 
   const promptInput = document.getElementById('prompt-input');
   const sendBtn = document.getElementById('send-btn');
+  const promptShell = document.getElementById('prompt-shell');
+
+  // .has-text hides the decorative idle block cursor once there's
+  // something in the field (see #prompt-caret in styles.css).
+  function syncPromptShell() {
+    if (promptShell) promptShell.classList.toggle('has-text', promptInput.value.length > 0);
+  }
+
+  function resetPromptInput() {
+    promptInput.value = '';
+    promptInput.style.height = 'auto';
+    syncPromptShell();
+  }
 
   promptInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submitPrompt(promptInput.value);
-      promptInput.value = '';
-      promptInput.style.height = 'auto';
+      resetPromptInput();
     }
   });
 
   promptInput.addEventListener('input', () => {
     promptInput.style.height = 'auto';
     promptInput.style.height = Math.min(promptInput.scrollHeight, 200) + 'px';
+    syncPromptShell();
   });
 
   sendBtn.addEventListener('click', () => {
     submitPrompt(promptInput.value);
-    promptInput.value = '';
-    promptInput.style.height = 'auto';
+    resetPromptInput();
   });
 
   document.getElementById('stop-btn').addEventListener('click', handleStopClick);
@@ -3208,7 +3408,11 @@
   // dispatchAttachEvent).
   function clearTranscriptView() {
     const output = document.getElementById('output-area');
-    if (output) output.innerHTML = '';
+    if (!output) return;
+    // Re-seed the boot banner so a cleared screen reads as a fresh
+    // terminal rather than a blank void. bootBannerHTML is captured
+    // from the served markup at boot (see below).
+    output.innerHTML = bootBannerHTML;
   }
 
   // ─── Keyboard shortcuts (v0.3.0 PR 7, mast-web#27) ────────────────
@@ -3483,9 +3687,9 @@
       applyTheme('default');
     }
     try {
-      applyLayout(localStorage.getItem('mast-web:layout') || 'chat');
+      applyLayout(localStorage.getItem('mast-web:layout') || 'log');
     } catch {
-      applyLayout('chat');
+      applyLayout('log');
     }
     installKeyboardShortcuts();
 

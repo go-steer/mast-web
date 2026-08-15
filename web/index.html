@@ -56,9 +56,38 @@
     </div>
 
     <div id="main">
-      <div id="output-area">
-        <div class="message system">
-          Welcome to mast-web. Type a prompt or use /help for commands.
+      <!-- HUD strip — the "who am I talking to" line. Identity only;
+           live telemetry (turns / cost / elapsed) stays on #status-bar
+           at the bottom so the two never fight for the same facts.
+           Values are written by app.js (renderHUD). -->
+      <div id="chat-header">
+        <span class="hud-brand">⟨m⟩ast</span>
+        <span class="hud-sep">│</span>
+        <span class="hud-item">
+          <span class="hud-key">AGENT:</span> <span class="hud-val" id="hud-agent">—</span>
+        </span>
+        <span class="hud-sep">│</span>
+        <span class="hud-item">
+          <span class="hud-key">STATUS:</span>
+          <span class="hud-val" id="hud-status">OFFLINE</span>
+          <span class="hud-dot" id="hud-dot"></span>
+        </span>
+        <span class="hud-sep">│</span>
+        <span class="hud-item">
+          <span class="hud-key">CONTEXT:</span> <span class="hud-val" id="hud-context">[none]</span>
+        </span>
+        <span class="hud-item hud-right" id="hud-activity">IDLE</span>
+      </div>
+
+      <!-- Framed "screen". #screen owns the border + glow + scanline
+           overlay; #output-area is the scrolling transcript inside it. -->
+      <div id="screen">
+        <div id="output-area">
+          <pre class="boot-banner" aria-label="mast-web">
+<span class="boot-art">█▀▄▀█ ▄▀█ █▀ ▀█▀
+█ ▀ █ █▀█ ▄█  █ </span>  <span class="boot-tag">terminal for the agentic era</span>
+
+<span class="boot-dim">attach-protocol client · type a prompt · /help for commands · ctrl+/ for keys</span></pre>
         </div>
       </div>
 
@@ -91,20 +120,29 @@
         <div id="batch-results"></div>
       </div>
 
+      <!-- Prompt line. The glowing shell is the focal point: a shell
+           prefix ([session] ~>), the textarea, and ghost bracket
+           buttons. #prompt-caret is a blinking block shown only while
+           the field is empty (app.js toggles .has-text on the shell). -->
       <div id="input-area">
-        <textarea id="prompt-input" placeholder="Enter a prompt or /command..." rows="1"></textarea>
-        <button id="send-btn">Send</button>
-        <button id="stop-btn" title="Cancel the current turn" hidden>Stop</button>
+        <div id="prompt-shell">
+          <span id="prompt-prefix" aria-hidden="true">[mast]&nbsp;~&gt;</span>
+          <span id="prompt-caret" aria-hidden="true"></span>
+          <textarea id="prompt-input" placeholder="ask, instruct, or /command…" rows="1"></textarea>
+          <button id="send-btn">SEND</button>
+          <button id="stop-btn" title="Cancel the current turn" hidden>STOP</button>
+        </div>
       </div>
 
       <div id="status-bar">
         <span class="status-item" id="status-connection">⬤ disconnected</span>
         <span class="status-item" id="status-model">Model: —</span>
-        <span class="status-item" id="status-session">Session: —</span>
         <span class="status-item" id="status-turns">Turns: 0</span>
         <span class="status-item" id="status-cost">$0.00</span>
+        <!-- "t+" rather than a stopwatch emoji: the mono stack has no
+             glyph for ⏱ and renders it as a tofu box. -->
         <span class="status-item" id="status-elapsed"
-          >⏱ <span id="status-elapsed-value">—</span></span
+          >t+ <span id="status-elapsed-value">—</span></span
         >
         <span class="status-item powered-by" id="status-agent"> attach protocol </span>
       </div>

@@ -193,6 +193,7 @@ Phase C, C+, C++, and C★ are all **independent deployment-shape work**; they a
 
 ## Related
 
+- [shells-design.md](./shells-design.md) — extends this doc with the shell layer: pluggable presentations (console / chat / fleet / spatial) over one state model, and where a conversational surface belongs
 - [positioning.md](https://github.com/go-steer/mast/blob/main/docs/positioning.md) — the lean-fork thesis this serves
 - [fork-design.md](https://github.com/go-steer/mast/blob/main/docs/fork-design.md) — references this doc for the web-UI piece
 - [specialists-design.md](https://github.com/go-steer/mast/blob/main/docs/specialists-design.md) — the subagent-as-tool subsystem the UI surfaces alongside the chat stream

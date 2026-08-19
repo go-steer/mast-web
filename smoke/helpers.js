@@ -102,6 +102,42 @@ export async function openSpatialSession(page, fixture) {
 }
 
 /**
+ * Clear the mock's tally of /inject and /wake posts, so a subsequent
+ * read reflects one prompt rather than everything since boot
+ * (connecting posts nothing today, but that is not a guarantee worth
+ * depending on).
+ */
+export async function resetTurnRequests(page) {
+  const res = await page.request.delete('/_mock/turn-requests');
+  expect(res.ok()).toBeTruthy();
+}
+
+/**
+ * Read the mock's tally of /inject and /wake posts as a plain object.
+ * Endpoints with no posts are absent rather than zero, so an equality
+ * assertion catches an unexpected extra write.
+ *
+ * Settles first. The assertion this feeds is partly a negative — "no
+ * /wake was posted" — and a stray write chained onto the inject lands
+ * a few ms later, so reading eagerly can sample between the two and
+ * call the bug green. (It did: the spatial half of 008 passed against
+ * a deliberately reverted fix until this wait existed.) Poll until the
+ * tally stops moving rather than guessing a single sleep.
+ */
+export async function turnRequests(page) {
+  let prev = null;
+  for (let i = 0; i < 12; i++) {
+    const res = await page.request.get('/_mock/turn-requests');
+    expect(res.ok()).toBeTruthy();
+    const now = JSON.stringify(await res.json());
+    if (prev !== null && now === prev) return JSON.parse(now);
+    prev = now;
+    await page.waitForTimeout(150);
+  }
+  return JSON.parse(prev);
+}
+
+/**
  * Wait for a system-message row containing the given substring to
  * appear in the transcript. Times out at Playwright's default (5s).
  */

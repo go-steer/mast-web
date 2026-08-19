@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,44 @@ type mockHandler struct {
 	fixturesDir  string
 	fixture      string
 	frameDelayMs int
+
+	// Turn-request tally, readable at GET /_mock/turn-requests.
+	//
+	// The mock replays a fixture on connect and streams it regardless
+	// of what the SPA posts, so nothing about the rendered transcript
+	// reveals how many turns the SPA *asked* for. That blind spot let
+	// a real double-turn ship: /inject already wakes the agent
+	// (core-agent pkg/agent/inbox.go), so the paired /inject + /wake
+	// ran every prompt twice, and no fixture could show it. Counting
+	// the posts is the only way the suite can see it.
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+// countPost tallies one write against an endpoint name.
+func (h *mockHandler) countPost(endpoint string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.counts == nil {
+		h.counts = make(map[string]int)
+	}
+	h.counts[endpoint]++
+}
+
+// turnRequests reports the tally and, on DELETE, clears it. Specs
+// reset before typing so a count reflects one prompt rather than
+// everything since boot.
+func (h *mockHandler) turnRequests(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r.Method == http.MethodDelete {
+		h.counts = make(map[string]int)
+	}
+	out := make(map[string]int, len(h.counts))
+	for k, v := range h.counts {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // mockSession is the canned session the SPA auto-selects on connect.
@@ -205,6 +244,12 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	mux.HandleFunc("POST /sessions", h.createSession)
 	mux.HandleFunc("POST /sessions/", h.sessionPost)
 	mux.HandleFunc("DELETE /sessions/", h.deleteSession)
+
+	// Test-only introspection. Not part of the attach protocol —
+	// the underscore marks it as belonging to the mock, not to
+	// anything a real backend serves.
+	mux.HandleFunc("GET /_mock/turn-requests", h.turnRequests)
+	mux.HandleFunc("DELETE /_mock/turn-requests", h.turnRequests)
 
 	// Session-agnostic endpoints.
 	mux.HandleFunc("GET /whoami", h.whoami)
@@ -392,6 +437,9 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 	if !ok || len(tail) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
+	}
+	if tail[0] == "inject" || tail[0] == "wake" {
+		h.countPost(tail[0])
 	}
 	switch tail[0] {
 	case "interrupt":

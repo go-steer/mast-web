@@ -154,6 +154,25 @@ window.MastTerminal = (function () {
     }
   }
 
+  // How long a turn stays open after turn-complete arrives.
+  //
+  // core-agent emits the completion frame from its turn loop while the
+  // final agent frame is still in flight behind it: measured against a
+  // live backend (gemini-3.7-flash on Vertex, one-sentence answer), the
+  // reply landed 38ms *after* turn-complete. Closing on arrival stamps
+  // the footer first, so the transcript reads
+  //
+  //   4.58s · 5009↑ / 7↓ tokens · $0.0004
+  //   AGENT: The capital of Portugal is Lisbon.
+  //
+  // — the summary above the thing it summarises. So the turn lingers
+  // for a beat and trailing frames still land inside it. The window is
+  // an order of magnitude over the measured skew and short enough that
+  // the footer still reads as instant; anything that plainly belongs to
+  // the *next* turn flushes it early (see flushTurnClose call sites),
+  // so a slow straggler costs a late footer, never a mis-attached one.
+  const TURN_CLOSE_GRACE_MS = 400;
+
   // usage-update.last_turn carries no prompt_id, so a footer may only
   // claim it when their token counts agree. Two consecutive turns with
   // identical counts would also have identical costs, so that ambiguity
@@ -202,11 +221,17 @@ window.MastTerminal = (function () {
       // the priced-out cost arrives while the turn that earned it has
       // no footer yet, and lastFooter still points at the turn before.
       pendingLastTurn: null,
+      // Set once a usage-update has carried turns_total — see the
+      // usage-update case for why the local count defers to it.
+      serverCountsTurns: false,
       destroyed: false,
     };
 
     const pendingToolCallsByID = new Map();
     let activeTurn = null;
+    // The turn that has seen turn-complete but is still accepting
+    // trailing frames: { turn, result, timer }. See TURN_CLOSE_GRACE_MS.
+    let closingTurn = null;
     let elapsedTimer = null;
     let prompter = null;
 
@@ -671,6 +696,30 @@ window.MastTerminal = (function () {
 
     // ── Turn plumbing ────────────────────────────────────────────────
 
+    // Hold a completed turn open for TURN_CLOSE_GRACE_MS. `activeTurn`
+    // stays set throughout, so every dispatcher keeps routing into it
+    // without knowing this exists — the only difference is when the
+    // footer lands.
+    function closeTurnSoon(turn, result) {
+      flushTurnClose();
+      closingTurn = {
+        turn: turn,
+        result: result,
+        timer: setTimeout(flushTurnClose, TURN_CLOSE_GRACE_MS),
+      };
+    }
+
+    // Stamp the footer now. Called on the timer, and eagerly by anything
+    // that proves the turn is over: a frame that belongs to the next
+    // one, a new prompt, teardown.
+    function flushTurnClose() {
+      if (!closingTurn) return;
+      const c = closingTurn;
+      closingTurn = null;
+      clearTimeout(c.timer);
+      c.turn.finish(c.result);
+    }
+
     // Externally-driven turns: when events arrive with no operator turn
     // in flight (observer mode, a peer driving the session, or an
     // autonomous run we attached mid-stream) spawn a turn so the
@@ -723,7 +772,7 @@ window.MastTerminal = (function () {
           root.classList.remove('term-observing');
           if (result) {
             st.lastFooter = addTurnFooter(result);
-            st.turns += 1;
+            if (!st.serverCountsTurns) st.turns += 1;
             updateStatus();
           }
           pendingToolEls.forEach((el) => completeToolMessage(el, 0, 'turn ended', ''));
@@ -746,6 +795,9 @@ window.MastTerminal = (function () {
 
         case 'status-update': {
           const s = ev.data || {};
+          // The agent is generating again: whatever it produces now
+          // belongs to the next turn, so close the last one first.
+          if (s.turn_state === 'streaming') flushTurnClose();
           if (s.model) {
             st.model = s.model;
             updateStatus();
@@ -756,7 +808,16 @@ window.MastTerminal = (function () {
         case 'usage-update': {
           const u = ev.data || {};
           if (typeof u.cost_usd_total === 'number') st.costUSD = u.cost_usd_total;
-          if (typeof u.turns_total === 'number') st.turns = u.turns_total;
+          // turns_total is the server's own count, so the local
+          // increment on turn close is only a fallback for servers that
+          // don't send one. It used to be harmless either way — it
+          // fired at turn-complete and this overwrote it moments later
+          // — but a turn now closes after the usage-update that reports
+          // it, so an unconditional increment would count it twice.
+          if (typeof u.turns_total === 'number') {
+            st.turns = u.turns_total;
+            st.serverCountsTurns = true;
+          }
           if (u.last_turn && typeof u.last_turn === 'object') {
             const lt = {
               tokensIn: u.last_turn.tokens_in || 0,
@@ -774,10 +835,22 @@ window.MastTerminal = (function () {
           return;
         }
 
+        case 'inbox':
+          // Nothing in this terminal renders the inbox yet (app.js
+          // tracks queued/dequeued for a toast it doesn't draw either),
+          // but either state says a prompt is on its way through: the
+          // next turn is starting, so the previous one is over whatever
+          // is still in flight for it.
+          flushTurnClose();
+          return;
+
         case 'turn-complete': {
           const tc = ev.data || {};
           if (activeTurn) {
-            activeTurn.finish({
+            // Measured to *now* rather than to close time — the grace
+            // window is the renderer's, not the agent's, and a real
+            // backend supplies latency_ms anyway.
+            closeTurnSoon(activeTurn, {
               totalMs: tc.latency_ms || performance.now() - activeTurn.startedAt,
               tokens: { in: tc.tokens_in || 0, out: tc.tokens_out || 0 },
               costUSD: typeof tc.cost_usd === 'number' ? tc.cost_usd : 0,
@@ -788,6 +861,10 @@ window.MastTerminal = (function () {
         }
 
         case 'turn-error': {
+          // Close any turn still in its grace window first: the error
+          // is its own event, not a reason to void a completed turn's
+          // footer.
+          flushTurnClose();
           const te = ev.data || {};
           const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
           if (te.kind === 'cost_ceiling') {
@@ -804,8 +881,13 @@ window.MastTerminal = (function () {
           // replays the prompt the model received as a user-authored
           // frame ahead of the reply — [Inbox] wrapper and all — so
           // rendering it puts the operator's own message inside the
-          // agent bubble. submit() has already drawn the real one.
-          if (ev.data.author === 'user') return;
+          // agent bubble. submit() has already drawn the real one. It
+          // is also the clearest "a new turn starts here" marker on the
+          // wire, so a turn still in its grace window closes on it.
+          if (ev.data.author === 'user') {
+            flushTurnClose();
+            return;
+          }
           // Grounding evidence, same reasoning: fanoutAgentFrame keeps
           // the wire decomposition faithful and the renderer decides
           // that a search query is a chip and a grounded source is a
@@ -974,6 +1056,10 @@ window.MastTerminal = (function () {
         return;
       }
 
+      // A turn still inside its grace window (an observer one — an
+      // operator turn holds st.running until it closes) gets its footer
+      // now, above this prompt rather than under it.
+      flushTurnClose();
       setRunning(true);
       st.lastUserPrompt = trimmed;
       addMessage('user', trimmed);
@@ -1017,7 +1103,7 @@ window.MastTerminal = (function () {
           },
         });
         st.lastFooter = addTurnFooter(result);
-        st.turns += 1;
+        if (!st.serverCountsTurns) st.turns += 1;
         updateStatus();
       } catch (e) {
         addSystemMessage(describeError(e));
@@ -1136,6 +1222,9 @@ window.MastTerminal = (function () {
       destroy() {
         if (st.destroyed) return;
         st.destroyed = true;
+        // Nothing else is coming; settle the turn rather than leaving a
+        // timer pointed at a detached transcript.
+        flushTurnClose();
         stopElapsed();
         closePromptStream();
         try {

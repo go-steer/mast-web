@@ -914,6 +914,12 @@
 
     async runPrompt(text, callbacks) {
       if (!this.client) throw new Error('not connected');
+      // Settle any turn still in its grace window before taking over
+      // activeTurn — its finish() clears the slot, and clearing it
+      // after this one has claimed it would strand the new turn. The
+      // batch runner reaches runPrompt without going through
+      // submitPrompt, so the guard belongs here too.
+      flushTurnClose();
       // Set up the per-turn dispatch hooks. The SSE router calls these
       // as events arrive; the Promise resolves on turn-complete (or
       // rejects on turn-error). startedAt is used to compute totalMs.
@@ -953,6 +959,69 @@
       });
     },
   };
+
+  // ─── Turn close, deferred ──────────────────────────────────────────
+  //
+  // core-agent emits turn-complete from its turn loop while the final
+  // agent frame is still in flight behind it: measured against a live
+  // backend (gemini-3.7-flash on Vertex, one-sentence answer), the reply
+  // landed 38ms *after* turn-complete. Finishing the turn on arrival
+  // stamps the footer first, so the transcript reads
+  //
+  //   4.58s · 5009↑ / 7↓ tokens · $0.0004
+  //   AGENT: The capital of Portugal is Lisbon.
+  //
+  // — the summary above the thing it summarises. So the turn lingers for
+  // a beat and trailing frames still land inside it. The window is an
+  // order of magnitude over the measured skew and short enough that the
+  // footer still reads as instant; anything that plainly belongs to the
+  // *next* turn flushes it early (see flushTurnClose call sites), so a
+  // slow straggler costs a late footer, never a mis-attached one.
+  //
+  // terminal.js carries the same logic for the 3D/solo shells; the two
+  // files share no module seam (index.html is frozen and cannot gain a
+  // script tag), so this is duplicated rather than extracted.
+  const TURN_CLOSE_GRACE_MS = 400;
+
+  // Set once a usage-update has carried turns_total: the server is
+  // keeping the count, so nothing local should add to it. See the
+  // usage-update case.
+  let serverCountsTurns = false;
+
+  // { turn, result, timer } while a completed turn is still accepting
+  // trailing frames. activeTurn stays set throughout, so every
+  // dispatcher keeps routing into it without knowing this exists — the
+  // only difference is when the footer lands.
+  let closingTurn = null;
+
+  function closeTurnSoon(turn, result) {
+    flushTurnClose();
+    closingTurn = { turn, result, timer: setTimeout(flushTurnClose, TURN_CLOSE_GRACE_MS) };
+  }
+
+  // Stamp the footer now. Called on the timer, and eagerly by anything
+  // that proves the turn is over: a frame that belongs to the next one,
+  // a new prompt, teardown.
+  function flushTurnClose() {
+    if (!closingTurn) return;
+    const c = closingTurn;
+    closingTurn = null;
+    clearTimeout(c.timer);
+    // Claim the priced cost here rather than when turn-complete landed.
+    // Both orderings of usage-update / turn-complete are legal on the
+    // wire, and the grace window is wide enough that a usage-update
+    // trailing turn-complete now arrives while the footer it belongs to
+    // still doesn't exist — back-filling would stamp it on the previous
+    // turn. Mutating the result before finish() also keeps the cost on
+    // what runPrompt resolves with, which is what the batch runner
+    // reports.
+    const r = c.result;
+    if (r && !(r.costUSD > 0) && lastTurnMatches(pendingLastTurn, r.tokens.in, r.tokens.out)) {
+      r.costUSD = pendingLastTurn.costUSD;
+      pendingLastTurn = null;
+    }
+    c.turn.finish(r);
+  }
 
   // Externally-driven turn state. When the SPA is attached in observer
   // mode (or any time an event arrives without a matching runPrompt),
@@ -1020,7 +1089,7 @@
         if (result) {
           const el = addTurnFooter(result);
           lastObserverFooter = el;
-          sessionStore.incrementTurnCount();
+          if (!serverCountsTurns) sessionStore.incrementTurnCount();
           updateStatusBar();
         }
         // Safety net: any pending tool indicators without a matching
@@ -1072,6 +1141,9 @@
 
       case 'status-update': {
         const s = ev.data || {};
+        // The agent is generating again: whatever it produces now
+        // belongs to the next turn, so close the last one first.
+        if (s.turn_state === 'streaming') flushTurnClose();
         const statusPatch = {};
         if (s.model !== undefined) statusPatch.model = s.model;
         if (s.provider !== undefined) statusPatch.provider = s.provider;
@@ -1095,6 +1167,13 @@
 
       case 'usage-update': {
         const u = ev.data || {};
+        // The server counts turns for us (v1.1.0+), so the local
+        // increment on turn close is a fallback for servers that don't.
+        // It used to be harmless either way — it fired at turn-complete
+        // and usage-update overwrote it moments later — but a turn now
+        // closes after the usage-update that reports it, so an
+        // unconditional increment would count the same turn twice.
+        if (typeof u.turns_total === 'number') serverCountsTurns = true;
         const usagePatch = {
           tokensIn: u.tokens_in_total || 0,
           tokensOut: u.tokens_out_total || 0,
@@ -1148,6 +1227,11 @@
         // prompt_id so consumers of a "queued" toast dismiss on the
         // matching "dequeued". For v0.1 we track state only; visual
         // toast wiring lands in a later PR.
+        //
+        // Either state also says a prompt is on its way through, so the
+        // next turn is starting and the previous one is over whatever
+        // is still in flight for it.
+        flushTurnClose();
         const box = ev.data || {};
         if (box.prompt_id) inboxState.set(box.prompt_id, box.state || '');
         return;
@@ -1159,16 +1243,15 @@
           // v1.1.0+: cost_usd is optional and core-agent omits it
           // entirely, so the priced number is whatever usage-update
           // stashed (authoritative — server-side pricing has already
-          // applied). Claiming it here rather than in addTurnFooter
-          // puts the right cost on the batch runner's result too.
+          // applied). flushTurnClose claims it, at the moment the
+          // footer is actually stamped.
           const tokensIn = tc.tokens_in || 0;
           const tokensOut = tc.tokens_out || 0;
-          let perTurnCost = typeof tc.cost_usd === 'number' ? tc.cost_usd : 0;
-          if (perTurnCost <= 0 && lastTurnMatches(pendingLastTurn, tokensIn, tokensOut)) {
-            perTurnCost = pendingLastTurn.costUSD;
-            pendingLastTurn = null;
-          }
-          activeTurn.finish({
+          const perTurnCost = typeof tc.cost_usd === 'number' ? tc.cost_usd : 0;
+          // Measured to *now* rather than to close time — the grace
+          // window is the renderer's, not the agent's, and a real
+          // backend supplies latency_ms anyway.
+          closeTurnSoon(activeTurn, {
             totalMs: tc.latency_ms || performance.now() - activeTurn.startedAt,
             tokens: { in: tokensIn, out: tokensOut },
             costUSD: perTurnCost,
@@ -1181,6 +1264,9 @@
       }
 
       case 'turn-error': {
+        // Close any turn still in its grace window first: the error is
+        // its own event, not a reason to void a completed turn's footer.
+        flushTurnClose();
         const te = ev.data || {};
         const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
         // v1.2.0 kind=cost_ceiling — session refuses further turns until
@@ -1210,8 +1296,13 @@
         // fixtures are a cross-implementation spec contract shared
         // with core-agent's coretuiremote adapter, so the wire
         // decomposition stays faithful and the renderer decides what
-        // to draw. Fixture 006 pins the shape.
-        if (ev.data.author === 'user') return;
+        // to draw. Fixture 006 pins the shape. It is also the clearest
+        // "a new turn starts here" marker on the wire, so a turn still
+        // in its grace window closes on it.
+        if (ev.data.author === 'user') {
+          flushTurnClose();
+          return;
+        }
         // Grounding evidence, same reasoning: the wire decomposition in
         // fanoutAgentFrame stays faithful and the renderer decides that
         // a search query is a chip and a grounded source is a pill on a
@@ -2249,6 +2340,10 @@
       return;
     }
 
+    // A turn still inside its grace window (an observer one — an
+    // operator turn holds isRunning until it closes) gets its footer
+    // now, above this prompt rather than under it.
+    flushTurnClose();
     connectionStore.setIsRunning(true);
     lastUserPrompt = text;
     setTurnActive(true);
@@ -2307,7 +2402,7 @@
         },
       });
       lastObserverFooter = addTurnFooter(result);
-      sessionStore.incrementTurnCount();
+      if (!serverCountsTurns) sessionStore.incrementTurnCount();
       updateStatusBar();
     } catch (e) {
       addSystemMessage(describeError(e));

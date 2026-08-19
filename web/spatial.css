@@ -1045,6 +1045,40 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   color: var(--text-dim);
 }
 
+/* Grounding evidence. The search row and the sources strip are the
+   shared primitives from styles.css, re-tuned for a panel: hue-tinted
+   so they read as this terminal's, and wrapping hard because a
+   grounding-api-redirect URL is longer than any panel is wide. */
+.term .builtin-tool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--hue);
+}
+
+.term .builtin-tool code {
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+.term .citation-sources {
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px dashed color-mix(in srgb, var(--hue) 40%, transparent);
+  font-size: 10px;
+  gap: 3px 8px;
+}
+
+.term .citation-sources-label {
+  color: var(--text-dim);
+}
+
+.term .citation-sources a {
+  color: var(--hue);
+}
+
 .term-input {
   flex: none;
   display: flex;

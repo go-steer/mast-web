@@ -1,0 +1,104 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.4.0",
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "inbox",
+        "turn-complete",
+        "turn-error",
+        "agent"
+      ],
+      "server": "core-agent"
+    }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "queued", "prompt_id": "p1", "queued_at": "2026-08-19T21:01:00Z" }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "dequeued", "prompt_id": "p1", "queued_at": "2026-08-19T21:01:00Z" }
+  },
+  {
+    "type": "status-update",
+    "data": { "model": "gemini-3.7-flash", "provider": "vertex", "turn_state": "streaming" }
+  },
+  {
+    "type": "stream-chunk",
+    "data": { "text": "Grounded answer text.", "partial": false, "author": "core_agent" }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "query: \"Fable\" AI model OR LLM",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "query: \"Opus and Fable\"",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "gitconnected.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGGHspbC9PpjrLQm1M7bdy5UvKs9mhkFzrZUOAz6GUpy9kX4jgFp",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "substack.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQERpnCyFIvNLt6FibQ3Pl0HaNfmGkkPVAs04OSBLh96LIHSkQmAhmn",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "gitconnected.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGGHspbC9PpjrLQm1M7bdy5UvKs9mhkFzrZUOAz6GUpy9kX4jgFp",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Claude — an AI assistant — anthropic.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQEleGcbXMoDwS_BDoUsu_Xn60w5O7",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFDpG6bJvdYRuYAn8BVVJ3RtWTHDjVpVxLwD26EU1RmK3pHpVhn7b062d",
+      "partial": false,
+      "author": "gemini/google_search"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": { "text": " Done.", "partial": false, "author": "core_agent" }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p1",
+      "model": "gemini-3.7-flash",
+      "tokens_in": 512,
+      "tokens_out": 96,
+      "latency_ms": 2100
+    }
+  }
+]

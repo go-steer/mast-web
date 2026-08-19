@@ -1,0 +1,14 @@
+{"event": "capabilities", "data": {"protocol_version": "1.4.0", "event_types": ["capabilities", "status-update", "usage-update", "inbox", "turn-complete", "turn-error", "agent"], "server": "core-agent"}}
+{"event": "inbox", "data": {"state": "queued", "prompt_id": "p1", "queued_at": "2026-08-19T21:01:00Z"}}
+{"event": "inbox", "data": {"state": "dequeued", "prompt_id": "p1", "queued_at": "2026-08-19T21:01:00Z"}}
+{"event": "status-update", "data": {"model": "gemini-3.7-flash", "provider": "vertex", "turn_state": "streaming"}}
+{"event": "agent", "data": {"seq": 10, "event": {"Author": "core_agent", "Content": {"role": "model", "parts": [{"text": "Grounded answer text."}]}}}}
+{"event": "agent", "data": {"seq": 11, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "query: \"Fable\" AI model OR LLM"}]}}}}
+{"event": "agent", "data": {"seq": 12, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "query: \"Opus and Fable\""}]}}}}
+{"event": "agent", "data": {"seq": 13, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "gitconnected.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGGHspbC9PpjrLQm1M7bdy5UvKs9mhkFzrZUOAz6GUpy9kX4jgFp"}]}}}}
+{"event": "agent", "data": {"seq": 14, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "substack.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQERpnCyFIvNLt6FibQ3Pl0HaNfmGkkPVAs04OSBLh96LIHSkQmAhmn"}]}}}}
+{"event": "agent", "data": {"seq": 15, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "gitconnected.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGGHspbC9PpjrLQm1M7bdy5UvKs9mhkFzrZUOAz6GUpy9kX4jgFp"}]}}}}
+{"event": "agent", "data": {"seq": 16, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "Claude — an AI assistant — anthropic.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQEleGcbXMoDwS_BDoUsu_Xn60w5O7"}]}}}}
+{"event": "agent", "data": {"seq": 17, "event": {"Author": "gemini/google_search", "Content": {"parts": [{"text": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFDpG6bJvdYRuYAn8BVVJ3RtWTHDjVpVxLwD26EU1RmK3pHpVhn7b062d"}]}}}}
+{"event": "agent", "data": {"seq": 18, "event": {"Author": "core_agent", "TurnComplete": true, "Content": {"role": "model", "parts": [{"text": " Done."}]}}}}
+{"event": "turn-complete", "data": {"prompt_id": "p1", "model": "gemini-3.7-flash", "tokens_in": 512, "tokens_out": 96, "latency_ms": 2100}}

@@ -970,6 +970,9 @@
     // hidden here rather than leaking module-scope.
     let streaming = null;
     const pendingToolEls = [];
+    let searchEl = null;
+    let sourcesEl = null;
+    const seenSources = new Set();
     const startedAt = performance.now();
     // Externally-driven turns get the same activity chrome as
     // operator-driven ones — an observer should be able to tell at a
@@ -991,16 +994,20 @@
           const el = pendingToolEls.shift();
           completeToolMessage(el, latencyMs, errMsg, resultJSON);
         },
-        onSearchQueries: (queries) => {
+        onGroundingQuery: (query) => {
           streaming = null;
-          addBuiltinToolMessage('🔍 Search', Array.from(queries));
+          if (!searchEl) searchEl = addSearchQueryRow();
+          appendSearchQuery(searchEl, query);
         },
-        onURLFetch: (urls) => {
+        onGroundingSource: (title, uri) => {
           streaming = null;
-          addBuiltinToolMessage('🌐 URL fetched', Array.from(urls));
-        },
-        onGrounding: (claims, sources) => {
-          injectCitations(streaming, Array.from(claims || []), Array.from(sources || []));
+          // Vertex repeats a chunk when the model grounds on the same
+          // page from two search rounds; dedupe on the URI so the strip
+          // has one pill per distinct source.
+          if (seenSources.has(uri)) return;
+          seenSources.add(uri);
+          if (!sourcesEl) sourcesEl = addSourcesStrip();
+          appendSource(sourcesEl, title, uri);
         },
       },
       startedAt,
@@ -1121,10 +1128,11 @@
             costUSD: lt.cost_usd || 0,
             model: lt.model || '',
           };
-          // If a footer got stamped ahead of the priced-out cost (the
-          // usual case for turn-complete-then-usage-update ordering),
-          // back-fill it in place. Idempotent — no-op if already set.
-          backfillTurnFooter(lastObserverFooter, usagePatch.lastTurn.costUSD);
+          // Either ordering is legal on the wire. If the footer this
+          // describes already exists, back-fill it in place; if it
+          // doesn't yet, hold the payload for turn-complete to claim.
+          pendingLastTurn = usagePatch.lastTurn;
+          backfillTurnFooter(lastObserverFooter, usagePatch.lastTurn);
         }
         sessionStore.patchUsage(usagePatch);
         sessionStore.store.set({
@@ -1148,18 +1156,21 @@
       case 'turn-complete': {
         const tc = ev.data || {};
         if (activeTurn && activeTurn.callbacks) {
-          // v1.1.0+: cost_usd is optional. When absent, fall through to
-          // the next usage-update.last_turn.cost_usd (which is
-          // authoritative — server-side pricing has already applied).
-          const perTurnCost =
-            typeof tc.cost_usd === 'number'
-              ? tc.cost_usd
-              : latest.usage.lastTurn
-                ? latest.usage.lastTurn.costUSD
-                : 0;
+          // v1.1.0+: cost_usd is optional and core-agent omits it
+          // entirely, so the priced number is whatever usage-update
+          // stashed (authoritative — server-side pricing has already
+          // applied). Claiming it here rather than in addTurnFooter
+          // puts the right cost on the batch runner's result too.
+          const tokensIn = tc.tokens_in || 0;
+          const tokensOut = tc.tokens_out || 0;
+          let perTurnCost = typeof tc.cost_usd === 'number' ? tc.cost_usd : 0;
+          if (perTurnCost <= 0 && lastTurnMatches(pendingLastTurn, tokensIn, tokensOut)) {
+            perTurnCost = pendingLastTurn.costUSD;
+            pendingLastTurn = null;
+          }
           activeTurn.finish({
             totalMs: tc.latency_ms || performance.now() - activeTurn.startedAt,
-            tokens: { in: tc.tokens_in || 0, out: tc.tokens_out || 0 },
+            tokens: { in: tokensIn, out: tokensOut },
             costUSD: perTurnCost,
             toolCalls: [],
           });
@@ -1201,6 +1212,24 @@
         // decomposition stays faithful and the renderer decides what
         // to draw. Fixture 006 pins the shape.
         if (ev.data.author === 'user') return;
+        // Grounding evidence, same reasoning: the wire decomposition in
+        // fanoutAgentFrame stays faithful and the renderer decides that
+        // a search query is a chip and a grounded source is a pill on a
+        // sources strip, not body text. Fixture 007 pins the shape.
+        if (ev.data.author === GROUNDING_AUTHOR) {
+          const line = parseGroundingLine(ev.data.text);
+          if (line) {
+            const gTurn = activeTurn || beginObserverTurn();
+            if (!gTurn) return;
+            if (line.query !== undefined) {
+              if (gTurn.callbacks.onGroundingQuery) gTurn.callbacks.onGroundingQuery(line.query);
+            } else if (gTurn.callbacks.onGroundingSource) {
+              gTurn.callbacks.onGroundingSource(line.title, line.uri);
+            }
+            return;
+          }
+          // Unrecognized shape — fall through and render it as text.
+        }
         let turn = activeTurn;
         // Externally-driven turn: if events arrive without an
         // activeTurn (peer-observed / observer-mode / autonomous
@@ -1432,18 +1461,38 @@
     outputArea.scrollTop = outputArea.scrollHeight;
   }
 
+  // The most recent usage-update.last_turn, held until a turn-complete
+  // claims it. core-agent emits usage-update *before* turn-complete
+  // (verified on the wire against 2.9.0-dev), so the priced-out cost
+  // for a turn lands while that turn has no footer yet — and
+  // lastObserverFooter, the only thing there is to back-fill at that
+  // moment, belongs to the *previous* turn.
+  let pendingLastTurn = null;
+
+  // last_turn carries no prompt_id, so a turn may only claim it when
+  // their token counts agree (they do agree on the wire: last_turn and
+  // turn-complete both report 5009↑/57↓ for the same turn in the
+  // capture fixture 008 was cut from). Two consecutive turns with
+  // identical counts would also have identical costs, so that
+  // ambiguity is harmless; a mismatch means the payload describes some
+  // other turn, and stamping it would print a cost one turn late.
+  function lastTurnMatches(lt, tokensIn, tokensOut) {
+    return !!lt && lt.costUSD > 0 && lt.tokensIn === tokensIn && lt.tokensOut === tokensOut;
+  }
+
   // Renders a per-turn footer + returns the element so a later
-  // usage-update.last_turn can back-fill the authoritative cost
-  // (turn-complete.cost_usd is v1.1.0-optional; the SPA doesn't know
-  // whether the incoming zero is "no cost" or "not yet computed" until
-  // last_turn arrives with the server-priced number).
+  // usage-update.last_turn can back-fill the cost, for servers that
+  // emit the two in the other order.
   function addTurnFooter(result) {
     const div = document.createElement('div');
     div.className = 'turn-footer';
+    const tokensIn = result.tokens.in || 0;
+    const tokensOut = result.tokens.out || 0;
+    const cost = result.costUSD || 0;
     div.dataset.totalMs = String(result.totalMs || 0);
-    div.dataset.tokensIn = String(result.tokens.in || 0);
-    div.dataset.tokensOut = String(result.tokens.out || 0);
-    div.dataset.costUsd = String(result.costUSD || 0);
+    div.dataset.tokensIn = String(tokensIn);
+    div.dataset.tokensOut = String(tokensOut);
+    div.dataset.costUsd = String(cost);
     renderTurnFooter(div);
     outputArea.appendChild(div);
     outputArea.scrollTop = outputArea.scrollHeight;
@@ -1465,104 +1514,112 @@
   }
 
   // Back-fills a stamped footer's cost once the authoritative
-  // usage-update.last_turn arrives. No-op if the new cost matches
-  // what's already displayed (prevents flicker on double-fires).
-  function backfillTurnFooter(el, costUSD) {
-    if (!el || typeof costUSD !== 'number' || costUSD <= 0) return;
+  // usage-update.last_turn arrives, for servers that emit the two in
+  // that order. No-op if the payload describes a different turn, or if
+  // the cost already displayed matches (prevents flicker on
+  // double-fires).
+  function backfillTurnFooter(el, lastTurn) {
+    if (!el) return;
+    const tokensIn = Number(el.dataset.tokensIn) || 0;
+    const tokensOut = Number(el.dataset.tokensOut) || 0;
+    if (!lastTurnMatches(lastTurn, tokensIn, tokensOut)) return;
     const prev = Number(el.dataset.costUsd) || 0;
-    if (prev === costUSD) return;
-    el.dataset.costUsd = String(costUSD);
+    if (prev === lastTurn.costUSD) return;
+    el.dataset.costUsd = String(lastTurn.costUSD);
     renderTurnFooter(el);
   }
 
-  function injectCitations(streamingRef, claims, sources) {
-    if (!streamingRef || !streamingRef.md) return;
-    if (!sources || sources.length === 0) return;
+  // ── Gemini grounding evidence ──────────────────────────────────────
+  //
+  // core-agent projects a turn's grounding metadata into synthetic
+  // events — one per search query the model issued, one per web source
+  // it grounded on — each carrying a single plain text part and this
+  // author (core-agent pkg/models/gemini/projection.go). They are
+  // evidence, not prose: rendered through onToken they concatenate into
+  // the assistant's bubble as one unbroken run of opaque redirect URLs.
 
-    const mdEl = streamingRef.md;
-    const usedIndices = new Set();
+  const GROUNDING_AUTHOR = 'gemini/google_search';
 
-    (claims || []).forEach((claim) => {
-      const text = (claim.text || '').trim();
-      if (!text) return;
-      const indices = claim.chunkIndices || [];
-      const walker = document.createTreeWalker(mdEl, NodeFilter.SHOW_TEXT, null);
-      let node;
-      while ((node = walker.nextNode())) {
-        const idx = node.textContent.indexOf(text);
-        if (idx >= 0) {
-          const tail = node.splitText(idx + text.length);
-          indices.forEach((i) => {
-            const src = sources[i];
-            if (!src || !src.uri) return;
-            usedIndices.add(i);
-            const sup = document.createElement('sup');
-            sup.className = 'citation-pill';
-            const a = document.createElement('a');
-            a.href = src.uri;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            a.textContent = '[' + (i + 1) + ']';
-            a.title = src.title || src.uri;
-            sup.appendChild(a);
-            tail.parentNode.insertBefore(sup, tail);
-          });
-          break;
-        }
-      }
-    });
+  // Returns {query} or {title, uri} for a recognized line, null for
+  // anything else — the caller falls back to rendering it as text, so a
+  // new projection line kind degrades to today's behaviour rather than
+  // vanishing.
+  //
+  // The title/uri split is greedy on purpose: it anchors on the last
+  // " — " before the URL, so a title that contains an em-dash of its
+  // own stays intact. Vertex omits the title on some chunks, which
+  // arrive as a bare URI.
+  function parseGroundingLine(text) {
+    const s = (text || '').trim();
+    if (!s) return null;
+    if (s.startsWith('query: ')) return { query: s.slice(7) };
+    const titled = /^(.*) — (https?:\/\/\S+)$/.exec(s);
+    if (titled) return { title: titled[1], uri: titled[2] };
+    if (/^https?:\/\/\S+$/.test(s)) return { title: '', uri: s };
+    return null;
+  }
 
-    // Sources strip — show every source even if no support span matched
-    // (keeps numbering aligned with the inline pills).
-    const stripContainer = document.createElement('div');
-    stripContainer.className = 'citation-sources';
-    const label = document.createElement('span');
-    label.className = 'citation-sources-label';
-    label.textContent = 'Sources:';
-    stripContainer.appendChild(label);
+  // One search row per turn, accumulating queries, rather than a row
+  // per query: a single grounded answer routinely issues four or five
+  // searches, and a stack of near-identical rows buries the reply.
+  function addSearchQueryRow() {
+    const div = document.createElement('div');
+    div.className = 'message builtin-tool grounding-search';
+    const ts = document.createElement('span');
+    ts.className = 'tool-ts';
+    ts.textContent = '[' + nowStamp() + ']';
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'builtin-tool-label';
+    labelSpan.textContent = '🔍 Search';
+    const code = document.createElement('code');
+    div.appendChild(ts);
+    div.appendChild(labelSpan);
+    div.appendChild(code);
+    outputArea.appendChild(div);
+    outputArea.scrollTop = outputArea.scrollHeight;
+    return div;
+  }
 
-    sources.forEach((src, i) => {
-      if (!src.uri) return;
-      const a = document.createElement('a');
-      a.href = src.uri;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      let host = src.uri;
-      try {
-        host = new URL(src.uri).hostname.replace(/^www\./, '');
-      } catch {
-        // keep raw URI as fallback
-      }
-      a.textContent = '[' + (i + 1) + '] ' + host;
-      a.title = src.title || src.uri;
-      if (!usedIndices.has(i)) a.classList.add('unused');
-      stripContainer.appendChild(a);
-    });
-
-    // Keep the sources strip above the action chips, which were
-    // appended when the streaming row was created.
-    const actions = streamingRef.el.querySelector('.msg-actions');
-    streamingRef.el.insertBefore(stripContainer, actions);
+  function appendSearchQuery(el, query) {
+    if (!el) return;
+    const code = el.querySelector('code');
+    code.textContent = code.textContent ? code.textContent + '  ·  ' + query : query;
     outputArea.scrollTop = outputArea.scrollHeight;
   }
 
-  function addBuiltinToolMessage(label, items) {
-    items.forEach((item) => {
-      const div = document.createElement('div');
-      div.className = 'message builtin-tool';
-      const ts = document.createElement('span');
-      ts.className = 'tool-ts';
-      ts.textContent = '[' + nowStamp() + ']';
-      div.appendChild(ts);
-      const labelSpan = document.createElement('span');
-      labelSpan.className = 'builtin-tool-label';
-      labelSpan.textContent = label;
-      const code = document.createElement('code');
-      code.textContent = item;
-      div.appendChild(labelSpan);
-      div.appendChild(code);
-      outputArea.appendChild(div);
-    });
+  function addSourcesStrip() {
+    const div = document.createElement('div');
+    div.className = 'message citation-sources';
+    const label = document.createElement('span');
+    label.className = 'citation-sources-label';
+    label.textContent = 'Sources:';
+    div.appendChild(label);
+    outputArea.appendChild(div);
+    outputArea.scrollTop = outputArea.scrollHeight;
+    return div;
+  }
+
+  function appendSource(el, title, uri) {
+    if (!el) return;
+    const a = document.createElement('a');
+    a.href = uri;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.title = title ? title + ' — ' + uri : uri;
+    // The URI is an opaque vertexaisearch redirect, so its hostname is
+    // the same useless string on every source. The title Vertex ships
+    // alongside is already the publisher's domain — prefer it, and fall
+    // back to the hostname only when there is no title at all.
+    let label = title;
+    if (!label) {
+      try {
+        label = new URL(uri).hostname.replace(/^www\./, '');
+      } catch {
+        label = uri;
+      }
+    }
+    a.textContent = '[' + (el.querySelectorAll('a').length + 1) + '] ' + label;
+    el.appendChild(a);
     outputArea.scrollTop = outputArea.scrollHeight;
   }
 
@@ -2208,6 +2265,9 @@
     let streaming = null;
     let activityStarted = false;
     const pendingToolEls = []; // FIFO — paired 1:1 with onToolResult
+    let searchEl = null;
+    let sourcesEl = null;
+    const seenSources = new Set();
     const stopThinkingOnce = () => {
       if (!activityStarted) {
         thinking.stop();
@@ -2231,18 +2291,19 @@
           const el = pendingToolEls.shift();
           completeToolMessage(el, latencyMs, errMsg, resultJSON);
         },
-        onSearchQueries: (queries) => {
+        onGroundingQuery: (query) => {
           stopThinkingOnce();
           streaming = null;
-          addBuiltinToolMessage('🔍 Search', Array.from(queries));
+          if (!searchEl) searchEl = addSearchQueryRow();
+          appendSearchQuery(searchEl, query);
         },
-        onURLFetch: (urls) => {
+        onGroundingSource: (title, uri) => {
           stopThinkingOnce();
           streaming = null;
-          addBuiltinToolMessage('🌐 URL fetched', Array.from(urls));
-        },
-        onGrounding: (claims, sources) => {
-          injectCitations(streaming, Array.from(claims || []), Array.from(sources || []));
+          if (seenSources.has(uri)) return;
+          seenSources.add(uri);
+          if (!sourcesEl) sourcesEl = addSourcesStrip();
+          appendSource(sourcesEl, title, uri);
         },
       });
       lastObserverFooter = addTurnFooter(result);

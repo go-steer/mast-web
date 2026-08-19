@@ -15,7 +15,11 @@
    only supplies the panel-scale terminal chrome around them.
    Reference: 3d-basic-terminal.jpeg. */
 
-body.spatial {
+/* body.solo is the flat single-terminal shell (solo.html). It wears the
+   same room lighting and the same damage vocabulary as the 3D one — it
+   just has no camera. See solo.css for what it flattens. */
+body.spatial,
+body.solo {
   /* What a terminal wears once its session is gone: half the theme's
      red, half its dimmest text. A dead terminal should read as drained
      rather than as an alert — the alert already happened, this is the
@@ -1241,7 +1245,8 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-body.spatial.side-hidden #spatial-sidebar {
+body.spatial.side-hidden #spatial-sidebar,
+body.solo.side-hidden #spatial-sidebar {
   transform: translateX(-101%);
 }
 

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mast-web // solo</title>
+    <!-- Same policy as index.html and spatial.html, for the same
+         reason: this page holds agent credentials in localStorage, so
+         any injected script is a credential-exfiltration path.
+         Everything it loads is same-origin (see web/vendor/), so
+         script-src can be a flat 'self'. Kept verbatim rather than
+         factored out — each shell is a separate entry point and a
+         policy that drifts silently is worse than one duplicated
+         visibly. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
+    />
+    <!-- styles.css supplies the palette and every transcript primitive;
+         spatial.css supplies the terminal itself — the panel bezel, the
+         screen frame, the boot flash, the damage states and the .side-*
+         sidebar. solo.css only flattens the room out of it: no camera,
+         no floor, one panel filling the stage. -->
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="vendor/highlight-github-dark-11.12.0.min.css" />
+    <link rel="stylesheet" href="spatial.css" />
+    <link rel="stylesheet" href="solo.css" />
+  </head>
+  <body class="solo">
+    <header id="spatial-hud">
+      <button type="button" class="hud-btn hud-toggle" id="btn-sidebar" title="Toggle agent list">
+        ☰
+      </button>
+      <span class="hud-brand">⟨m⟩ast</span>
+      <span class="hud-sep">//</span>
+      <span class="hud-item">SOLO_SHELL v0.1</span>
+      <span class="hud-sep">|</span>
+      <span class="hud-item" id="hud-count">0 sessions</span>
+      <span class="hud-spacer"></span>
+      <!-- Options are filled in by theme.js, against the same storage
+           key the other shells use. -->
+      <select class="hud-btn" id="hud-theme" title="Theme" aria-label="Theme"></select>
+      <a class="hud-btn" id="btn-room" href="spatial.html" title="Open the 3D workspace">room ↗</a>
+    </header>
+
+    <!-- Agent / session picker. Same markup and same module as
+         spatial.html's sidebar; here a click opens a tab instead of a
+         floating panel. -->
+    <aside id="spatial-sidebar" aria-label="Agents and sessions">
+      <div class="side-head">
+        <span class="side-title">AGENTS</span>
+        <button type="button" class="side-icon" id="btn-refresh" title="Re-list sessions">↻</button>
+      </div>
+      <div id="daemon-list"></div>
+      <form id="add-daemon" autocomplete="off">
+        <label class="side-label" for="add-endpoint">Attach a daemon</label>
+        <input id="add-endpoint" placeholder="/ or http://localhost:7777" value="/" />
+        <input id="add-token" type="password" placeholder="token (optional)" />
+        <button type="submit" class="hud-btn side-wide">attach</button>
+      </form>
+      <p class="side-hint">
+        Click a session to open it in a tab, or press <b>&#8862;</b> to open them all.
+        <b>Alt</b>+<b>1</b>…<b>9</b> switches tabs, <b>Alt</b>+<b>[</b> / <b>]</b> steps through
+        them, <b>Alt</b>+<b>W</b> closes the one in front.
+      </p>
+    </aside>
+
+    <!-- The stage holds exactly one terminal frame. Every open session
+         is a live MastTerminal mounted inside it; the tab strip decides
+         which one is on screen. Keeping the others mounted (rather than
+         rebuilding on switch) is what lets a background turn keep
+         streaming into a transcript you aren't looking at. -->
+    <main id="solo-stage">
+      <div class="panel-anchor active" id="solo-anchor">
+        <section class="panel" data-kind="term" id="solo-panel">
+          <header class="panel-bar">
+            <div class="solo-tabs" id="solo-tabs" role="tablist" aria-label="Open sessions"></div>
+            <span class="panel-controls">
+              <button type="button" class="panel-ctl" id="btn-close" title="Close this tab (alt+w)">
+                ×
+              </button>
+            </span>
+          </header>
+          <div class="panel-body" id="solo-body">
+            <div class="solo-empty" id="solo-empty">
+              <p class="solo-empty-line">no session attached</p>
+              <p class="solo-empty-hint">pick one from the agent list &#8592;</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Non-interactive atmosphere, painted over the stage. Same two
+         layers as the room; the scanlines are what make the panel read
+         as a screen rather than a card. -->
+    <div id="scene-scanlines" aria-hidden="true"></div>
+    <div id="scene-vignette" aria-hidden="true"></div>
+
+    <footer id="spatial-status">
+      <span class="status-item" id="status-focus">active: —</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">alt+1…9: tab</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">alt+[ / ]: step</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">alt+w: close</span>
+      <span class="hud-spacer"></span>
+      <span class="status-item" id="status-clock">--:--:--</span>
+    </footer>
+
+    <!-- Markdown + syntax highlighting, vendored at exact versions and
+         shared byte-for-byte with the other shells. See
+         web/vendor/README.md for provenance. -->
+    <script src="vendor/marked-12.0.2.min.js"></script>
+    <script src="vendor/marked-highlight-2.2.4.umd.js"></script>
+    <script src="vendor/highlight-11.12.0.min.js"></script>
+    <!-- attach-core: the same wire layer every shell loads, in the same
+         order. No state/ stores and no app.js — like the spatial shell,
+         this one keeps its state per terminal instead of in a set of
+         singletons. -->
+    <script src="attach-core/errors.js"></script>
+    <script src="attach-core/protocol.js"></script>
+    <script src="attach-core/replay.js"></script>
+    <script src="attach-core/prompter.js"></script>
+    <script src="attach-core/client.js"></script>
+    <script src="slash-render.js"></script>
+    <script src="terminal.js"></script>
+    <script src="theme.js"></script>
+    <script src="agents.js"></script>
+    <script src="solo.js"></script>
+  </body>
+</html>

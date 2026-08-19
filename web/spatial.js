@@ -1230,218 +1230,34 @@
   }
 
   // ─── Daemons + sessions ───────────────────────────────────────────
-  // The registry is the same localStorage contract index.html writes
-  // ('mast-web:daemons', with the legacy single-entry 'mast-web:config'
-  // as a fallback), so a daemon added in either shell shows up in the
-  // other. Each daemon keeps one session-less AttachClient purely for
-  // listSessions / createSession; the live SSE clients belong to the
-  // terminals.
+  // The registry, its persistence and the sidebar that lists it live in
+  // agents.js, shared with solo.html: which daemons are attached and
+  // what sessions they hold is the same question in any shell, and only
+  // the answer to "what happens when you click one" differs. This shell
+  // opens a floating panel in the room and paints rows from the panel
+  // map; the module knows neither.
 
-  const daemons = new Map();
+  const agents = window.MastAgents.create({
+    listEl: daemonList,
+    onOpen: openTerminal,
+    onOpenAll: openAll,
+    // Detaching a daemon takes its terminals down with it.
+    onDetach: function (d) {
+      panels.forEach(function (p) {
+        if (p.daemon.endpoint === d.endpoint) closePanel(p);
+      });
+    },
+    onRefreshed: restoreInto,
+    sessionState: function (d, s) {
+      const p = panels.get(panelKey(d.endpoint, s.id));
+      return { open: !!p, active: !!p && p === active };
+    },
+  });
 
-  function aliasFor(endpoint) {
-    if (endpoint === '/') return 'same-origin';
-    try {
-      const u = new URL(endpoint, window.location.href);
-      return u.host || endpoint;
-    } catch {
-      return endpoint;
-    }
-  }
-
-  function loadDaemons() {
-    let rows = [];
-    try {
-      const raw = localStorage.getItem('mast-web:daemons');
-      const arr = raw ? JSON.parse(raw) : null;
-      if (Array.isArray(arr)) rows = arr;
-    } catch {
-      /* blocked storage — fall through */
-    }
-    if (rows.length === 0) {
-      try {
-        const raw = localStorage.getItem('mast-web:config');
-        const cfg = raw ? JSON.parse(raw) : null;
-        if (cfg && cfg.endpoint) rows = [cfg];
-      } catch {
-        /* blocked storage — fall through */
-      }
-    }
-    // Nothing stored: the SPA is being served by a backend often enough
-    // that same-origin is the right first guess.
-    if (rows.length === 0) rows = [{ endpoint: '/', token: '' }];
-    return rows;
-  }
-
-  function persistDaemons() {
-    const rows = [];
-    daemons.forEach(function (d) {
-      rows.push({ endpoint: d.endpoint, token: d.token || '', alias: d.alias, addedAt: d.addedAt });
-    });
-    try {
-      localStorage.setItem('mast-web:daemons', JSON.stringify(rows));
-    } catch {
-      /* blocked storage — the registry is still live in memory */
-    }
-  }
-
-  function addDaemon(endpoint, token) {
-    const ep = (endpoint || '').trim().replace(/\/+$/, '') || '/';
-    const existing = daemons.get(ep);
-    if (existing) return existing;
-    const d = {
-      endpoint: ep,
-      token: token || '',
-      alias: aliasFor(ep),
-      addedAt: new Date().toISOString(),
-      state: 'connecting',
-      sessions: [],
-      error: '',
-      client: new window.AttachClient({ endpoint: ep, token: token || '' }),
-    };
-    daemons.set(ep, d);
-    persistDaemons();
-    updateSidebar();
-    return d;
-  }
-
-  function removeDaemon(d) {
-    panels.forEach(function (p) {
-      if (p.daemon.endpoint === d.endpoint) closePanel(p);
-    });
-    daemons.delete(d.endpoint);
-    persistDaemons();
-    updateSidebar();
-  }
-
-  async function refreshDaemon(d) {
-    d.state = 'connecting';
-    updateSidebar();
-    try {
-      d.sessions = await d.client.listSessions();
-      d.state = 'connected';
-      d.error = '';
-    } catch (e) {
-      d.sessions = [];
-      d.state = 'error';
-      d.error = e && e.message ? e.message : String(e);
-    }
-    updateSidebar();
-    // Every list is a chance to bring a saved layout back — the boot
-    // one usually does it, but if the daemon was down then, the 30s
-    // poll or a manual ↻ picks it up instead.
-    restoreInto(d);
-  }
-
-  function refreshAll() {
-    daemons.forEach(function (d) {
-      refreshDaemon(d);
-    });
-  }
-
-  async function newSession(d) {
-    try {
-      const s = await d.client.createSession();
-      await refreshDaemon(d);
-      openTerminal(d, { id: s.id, app: s.app, user: s.user, status: 'active' });
-    } catch (e) {
-      d.error = e && e.message ? e.message : String(e);
-      updateSidebar();
-    }
-  }
-
-  // ─── Sidebar ──────────────────────────────────────────────────────
+  const daemons = agents.daemons;
 
   function updateSidebar() {
-    daemonList.replaceChildren();
-    daemons.forEach(function (d) {
-      const group = document.createElement('div');
-      group.className = 'side-group';
-
-      const head = document.createElement('div');
-      head.className = 'side-daemon';
-      head.dataset.state = d.state;
-      const dot = document.createElement('span');
-      dot.className = 'side-dot';
-      const name = document.createElement('span');
-      name.className = 'side-daemon-name';
-      name.textContent = d.alias;
-      name.title = d.endpoint;
-      head.appendChild(dot);
-      head.appendChild(name);
-
-      const all = document.createElement('button');
-      all.type = 'button';
-      all.className = 'side-icon';
-      all.textContent = '⊞';
-      all.title = 'Open all ' + d.sessions.length + ' sessions on ' + d.alias + '  (o)';
-      all.disabled = d.sessions.length === 0;
-      all.addEventListener('click', function () {
-        openAll(d);
-      });
-      head.appendChild(all);
-
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'side-icon';
-      add.textContent = '+';
-      add.title = 'New session on ' + d.alias;
-      add.addEventListener('click', function () {
-        newSession(d);
-      });
-      head.appendChild(add);
-
-      const drop = document.createElement('button');
-      drop.type = 'button';
-      drop.className = 'side-icon';
-      drop.textContent = '×';
-      drop.title = 'Detach ' + d.alias;
-      drop.addEventListener('click', function () {
-        removeDaemon(d);
-      });
-      head.appendChild(drop);
-      group.appendChild(head);
-
-      if (d.state === 'error') {
-        const err = document.createElement('div');
-        err.className = 'side-error';
-        err.textContent = d.error || 'unreachable';
-        group.appendChild(err);
-      } else if (d.sessions.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'side-empty';
-        empty.textContent = d.state === 'connecting' ? 'listing…' : 'no sessions';
-        group.appendChild(empty);
-      }
-
-      d.sessions.forEach(function (s) {
-        const key = panelKey(d.endpoint, s.id);
-        const p = panels.get(key);
-        const row = document.createElement('button');
-        row.type = 'button';
-        row.className = 'side-session';
-        if (p) row.classList.add('open');
-        if (p && p === active) row.classList.add('active');
-        row.dataset.status = s.status || 'active';
-
-        const idEl = document.createElement('span');
-        idEl.className = 'side-session-id';
-        idEl.textContent = s.id;
-        const metaEl = document.createElement('span');
-        metaEl.className = 'side-session-meta';
-        metaEl.textContent = s.app || s.user || '';
-        row.appendChild(idEl);
-        row.appendChild(metaEl);
-        row.title = s.id + (s.app ? ' · ' + s.app : '') + ' · ' + d.endpoint;
-
-        row.addEventListener('click', function () {
-          openTerminal(d, s);
-        });
-        group.appendChild(row);
-      });
-
-      daemonList.appendChild(group);
-    });
+    agents.render();
   }
 
   // ─── Wiring ───────────────────────────────────────────────────────
@@ -1452,7 +1268,7 @@
     updateSidebar();
   });
   document.getElementById('btn-reset').addEventListener('click', resetView);
-  document.getElementById('btn-refresh').addEventListener('click', refreshAll);
+  document.getElementById('btn-refresh').addEventListener('click', agents.refreshAll);
 
   const btnAudio = document.getElementById('btn-audio');
 
@@ -1507,9 +1323,9 @@
     e.preventDefault();
     const epEl = document.getElementById('add-endpoint');
     const tokEl = document.getElementById('add-token');
-    const d = addDaemon(epEl.value, tokEl.value);
+    const d = agents.add(epEl.value, tokEl.value);
     tokEl.value = '';
-    refreshDaemon(d);
+    agents.refresh(d);
   });
 
   window.setInterval(function () {
@@ -1529,62 +1345,13 @@
   floor.style.cursor = 'grab';
 
   // ─── Theme ────────────────────────────────────────────────────────
-  // The room now follows the theme all the way — backdrop, panel
-  // surfaces, shadows and cast strength all come from the --room-* /
-  // --panel-* knobs in styles.css, so a light theme gets a light room
-  // instead of light windows floating in a black void.
-  //
-  // The list is duplicated from app.js's THEMES rather than shared:
-  // index.html is frozen, so a common themes.js has no way to reach the
-  // classic shell. Both shells read and write the same storage key, so
-  // picking here is the same as /theme there.
+  // The room follows the theme all the way — backdrop, panel surfaces,
+  // shadows and cast strength all come from the --room-* / --panel-*
+  // knobs in styles.css, so a light theme gets a light room instead of
+  // light windows floating in a black void. The registry and the
+  // storage key live in theme.js, shared with the other shells.
 
-  const THEMES = [
-    { id: 'default', label: 'Go brand' },
-    { id: 'grayscale-dark', label: 'Google grayscale · dark' },
-    { id: 'grayscale-light', label: 'Google grayscale · light' },
-    { id: 'cloud-light', label: 'Google Cloud · light' },
-    { id: 'pantheon-light', label: 'Google Pantheon · light' },
-    { id: 'pantheon-dark', label: 'Google Pantheon · dark' },
-    { id: 'solarized-dark', label: 'Solarized dark' },
-    { id: 'solarized-light', label: 'Solarized light' },
-    { id: 'high-contrast', label: 'High contrast' },
-    { id: 'mono', label: 'Monochrome' },
-    { id: 'paper', label: 'Paper' },
-  ];
-
-  function applyTheme(id) {
-    if (id && id !== 'default') document.body.setAttribute('data-theme', id);
-    else document.body.removeAttribute('data-theme');
-    try {
-      localStorage.setItem('mast-web:theme', id);
-    } catch {
-      /* blocked storage — the choice still holds for this visit */
-    }
-  }
-
-  const themeSelect = document.getElementById('hud-theme');
-  let startTheme = 'default';
-  try {
-    startTheme = localStorage.getItem('mast-web:theme') || 'default';
-  } catch {
-    /* private mode — Go brand it is */
-  }
-  THEMES.forEach(function (t) {
-    const opt = document.createElement('option');
-    opt.value = t.id;
-    opt.textContent = t.label;
-    themeSelect.appendChild(opt);
-  });
-  themeSelect.value = THEMES.some(function (t) {
-    return t.id === startTheme;
-  })
-    ? startTheme
-    : 'default';
-  applyTheme(themeSelect.value);
-  themeSelect.addEventListener('change', function () {
-    applyTheme(themeSelect.value);
-  });
+  window.MastTheme.mount(document.getElementById('hud-theme'));
 
   // A refresh can land inside the 250ms coalescing window, which would
   // lose the last drag or focus change. pagehide fires for reloads,
@@ -1610,13 +1377,10 @@
   restoreCamera();
   applyCamera();
   updateCount();
-  const registered = new Set();
-  loadDaemons().forEach(function (row) {
-    registered.add(row.endpoint);
-    // Panels come back from inside refreshDaemon, as soon as this
-    // daemon reports which sessions still exist.
-    refreshDaemon(addDaemon(row.endpoint, row.token));
-  });
+  // Panels come back from inside the module's refresh, via
+  // onRefreshed → restoreInto, as soon as a daemon reports which
+  // sessions still exist.
+  const registered = new Set(agents.boot());
 
   // Rows for a daemon that is no longer attached have nothing left to
   // wait for; disarm them so they stop being carried forward.
@@ -1633,6 +1397,6 @@
     activate: activate,
     camera: cam,
     resetView: resetView,
-    refreshAll: refreshAll,
+    refreshAll: agents.refreshAll,
   };
 })();

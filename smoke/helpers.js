@@ -67,6 +67,77 @@ export async function connectToMock(page, fixture) {
 }
 
 /**
+ * The spatial shell's equivalent of connectToMock: load spatial.html,
+ * open the mock's session into a 3D terminal, and hand back a locator
+ * for that terminal's transcript.
+ *
+ * There is no setup modal here — spatial.js defaults an unconfigured
+ * registry to same-origin `/` (loadDaemons), which is what the mock
+ * serves on. So the whole dance is: clear storage, load, click the one
+ * session row. Storage is cleared before first paint rather than after,
+ * because a saved workspace would restore panels we didn't ask for.
+ *
+ * Returns the `.term-screen` locator, not the panel: asserting on the
+ * panel would also match the title bar and status line, and a stray
+ * match there would be a false pass.
+ */
+export async function openSpatialSession(page, fixture) {
+  await page.addInitScript(() => {
+    try {
+      localStorage.clear();
+    } catch (_e) {
+      /* blocked storage — spatial.js falls back to same-origin anyway */
+    }
+  });
+  const url = fixture ? `/spatial.html?fixture=${encodeURIComponent(fixture)}` : '/spatial.html';
+  await page.goto(url);
+
+  const row = page.locator('.side-session').first();
+  await expect(row).toBeVisible();
+  await row.click();
+
+  const panel = page.locator('.panel-anchor.active .panel');
+  await expect(panel).toHaveAttribute('data-conn', 'connected');
+  return panel.locator('.term-screen');
+}
+
+/**
+ * Clear the mock's tally of /inject and /wake posts, so a subsequent
+ * read reflects one prompt rather than everything since boot
+ * (connecting posts nothing today, but that is not a guarantee worth
+ * depending on).
+ */
+export async function resetTurnRequests(page) {
+  const res = await page.request.delete('/_mock/turn-requests');
+  expect(res.ok()).toBeTruthy();
+}
+
+/**
+ * Read the mock's tally of /inject and /wake posts as a plain object.
+ * Endpoints with no posts are absent rather than zero, so an equality
+ * assertion catches an unexpected extra write.
+ *
+ * Settles first. The assertion this feeds is partly a negative — "no
+ * /wake was posted" — and a stray write chained onto the inject lands
+ * a few ms later, so reading eagerly can sample between the two and
+ * call the bug green. (It did: the spatial half of 008 passed against
+ * a deliberately reverted fix until this wait existed.) Poll until the
+ * tally stops moving rather than guessing a single sleep.
+ */
+export async function turnRequests(page) {
+  let prev = null;
+  for (let i = 0; i < 12; i++) {
+    const res = await page.request.get('/_mock/turn-requests');
+    expect(res.ok()).toBeTruthy();
+    const now = JSON.stringify(await res.json());
+    if (prev !== null && now === prev) return JSON.parse(now);
+    prev = now;
+    await page.waitForTimeout(150);
+  }
+  return JSON.parse(prev);
+}
+
+/**
  * Wait for a system-message row containing the given substring to
  * appear in the transcript. Times out at Playwright's default (5s).
  */

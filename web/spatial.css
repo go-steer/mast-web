@@ -1,0 +1,1808 @@
+/* ─── Spatial shell ──────────────────────────────────────────────────
+   A 3D scene built entirely from CSS perspective transforms: the
+   panels are ordinary DOM (real text, real buttons, real focus rings,
+   real selection, real <textarea> prompts) positioned in a preserve-3d
+   world that the camera orbits. Nothing is rendered to a texture, so
+   everything inside a panel stays interactive and accessible at any
+   camera angle.
+
+   Palette comes from styles.css. Nothing here names a color: panel
+   hues come from --hue-1…--hue-4, the room's lighting (backdrop,
+   surfaces, shadows, cast strength) from the --room-* / --panel-shadow
+   knobs, so every theme — dark or light — carries over.
+   The transcript primitives (.message, .md-content, .tool-row,
+   .turn-footer, .thinking) come from styles.css unchanged; this file
+   only supplies the panel-scale terminal chrome around them.
+   Reference: 3d-basic-terminal.jpeg. */
+
+body.spatial {
+  /* What a terminal wears once its session is gone: half the theme's
+     red, half its dimmest text. A dead terminal should read as drained
+     rather than as an alert — the alert already happened, this is the
+     aftermath. Room-level rather than per-.panel because it depends on
+     nothing per-panel, and because the radar blip has to reach it too. */
+  --hue-dead: color-mix(in srgb, var(--red) 42%, var(--text-dim));
+
+  display: block;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(
+    ellipse at 50% 62%,
+    var(--room-core) 0%,
+    var(--room-mid) 60%,
+    var(--room-edge) 100%
+  );
+  cursor: default;
+}
+
+/* ─── Camera ─────────────────────────────────────────────────────────
+   #scene-viewport owns the perspective; #scene-world is the single
+   element the camera transform is written to. Panels are children of
+   the world and inherit it. */
+
+#scene-viewport {
+  position: absolute;
+  inset: 0;
+  perspective: 1250px;
+  perspective-origin: 50% 44%;
+  outline: none;
+  touch-action: none;
+
+  /* The grid planes and the far panels stick a long way out of this box
+     — enough to make the document scrollable to roughly 2.6× its own
+     width. body's `overflow: hidden` only stops the *user* scrolling:
+     focus() and the browser's scroll restoration still move a hidden
+     scrollport, and a room scrolled 140px down loses its HUD. Clipping
+     here removes the overflow instead of hiding it. Safe for the 3D:
+     this element carries `perspective`, not `preserve-3d`, so it is
+     already where the scene flattens. */
+  overflow: hidden;
+}
+
+#scene-world {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+
+  /* The world's own box sits at z = 0 and would swallow clicks aimed
+     at anything placed behind it. Opt the box out and opt the
+     children back in — otherwise the far panels aren't draggable. */
+  pointer-events: none;
+
+  /* Written by spatial.js. */
+  --cam-yaw: 0deg;
+  --cam-pitch: 0deg;
+  --cam-dolly: 0px;
+  --cam-scale: 1;
+
+  transform: scale(var(--cam-scale)) translateZ(var(--cam-dolly)) rotateX(var(--cam-pitch))
+    rotateY(var(--cam-yaw));
+  transition: transform 0.08s linear;
+}
+
+body.spatial.dragging-camera #scene-world {
+  transition: none;
+}
+
+/* ─── Grid planes ────────────────────────────────────────────────────
+   Two 4000×4000 planes laid flat with rotateX(90deg): under
+   perspective they converge on a true vanishing point, which is what
+   sells the depth in the reference. The radial mask is the fog. */
+
+.scene-plane {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4000px;
+  height: 4000px;
+  margin: -2000px 0 0 -2000px;
+  background-image:
+    repeating-linear-gradient(to right, var(--grid-line) 0 2px, transparent 2px var(--grid-step)),
+    repeating-linear-gradient(to bottom, var(--grid-line) 0 2px, transparent 2px var(--grid-step));
+  mask-image: radial-gradient(ellipse at center, #000 0%, #000 22%, transparent 62%);
+  pointer-events: none;
+
+  --grid-step: 130px;
+}
+
+/* 420, not 300: the lower slot row centres at y=190 and PANEL_H/2 is
+   160, so a floor at 300 ran *through* the panels' feet and buried
+   their casts behind them. 420 leaves the near row standing on the
+   grid with clear floor in front of it. */
+#grid-floor {
+  transform: translateY(420px) rotateX(90deg);
+  opacity: 0.7;
+  filter: drop-shadow(0 0 7px var(--glow));
+  animation: grid-drift-floor 21s linear infinite;
+
+  /* The floor is the orbit target — it has to take the pointer. */
+  pointer-events: auto;
+}
+
+#grid-ceiling {
+  transform: translateY(-560px) rotateX(90deg);
+  opacity: 0.12;
+  animation: grid-drift-ceiling 27s linear infinite;
+}
+
+/* A room with a perfectly stationary floor is a diorama. Drifting the
+   grid one full cell toward the camera makes the space feel like it's
+   being flown through rather than photographed — and because the travel
+   is exactly --grid-step, the loop point is invisible.
+
+   The static part of each transform is spelled out again rather than
+   composed from a variable: an animation replaces the whole `transform`
+   property, and animating a registered custom property inside one runs
+   on the main thread. This way both planes stay pure compositor work,
+   which matters when the layer is 4000px square. The 130px travel has
+   to track .scene-plane's --grid-step or the loop shows.
+
+   The back wall stays put: it is the far backdrop, and a wall that
+   drifted forward with the floor would have to arrive. */
+@keyframes grid-drift-floor {
+  from {
+    transform: translateY(420px) rotateX(90deg) translateY(0);
+  }
+
+  to {
+    transform: translateY(420px) rotateX(90deg) translateY(130px);
+  }
+}
+
+/* Slower, and the same direction: opposite directions read as the room
+   shearing apart rather than as one space moving. */
+@keyframes grid-drift-ceiling {
+  from {
+    transform: translateY(-560px) rotateX(90deg) translateY(0);
+  }
+
+  to {
+    transform: translateY(-560px) rotateX(90deg) translateY(130px);
+  }
+}
+
+/* Back wall — upright, far behind the panels. Keeps the top half of
+   the frame from reading as flat black once you orbit off-axis. */
+#grid-wall {
+  width: 6000px;
+  height: 2400px;
+  margin: -1200px 0 0 -3000px;
+  transform: translateZ(-1500px);
+  opacity: 0.14;
+
+  --grid-step: 210px;
+}
+
+/* Horizon bloom: a soft band where the floor grid dissolves. */
+#horizon {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2600px;
+  height: 340px;
+  margin: -140px 0 0 -1300px;
+  background: radial-gradient(ellipse at center, var(--glow) 0%, transparent 70%);
+  transform: translateZ(-1400px);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ─── Floor casts ────────────────────────────────────────────────────
+   The pool of neon each panel spills onto the grid beneath it. Lying
+   flat on the floor plane (same rotateX(90deg), same translateY as
+   #grid-floor) and centred on the panel's x/z, it does the job a real
+   light would: it plants the panel in the room and gives the floor
+   something to be lit by. Intensity tracks the session — a streaming
+   terminal burns a brighter pool, which makes fleet activity readable
+   from the floor without reading any transcript. */
+
+#panel-casts {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  pointer-events: none;
+}
+
+/* Big, and elongated along the plane's local y — which rotateX(90deg)
+   maps to world depth. At the shallow default pitch the floor is seen
+   almost edge-on, so a circular pool would project to an invisible
+   sliver; a wide patch streaked into depth is both visible and what
+   grazing-angle spill genuinely looks like. Sits 6px above the floor
+   plane so the two don't z-fight. */
+.panel-cast {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1180px;
+  height: 1180px;
+  margin: -590px 0 0 -590px;
+
+  /* scale() after rotateX() so the spread grows in the floor plane
+     rather than lifting the pool off it. */
+  transform: translate3d(var(--cx, 0), 414px, var(--cz, 0)) rotateX(90deg) scale(var(--cspread, 1));
+
+  /* A wide solid-ish core rather than a spike: the pool is seen at a
+     grazing angle over near-black, so anything that spends most of its
+     area below ~0.3 effective alpha simply doesn't register. */
+  background-image: var(--cast-fill);
+  mask-image: var(--cast-mask);
+  opacity: var(--cast-opacity);
+  pointer-events: none;
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.6s ease;
+
+  --hue: var(--accent);
+
+  /* The following panel's slot; see .panel. Defaults to this cast's own
+     hue so any gradient written between the two collapses to a solid. */
+  --hue-next: var(--hue);
+  --cast-fill: radial-gradient(
+    ellipse 42% 100% at 50% 50%,
+    color-mix(in srgb, var(--hue) 100%, transparent) 0%,
+    color-mix(in srgb, var(--hue) 62%, transparent) 38%,
+    transparent 100%
+  );
+  --cast-mask: none;
+
+  /* Overridden per-theme: an Aurora theme puts the gradient itself on
+     the floor and moves the falloff into the mask. mix-blend-mode is
+     not an option — #panel-casts is preserve-3d, which makes it a
+     stacking context and would isolate the blend from the grid. */
+  --cast-fill-active: var(--cast-fill);
+  --cast-mask-active: var(--cast-mask);
+}
+
+/* The active terminal's pool is the one place the gradient meets the
+   floor. */
+.panel-cast.cast-active {
+  opacity: var(--cast-opacity-active);
+  background-image: var(--cast-fill-active);
+  mask-image: var(--cast-mask-active);
+}
+
+/* A streaming session breathes. Slower than the panel's own busy dot —
+   this is meant to be caught out of the corner of the eye, not read. */
+.panel-cast.cast-busy {
+  animation: cast-breathe 2.6s ease-in-out infinite;
+}
+
+.panel-cast[data-conn='disconnected'] {
+  opacity: 0.12;
+}
+
+.panel-cast.closing {
+  opacity: 0;
+}
+
+/* Relative to the theme's own cast strength, so a light room breathes
+   in soft grey rather than pulsing to full black. */
+@keyframes cast-breathe {
+  0%,
+  100% {
+    opacity: calc(var(--cast-opacity) * 0.9);
+  }
+
+  50% {
+    opacity: calc(var(--cast-opacity) * 1.8);
+  }
+}
+
+/* ─── Panels ─────────────────────────────────────────────────────────
+   .panel-anchor carries the world placement (position + facing);
+   .panel carries the idle drift animation. Splitting them keeps the
+   two transforms from fighting — placement is set by JS, drift by a
+   keyframe, and preserve-3d composes them. */
+
+.panel-anchor {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-style: preserve-3d;
+  pointer-events: auto;
+  transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--ry)) rotateX(var(--rx));
+
+  /* The curve overshoots its target by about 6% and settles back.
+     Ease-out alone lands a panel as if it were being placed by hand;
+     a little overshoot lands it as if it had mass and had to be caught,
+     which is the difference between a slide transition and an object
+     arriving. Opacity keeps a plain ease — an overshooting opacity
+     would have to pass through >1 and just clips. */
+  transition:
+    transform 0.52s cubic-bezier(0.18, 1.16, 0.32, 1),
+    opacity 0.35s ease;
+
+  --tx: 0px;
+  --ty: 0px;
+  --tz: 0px;
+  --ry: 0deg;
+  --rx: 0deg;
+}
+
+.panel-anchor.dragging {
+  transition: none;
+}
+
+.panel {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--pw, 440px);
+  height: var(--ph, 320px);
+  margin: calc(var(--ph, 320px) / -2) 0 0 calc(var(--pw, 440px) / -2);
+  display: flex;
+  flex-direction: column;
+
+  /* Transparent, because the edge is painted by the border-box layer
+     of the double background below. Width is a knob because a theme
+     that paints a gradient there needs more than 2px before the travel
+     from one stop to the next is legible at room distance. */
+  border: var(--panel-border-w) solid transparent;
+  border-radius: 8px;
+
+  /* Double background: the fill clipped to padding-box, the edge to
+     border-box behind that transparent border. Keeps border-radius,
+     needs no pseudo-element — and a pseudo-element would be the wrong
+     tool anyway, since .panel is both overflow:hidden and preserve-3d.
+
+     Near-opaque: at 80% the panel behind bleeds through and the stack
+     reads as a rendering fault rather than as glass. */
+  background:
+    linear-gradient(var(--panel-fill), var(--panel-fill)) padding-box,
+    var(--panel-edge) border-box;
+  box-shadow: var(--panel-shadow);
+  color: var(--hue-ink);
+  font-size: 11px;
+  overflow: hidden;
+  transform-style: preserve-3d;
+
+  /* Same spring as the anchor, so a panel growing into the centre and a
+     panel flying to the centre arrive together and with the same
+     weight. Size is a layout property, so this one genuinely reflows —
+     that is the price of the crisp text (see CENTER_Z in spatial.js). */
+  transition:
+    width 0.52s cubic-bezier(0.18, 1.16, 0.32, 1),
+    height 0.52s cubic-bezier(0.18, 1.16, 0.32, 1),
+    margin 0.52s cubic-bezier(0.18, 1.16, 0.32, 1);
+  animation: panel-drift 19s ease-in-out infinite alternate;
+  animation-delay: var(--drift-delay, 0s);
+
+  /* The neon defaults live here, not in :root, because a custom
+     property's own var() references resolve on the element that
+     declares it — and --hue only exists from .panel down. Themes
+     override these with .panel-scoped rules in styles.css. */
+  --hue: var(--accent);
+
+  /* The slot after this panel's own, written by spatial.js. Only used
+     by themes that want each terminal to wear a slice of a gradient
+     rather than a flat colour; it defaults to --hue, which collapses
+     every such gradient back to a solid. */
+  --hue-next: var(--hue);
+
+  /* Chrome text — the title bar, the SEND label, the elapsed counter.
+     Separate from --hue because a colour that works as a 2px edge or a
+     floor pool is often too light to read at 11px: light themes point
+     this at --text, dark ones lift it toward white. */
+  --hue-ink: var(--hue);
+
+  /* Magnification for the reading surface. The centred panel raises it
+     so its transcript keeps the apparent type size the old z-push used
+     to give it for free — but as layout zoom, which re-lays-out and
+     re-rasterises the text, rather than as a transform, which would
+     just enlarge the same blurry bitmap. See CENTER_Z in spatial.js. */
+  --term-zoom: 1;
+  --panel-border-w: 2px;
+  --panel-fill: color-mix(in srgb, var(--hue) var(--room-tint), var(--room-surface));
+  --panel-shadow:
+    0 0 2px var(--hue), 0 0 18px color-mix(in srgb, var(--hue) 55%, transparent),
+    0 0 48px color-mix(in srgb, var(--hue) 22%, transparent),
+    inset 0 0 26px color-mix(in srgb, var(--hue) 12%, transparent);
+  --panel-shadow-active:
+    0 0 3px var(--hue), 0 0 26px color-mix(in srgb, var(--hue) 75%, transparent),
+    0 0 70px color-mix(in srgb, var(--hue) 34%, transparent),
+    inset 0 0 30px color-mix(in srgb, var(--hue) 18%, transparent);
+
+  /* Two identical stops render exactly like the solid hue border they
+     replace; the Aurora themes swap in the gradient. */
+  --panel-edge: linear-gradient(var(--hue), var(--hue));
+  --panel-edge-active: linear-gradient(var(--hue), var(--hue));
+  --bar-fill: color-mix(in srgb, var(--hue) var(--room-tint-bar), var(--room-surface-bar));
+  --bar-fill-active: var(--hue);
+
+  /* Title-bar text and its halo. A theme that fills the resting bar
+     with a saturated colour has to flip both: hue-coloured type on a
+     hue-coloured bar is unreadable, and the neon bloom that sells a
+     dark room looks like a printing fault on a solid fill. */
+  --bar-ink: var(--hue-ink);
+  --bar-title-shadow: 0 0 8px currentcolor;
+
+  /* The 1px frame around the transcript, split out for the same reason
+     as --panel-edge: it can be a gradient, and two identical stops
+     render exactly like the solid hairline they replace. */
+  --screen-edge: linear-gradient(
+    color-mix(in srgb, var(--hue) 42%, transparent),
+    color-mix(in srgb, var(--hue) 42%, transparent)
+  );
+
+  /* The two shapes --hue-dead (declared on body.spatial) has to take to
+     stand in for --panel-edge and --panel-shadow, which are a gradient
+     and a shadow list respectively. Consumed by the .panel-dead rules
+     below. */
+  --edge-dead: linear-gradient(var(--hue-dead), var(--hue-dead));
+  --shadow-dead:
+    0 0 1px var(--hue-dead), 0 0 14px color-mix(in srgb, var(--hue-dead) 22%, transparent);
+}
+
+/* ─── Panel glass ────────────────────────────────────────────────────
+   Two overlays clipped to the panel's rounded rectangle. Both have to
+   be absolutely positioned: .panel is a flex container, so a static
+   pseudo-element would become a flex item and push the terminal down.
+
+   ::before is the specular sweep — a narrow band of light travelling
+   across the surface, which is the cheapest way to say "there is glass
+   here" and the thing that stops a focused panel reading as a flat
+   rectangle of colour. ::after is the aerial-perspective wash. */
+
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: -60% -40%;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    104deg,
+    transparent 42%,
+    var(--sheen) 48%,
+    var(--sheen) 52%,
+    transparent 58%
+  );
+  opacity: 0;
+}
+
+/* Only the focused panel sweeps. Six of these going at once is a
+   disco; one is a highlight tracking across the screen you're reading. */
+.panel-anchor.active .panel::before {
+  opacity: 1;
+  animation: panel-sheen 9s cubic-bezier(0.42, 0, 0.58, 1) infinite;
+}
+
+/* Most of the timeline is the band parked off the left edge — the
+   sweep itself takes about 3.4s of the 9, so it registers as an
+   occasional glint rather than a strobe. */
+@keyframes panel-sheen {
+  0%,
+  62% {
+    transform: translate3d(-115%, 0, 0);
+  }
+
+  100% {
+    transform: translate3d(115%, 0, 0);
+  }
+}
+
+/* Aerial perspective: --fog is written per anchor by spatial.js from
+   that panel's z, and --fog-boost is the CSS half of the same sum, for
+   the extra 240px a panel recedes when another one takes the centre.
+   Painting the room's own mid-tone over the panel is what dissolves it
+   into the backdrop instead of merely dimming it — a dimmed panel reads
+   as switched off, a hazed one reads as far away. */
+.panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: var(--room-fog);
+  opacity: calc((var(--fog, 0) + var(--fog-boost, 0)) * var(--fog-max));
+  transition: opacity 0.45s ease;
+}
+
+@keyframes panel-drift {
+  0% {
+    transform: translate3d(-7px, -5px, 0) rotateY(-0.8deg);
+  }
+
+  35% {
+    transform: translate3d(5px, 6px, 14px) rotateY(0.5deg);
+  }
+
+  70% {
+    transform: translate3d(8px, -4px, -10px) rotateY(1deg);
+  }
+
+  100% {
+    transform: translate3d(-4px, 7px, 6px) rotateY(-0.5deg);
+  }
+}
+
+/* The active terminal is the one you're typing into: it holds still,
+   squares up, and burns brighter. A drifting text field is charming
+   for two seconds and infuriating for the rest. */
+.panel-anchor.active .panel {
+  animation: none;
+  box-shadow: var(--panel-shadow-active);
+
+  /* Swapping the variable is enough — .panel already paints the edge
+     from it, and this selector is the more specific of the two
+     declarations on the same element. */
+  --panel-edge: var(--panel-edge-active);
+
+  /* 1.25 is the factor the centred panel's layout box grew by when
+     CENTER_Z went to 0, handed back to the terminal so the transcript
+     keeps its ~89 columns and its apparent type size — drawn at native
+     resolution now instead of rasterised at 12px and enlarged. */
+  --term-zoom: 1.25;
+}
+
+/* ─── Secondary motion ───────────────────────────────────────────────
+   The anchor's spring gets the panel to the right place; this is the
+   panel's own frame lagging behind it and catching up, which is what
+   sells the mass. spatial.js sets --settle-dir to the sign of the
+   horizontal travel, so a panel called in from the left banks the other
+   way first, the way anything with inertia does.
+
+   These three rules all write .panel's single `animation` slot and all
+   have the same (0,3,0) specificity, so source order is the priority
+   ladder: drift (on .panel) < active's `none` < settling < booting.
+
+   Removing .settling from a *parked* panel restarts panel-drift from
+   its delayed offset rather than from where it left off. The
+   discontinuity is at most a few px of an 8px drift, arriving at the
+   end of a 500px flight home, and it has never been visible; the
+   alternative is a wrapper element per panel. */
+.panel-anchor.settling .panel {
+  animation: panel-settle 0.46s cubic-bezier(0.3, 1.24, 0.4, 1);
+}
+
+@keyframes panel-settle {
+  0% {
+    transform: rotateY(calc(var(--settle-dir, 1) * -3.4deg)) rotateX(1.2deg) translateZ(-16px);
+  }
+
+  58% {
+    transform: rotateY(calc(var(--settle-dir, 1) * 1.1deg)) rotateX(-0.4deg) translateZ(7px);
+  }
+
+  100% {
+    transform: none;
+  }
+}
+
+/* ─── Boot ───────────────────────────────────────────────────────────
+   A terminal doesn't fade in, it comes on: the CRT collapse played
+   backwards, a line of light widening into a screen. It also does real
+   work — with a stagger, "open all" reads as a room powering up one
+   station at a time instead of four panels appearing at once, and the
+   eye gets told what order they arrived in. */
+
+.panel-anchor.booting .panel {
+  animation: panel-boot 0.66s cubic-bezier(0.2, 0.98, 0.3, 1) both;
+  animation-delay: var(--boot-delay, 0s);
+}
+
+@keyframes panel-boot {
+  0% {
+    opacity: 0;
+    transform: scale3d(0.84, 0.006, 1);
+  }
+
+  24% {
+    opacity: 1;
+    transform: scale3d(1, 0.01, 1);
+  }
+
+  52% {
+    transform: scale3d(1, 1.07, 1);
+  }
+
+  74% {
+    transform: scale3d(1, 0.98, 1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The glass overlay does double duty: the sheen band becomes the
+   horizontal line the picture opens out of. Placed after the sheen's
+   own rule so a panel that boots straight into focus flashes first and
+   starts sweeping afterwards. */
+.panel-anchor.booting .panel::before {
+  opacity: 1;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--flash) 47%,
+    var(--flash) 53%,
+    transparent 100%
+  );
+  animation: panel-boot-flash 0.66s ease-out both;
+  animation-delay: var(--boot-delay, 0s);
+}
+
+@keyframes panel-boot-flash {
+  0% {
+    opacity: 0;
+    transform: scale3d(1, 0.02, 1);
+  }
+
+  22% {
+    opacity: 1;
+    transform: scale3d(1, 0.05, 1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale3d(1, 1, 1);
+  }
+}
+
+/* While one terminal is centered the rest fall back into the room —
+   far enough to read as background, near enough that their edges still
+   show past the centered panel. Losing sight of the fleet entirely
+   would defeat the point of a spatial shell. */
+body.spatial.has-active .panel-anchor:not(.active) {
+  transform: translate3d(var(--tx), var(--ty), calc(var(--tz) - 240px)) rotateY(var(--ry))
+    rotateX(var(--rx));
+  opacity: var(--panel-recede);
+
+  /* 240px of the same span spatial.js divides by for --fog, so the haze
+     stays continuous with the recede rather than lagging behind it. */
+  --fog-boost: 0.19;
+}
+
+/* …but a background panel mid-turn keeps its presence, so you can see
+   the session you aren't looking at is working. */
+body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
+  opacity: var(--panel-recede-busy);
+}
+
+.panel-anchor.closing {
+  transition:
+    transform 0.28s ease-in,
+    opacity 0.28s ease-in;
+  transform: translate3d(var(--tx), var(--ty), calc(var(--tz) - 420px)) scale(0.86);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ─── State as damage ────────────────────────────────────────────────
+   Connection state is already in the status line of every terminal and
+   in the sidebar dot, both of which require walking over and reading
+   something. In a room you want to know which station is down from
+   across it, so a dead session shows as a damaged screen: the picture
+   loses its colour, the signal breaks up, a roll bar walks down it, and
+   the panel's neon drains out of the frame.
+
+   spatial.js gates this behind .panel-dead rather than reading
+   [data-conn] directly. A terminal is 'disconnected' for the first few
+   hundred ms of its life, before connect() has been anywhere, and
+   flashing static over every panel as it opens would turn a state
+   signal into a decoration. .panel-dead means "was up, or has had its
+   chance, and isn't" — which is what damage should mean. */
+
+.panel-dead {
+  --panel-edge: var(--edge-dead);
+  --panel-edge-active: var(--edge-dead);
+  --panel-shadow: var(--shadow-dead);
+  --panel-shadow-active: var(--shadow-dead);
+  --screen-edge: var(--edge-dead);
+  --bar-fill: color-mix(in srgb, var(--hue-dead) var(--room-tint-bar), var(--room-surface-bar));
+
+  /* Note the *resting* fill on both. A solid title bar is how this room
+     says "live and focused"; a dead terminal must not be able to earn
+     the loudest chrome on the stage by being clicked on. */
+  --bar-fill-active: var(--bar-fill);
+  --bar-ink: var(--hue-dead);
+  --bar-title-shadow: none;
+}
+
+/* …which leaves the ink. .panel-anchor.active .panel-bar hardcodes
+   --room-on-hue, the colour that reads against a *filled* bar — near
+   black in a dark theme, and invisible on the dim bar above. One more
+   class of specificity, since .panel-dead is the .panel that rule is
+   already matching. */
+.panel-anchor.active .panel-dead .panel-bar {
+  color: var(--hue-dead);
+}
+
+/* The chrome survives; the display is what lost signal. Safe to filter
+   here even though .panel is preserve-3d — .panel-body is `flat`, so
+   the subtree is already flattened into its own plane by this point. */
+.panel-dead .term-screen {
+  filter: grayscale(0.74) contrast(0.86) brightness(0.93);
+}
+
+/* Two crossed hatches: a 1px scanline pair that moirés against the
+   device grid, and an off-axis weave that reads as noise at this
+   scale. steps(1) on the flicker so the level jumps between values
+   instead of easing — a failing signal doesn't crossfade. */
+.panel-dead .term-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom, rgb(0 0 0 / 26%) 0 1px, transparent 1px 2px),
+    repeating-linear-gradient(
+      97deg,
+      color-mix(in srgb, var(--text) 9%, transparent) 0 1px,
+      transparent 1px 3px
+    );
+  animation: screen-static 3.7s steps(1) infinite;
+}
+
+@keyframes screen-static {
+  0%,
+  12%,
+  32%,
+  66%,
+  100% {
+    opacity: 0.5;
+  }
+
+  13% {
+    opacity: 0.18;
+  }
+
+  33% {
+    opacity: 0.95;
+  }
+
+  67% {
+    opacity: 0.32;
+  }
+
+  81% {
+    opacity: 0.86;
+  }
+}
+
+/* Loss of vertical hold. Percentages are of the bar's own height, so
+   -110% → 560% carries a 22%-tall band clear from above the screen to
+   below it. */
+.panel-dead .term-screen::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22%;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--text) 13%, transparent) 50%,
+    transparent
+  );
+  animation: screen-roll 5.4s linear infinite;
+}
+
+@keyframes screen-roll {
+  from {
+    transform: translateY(-110%);
+  }
+
+  to {
+    transform: translateY(560%);
+  }
+}
+
+/* Placed after the busy pip so a session that dies mid-turn reads as
+   dead rather than as still working. */
+.panel-dead .panel-title::after {
+  content: ' ⚠';
+  animation: none;
+  opacity: 0.85;
+}
+
+/* Reconnecting is the opposite signal, so it gets the opposite
+   treatment: not damage, but the panel visibly looking for its
+   session. One bar sweeping the screen, in the panel's own hue. */
+.panel[data-conn='connecting'] .term-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 44%,
+    var(--hue) 49.4%,
+    var(--hue) 50.6%,
+    transparent 56%
+  );
+  opacity: 0.5;
+  animation: screen-sync 2.1s ease-in-out infinite;
+}
+
+@keyframes screen-sync {
+  0%,
+  100% {
+    transform: translateY(-52%);
+  }
+
+  50% {
+    transform: translateY(52%);
+  }
+}
+
+/* ─── Panel chrome ───────────────────────────────────────────────── */
+
+.panel-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  background: var(--bar-fill);
+  color: var(--bar-ink);
+  border-bottom: 1px solid color-mix(in srgb, var(--hue) 60%, transparent);
+  cursor: grab;
+  user-select: none;
+  flex: none;
+}
+
+.panel-anchor.dragging .panel-bar {
+  cursor: grabbing;
+}
+
+/* The reference fills the title bar solid for the front window; the
+   active terminal earns that treatment here. */
+.panel-anchor.active .panel-bar {
+  background: var(--bar-fill-active);
+  color: var(--room-on-hue);
+  text-shadow: none;
+}
+
+.panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: var(--bar-title-shadow);
+}
+
+.panel-anchor.active .panel-title {
+  text-shadow: none;
+}
+
+/* Turn-in-flight pip on the title bar, so a background panel can say
+   "still working" without stealing the centre. */
+.panel-busy .panel-title::after {
+  content: ' ●';
+  animation: cursor-blink 1.1s steps(1) infinite;
+}
+
+.panel-controls {
+  margin-left: auto;
+  display: flex;
+  gap: 3px;
+  flex: none;
+}
+
+.panel-ctl {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.panel-ctl:hover,
+.panel-ctl:focus-visible {
+  opacity: 1;
+  background: color-mix(in srgb, currentcolor 26%, transparent);
+  outline: none;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  line-height: 1.5;
+}
+
+/* A terminal owns its own scroller and its own padding. */
+.panel[data-kind='term'] .panel-body {
+  overflow: hidden;
+  display: flex;
+  padding: 0;
+}
+
+/* ─── Terminal (terminal.js) ─────────────────────────────────────────
+   The panel-scale restatement of index.html's #screen / #input-area /
+   #status-bar. Those are ID-scoped in styles.css and inherently
+   single-instance; these are classes, so N of them coexist. */
+
+.term {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px;
+
+  /* Transcript text uses the normal palette — the panel hue is chrome.
+     A red-hued panel should not render its markdown in red. */
+  color: var(--text);
+  font-size: 12px;
+  text-shadow: none;
+
+  /* One knob for the whole terminal subtree, including the transcript
+     primitives it borrows from styles.css. Those are sized in absolute
+     px and shared with the classic shell, so they can't be rewritten in
+     em here; zoom scales them without touching them. */
+  zoom: var(--term-zoom);
+}
+
+.term-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+
+  /* Same padding-box/border-box pair as .panel, one level in, so the
+     transcript's frame can carry a gradient too. */
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background:
+    linear-gradient(var(--bg), var(--bg)) padding-box,
+    var(--screen-edge) border-box;
+  overflow: hidden;
+}
+
+.term-out {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--hue) transparent;
+}
+
+.term-out::-webkit-scrollbar {
+  width: 6px;
+}
+
+.term-out::-webkit-scrollbar-thumb {
+  background: var(--hue);
+  border-radius: 3px;
+}
+
+/* Panel-scale tightening of the shared transcript primitives. */
+.term .message {
+  padding: 2px 0;
+  line-height: 1.45;
+}
+
+.term .msg-actions {
+  margin-top: 2px;
+}
+
+.term .md-content pre {
+  max-height: 220px;
+  overflow: auto;
+}
+
+/* Permission request card. app.js puts this in a modal; a workspace
+   answers it inline, in the panel that raised it — see terminal.js.
+   Bordered in the panel's own hue so a request reads as belonging to
+   one terminal even when the room is full of them. */
+.term .perms-request {
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--hue);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--hue) 8%, transparent);
+}
+
+.term .perms-tool {
+  font-weight: 600;
+  color: var(--hue);
+  word-break: break-all;
+}
+
+.term .perms-detail {
+  margin-top: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.term .perms-meta {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.term .perms-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.term .perms-outcome {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.term-input {
+  flex: none;
+  display: flex;
+}
+
+.term-shell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  padding: 5px 8px;
+  background: var(--bg-surface);
+  border: 1px solid color-mix(in srgb, var(--hue) 70%, transparent);
+  border-radius: 4px;
+  transition: border-color 160ms ease;
+}
+
+.term-shell:focus-within {
+  border-color: var(--hue);
+  box-shadow: 0 0 16px -6px var(--hue);
+}
+
+.term-prefix {
+  color: var(--green);
+  font-size: 11px;
+  line-height: 18px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Idle block cursor sitting where the real caret will land; hidden
+   with visibility (not display) so the slot stays reserved and the
+   placeholder doesn't jump on focus. */
+.term-caret {
+  width: 7px;
+  height: 13px;
+  margin-bottom: 3px;
+  background: var(--hue);
+  box-shadow: 0 0 8px var(--hue);
+  flex-shrink: 0;
+  animation: cursor-blink 1.1s steps(2, start) infinite;
+}
+
+.term-shell.has-text .term-caret,
+.term-shell:focus-within .term-caret {
+  visibility: hidden;
+  animation: none;
+}
+
+.term-prompt {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  resize: none;
+  min-height: 18px;
+  max-height: 120px;
+  outline: none;
+  caret-color: var(--hue);
+}
+
+.term-prompt::placeholder {
+  color: var(--text-dim);
+}
+
+.term-btn {
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  line-height: 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.term-send {
+  color: var(--hue-ink);
+}
+
+.term-send:hover:not(:disabled) {
+  border-color: var(--hue);
+}
+
+.term-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.term-stop {
+  color: var(--red);
+}
+
+.term-stop:hover:not(:disabled) {
+  border-color: var(--red);
+}
+
+.term-status {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  padding: 0 3px;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.term-conn[data-state='connected'] {
+  color: var(--green);
+}
+
+.term-conn[data-state='connecting'] {
+  color: var(--yellow);
+}
+
+.term-conn[data-state='disconnected'] {
+  color: var(--red);
+}
+
+.term-elapsed.active {
+  color: var(--hue-ink);
+}
+
+/* ─── Sidebar ────────────────────────────────────────────────────────
+   The agent list. Sits over the scene rather than in it — a picker
+   that drifted in 3D would be a cruel joke. */
+
+#spatial-sidebar {
+  position: absolute;
+  left: 0;
+  top: 34px;
+  bottom: 26px;
+  width: 236px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 11px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  backdrop-filter: blur(4px);
+  border-right: 1px solid var(--frame);
+  box-shadow: 8px 0 26px -22px var(--glow);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+body.spatial.side-hidden #spatial-sidebar {
+  transform: translateX(-101%);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+}
+
+.side-head .side-icon {
+  margin-left: auto;
+}
+
+.side-icon {
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.side-icon:hover,
+.side-icon:focus-visible {
+  color: var(--accent);
+  border-color: var(--frame);
+  outline: none;
+}
+
+.side-icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.side-icon:disabled:hover {
+  color: var(--text-dim);
+  border-color: transparent;
+}
+
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-daemon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--frame);
+  margin-bottom: 3px;
+}
+
+.side-daemon-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.side-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-dim);
+}
+
+.side-daemon[data-state='connected'] .side-dot {
+  background: var(--green);
+  box-shadow: 0 0 7px var(--green);
+}
+
+.side-daemon[data-state='connecting'] .side-dot {
+  background: var(--yellow);
+}
+
+.side-daemon[data-state='error'] .side-dot {
+  background: var(--red);
+}
+
+.side-session {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-session:hover,
+.side-session:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.side-session.open {
+  border-left-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--text);
+}
+
+.side-session.active {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.side-session-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-session-meta {
+  font-size: 9px;
+  opacity: 0.62;
+  flex: none;
+}
+
+.side-session[data-status='idle'] .side-session-id {
+  opacity: 0.66;
+}
+
+.side-empty,
+.side-error {
+  padding: 2px 4px;
+  font-size: 10px;
+  font-style: italic;
+}
+
+.side-error {
+  color: var(--red);
+  font-style: normal;
+  word-break: break-word;
+}
+
+#add-daemon {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--frame);
+}
+
+.side-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+#add-daemon input {
+  background: var(--bg);
+  border: 1px solid var(--frame);
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  min-width: 0;
+}
+
+#add-daemon input:focus {
+  border-color: var(--accent);
+}
+
+.side-wide {
+  width: 100%;
+}
+
+.side-hint {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.5;
+  opacity: 0.66;
+}
+
+/* ─── Overlays ───────────────────────────────────────────────────── */
+
+#scene-scanlines,
+#scene-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#scene-scanlines {
+  background: repeating-linear-gradient(to bottom, var(--scan) 0 1px, transparent 1px 3px);
+  opacity: 0.9;
+}
+
+#scene-vignette {
+  background: radial-gradient(ellipse at 50% 48%, transparent 44%, var(--room-vignette) 100%);
+}
+
+/* ─── HUD + status bar ───────────────────────────────────────────── */
+
+#spatial-hud,
+#spatial-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  backdrop-filter: blur(3px);
+  color: var(--text-dim);
+}
+
+#spatial-hud {
+  top: 0;
+  border-bottom: 1px solid var(--frame);
+  box-shadow: 0 6px 22px -18px var(--glow);
+}
+
+#spatial-status {
+  bottom: 0;
+  border-top: 1px solid var(--frame);
+  box-shadow: 0 -6px 22px -18px var(--glow);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+/* The wordmark is the one piece of chrome that carries the gradient.
+   Themes that don't have one leave --brand-image at `none`, which makes
+   background-clip a no-op and falls back to a plain accent-colored
+   word. */
+#spatial-hud .hud-brand {
+  font-size: 13px;
+  background-image: var(--brand-image);
+  background-clip: text;
+  color: var(--brand-color);
+}
+
+.hud-sep {
+  color: var(--border-soft);
+  opacity: 0.75;
+}
+
+.hud-spacer {
+  flex: 1;
+}
+
+.hud-item,
+.status-item {
+  white-space: nowrap;
+}
+
+#hud-camera,
+#status-focus,
+#status-clock {
+  color: var(--accent);
+}
+
+.hud-btn {
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--frame);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.hud-btn:hover,
+.hud-btn:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 0 12px -3px var(--glow);
+  outline: none;
+}
+
+.hud-toggle {
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* Muted is the resting state, so it is the one that has to look
+   deliberate rather than broken: dimmed and un-framed, versus lit and
+   haloed when the room has a voice. */
+#btn-audio[aria-pressed='false'] {
+  border-color: color-mix(in srgb, var(--frame) 55%, transparent);
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+#btn-audio[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 12px -3px var(--glow);
+}
+
+/* The picker borrows .hud-btn wholesale; only the native select chrome
+   needs correcting. The dropdown itself is painted by the OS, so it
+   needs a real background or it renders white-on-white in some
+   browsers. */
+#hud-theme {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  max-width: 190px;
+}
+
+#hud-theme option {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+/* ─── Radar ──────────────────────────────────────────────────────────
+   An overhead plan of the room, drawn from the same numbers place()
+   uses. Once the camera can yaw past ±40° the panels behind you leave
+   the frame entirely, and "how many terminals are open" stops being
+   answerable by looking. The radar answers it, and answers "which way
+   am I facing" at the same time.
+
+   DOM blips rather than a canvas, for the same reason the room itself
+   is DOM: at a handful of panels the elements are free, they inherit
+   the theme through the same custom properties everything else does,
+   and each one can carry the panel's own --hue instead of being
+   repainted in a draw loop. */
+
+#hud-radar {
+  position: absolute;
+  right: 14px;
+  bottom: 38px;
+  z-index: 4;
+  width: 132px;
+  height: 132px;
+  border: 1px solid var(--frame);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 18px -8px var(--glow),
+    inset 0 0 22px -10px var(--glow);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Two range rings and the centre line. Purely a scale reference — they
+   are what make a blip halfway up read as "halfway to the back wall"
+   rather than just "up a bit". */
+.radar-grid {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0.5;
+  background:
+    radial-gradient(
+      circle at 50% 100%,
+      transparent 0 31%,
+      var(--frame) 31% calc(31% + 1px),
+      transparent calc(31% + 1px) 64%,
+      var(--frame) 64% calc(64% + 1px),
+      transparent calc(64% + 1px)
+    ),
+    linear-gradient(to right, transparent calc(50% - 0.5px), var(--frame) 50%, transparent);
+}
+
+/* The sweep is the one thing on the radar that isn't information, and
+   it earns its place: a still radar reads as a diagram, a turning one
+   reads as an instrument that is switched on.
+
+   A bright leading edge decaying over 70° — a *trail*, not a pie slice.
+   The flat-topped version this replaced read as a second wedge and had
+   to be told apart from the heading one, which is the only thing on the
+   dish that's actually saying something. */
+.radar-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(
+    from -70deg,
+    transparent 0deg,
+    color-mix(in srgb, var(--accent) 4%, transparent) 40deg,
+    color-mix(in srgb, var(--accent) 15%, transparent) 68deg,
+    color-mix(in srgb, var(--accent) 24%, transparent) 70deg,
+    transparent 71deg
+  );
+  animation: radar-sweep 4.6s linear infinite;
+}
+
+@keyframes radar-sweep {
+  to {
+    rotate: 360deg;
+  }
+}
+
+/* Where the camera is pointed, fanned from the eye at the bottom.
+   --radar-yaw is the camera yaw straight through: the blips are plotted
+   in unrotated world space, so the heading has to rotate rather than
+   the plan. */
+.radar-wedge {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 96px;
+  height: 118px;
+  margin-left: -48px;
+  transform-origin: 50% 100%;
+  rotate: var(--radar-yaw, 0deg);
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 30%, transparent),
+    color-mix(in srgb, var(--accent) 5%, transparent) 78%,
+    transparent
+  );
+  clip-path: polygon(50% 100%, 12% 0, 88% 0);
+  transition: rotate 0.12s linear;
+}
+
+.radar-eye {
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--glow);
+}
+
+.radar-blips {
+  position: absolute;
+  inset: 0;
+}
+
+/* One per open terminal, at the panel's own hue. Positioned in percent
+   so the radar can be resized without touching spatial.js. */
+.radar-blip {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  left: var(--bx);
+  top: var(--by);
+  border-radius: 50%;
+  background: var(--hue);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--hue) 70%, transparent);
+  transition:
+    left 0.5s cubic-bezier(0.18, 1.16, 0.32, 1),
+    top 0.5s cubic-bezier(0.18, 1.16, 0.32, 1),
+    opacity 0.3s ease;
+}
+
+/* The active panel is at the stage centre, where it would otherwise be
+   one more dot among six. The ring is what makes "this is the one you
+   are reading" legible at 7px. */
+.radar-blip.blip-active {
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--hue) 34%, transparent),
+    0 0 12px var(--hue);
+}
+
+.radar-blip.blip-busy {
+  animation: radar-ping 1.5s ease-out infinite;
+}
+
+@keyframes radar-ping {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--hue) 62%, transparent);
+  }
+
+  70%,
+  100% {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+/* Matches the panel's own damage: drained, and hollow rather than lit. */
+.radar-blip.blip-dead {
+  background: transparent;
+  border: 1px solid var(--hue-dead);
+  box-shadow: none;
+  animation: none;
+}
+
+/* Flat panels and a still camera for anyone who asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+
+  .panel-busy .panel-title::after,
+  .term-caret {
+    animation: none;
+  }
+
+  /* The room holds still. The haze stays — it is a static depth cue,
+     not motion — but the drifting grid and the travelling highlight are
+     exactly the kind of ambient movement this query is asking about. */
+  #grid-floor,
+  #grid-ceiling {
+    animation: none;
+  }
+
+  .panel-anchor.active .panel::before {
+    animation: none;
+    opacity: 0;
+  }
+
+  /* The radar keeps every blip and the heading wedge — those are the
+     readout. What goes is the decoration: the sweep exists only to make
+     the instrument look switched on, and the busy ping has a twin in
+     the panel's own title spinner. */
+  .radar-sweep {
+    animation: none;
+    opacity: 0.28;
+  }
+
+  .radar-blip {
+    transition: none;
+  }
+
+  .radar-blip.blip-busy {
+    animation: none;
+  }
+
+  /* A terminal still appears and still settles — it just does it
+     without the CRT collapse or the inertial bank. */
+  .panel-anchor.settling .panel,
+  .panel-anchor.booting .panel,
+  .panel-anchor.booting .panel::before {
+    animation: none;
+  }
+
+  .panel-anchor.booting .panel::before {
+    opacity: 0;
+  }
+
+  /* A dead screen stays broken up and stays drained — the state is the
+     point. It just stops flickering and stops rolling. */
+  .panel-dead .term-screen::after {
+    animation: none;
+    opacity: 0.5;
+  }
+
+  .panel-dead .term-screen::before,
+  .panel[data-conn='connecting'] .term-screen::before {
+    animation: none;
+  }
+
+  /* The pool still brightens for a streaming session — it just holds
+     that brightness instead of breathing. */
+  .panel-cast.cast-busy {
+    animation: none;
+    opacity: var(--cast-opacity-active);
+  }
+
+  .panel-anchor,
+  .panel-cast,
+  #scene-world,
+  #spatial-sidebar {
+    transition: none;
+  }
+}

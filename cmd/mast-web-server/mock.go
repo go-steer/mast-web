@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,11 +34,50 @@ type mockHandler struct {
 	fixturesDir  string
 	fixture      string
 	frameDelayMs int
+
+	// Turn-request tally, readable at GET /_mock/turn-requests.
+	//
+	// The mock replays a fixture on connect and streams it regardless
+	// of what the SPA posts, so nothing about the rendered transcript
+	// reveals how many turns the SPA *asked* for. That blind spot let
+	// a real double-turn ship: /inject already wakes the agent
+	// (core-agent pkg/agent/inbox.go), so the paired /inject + /wake
+	// ran every prompt twice, and no fixture could show it. Counting
+	// the posts is the only way the suite can see it.
+	mu     sync.Mutex
+	counts map[string]int
 }
 
-// mockSession is the canned session returned from GET /sessions.
-// Kept minimal — just enough for the SPA to auto-select it and open
-// an SSE stream.
+// countPost tallies one write against an endpoint name.
+func (h *mockHandler) countPost(endpoint string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.counts == nil {
+		h.counts = make(map[string]int)
+	}
+	h.counts[endpoint]++
+}
+
+// turnRequests reports the tally and, on DELETE, clears it. Specs
+// reset before typing so a count reflects one prompt rather than
+// everything since boot.
+func (h *mockHandler) turnRequests(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r.Method == http.MethodDelete {
+		h.counts = make(map[string]int)
+	}
+	out := make(map[string]int, len(h.counts))
+	for k, v := range h.counts {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// mockSession is the canned session the SPA auto-selects on connect.
+// Kept minimal — just enough to open an SSE stream. Always first in
+// mockSessions so single-session consumers (smoke tests, index.html's
+// auto-select) keep landing on it.
 var mockSession = map[string]any{
 	"app_name":        "mast-web-mock",
 	"user_id":         "smoke@example.com",
@@ -45,6 +85,50 @@ var mockSession = map[string]any{
 	"has_event_log":   true,
 	"status":          "active",
 	"last_touched_at": "2026-07-20T12:00:00Z",
+}
+
+// mockSessions is the roster returned from GET /sessions. More than
+// one because spatial.html opens a live terminal per session — a
+// single-entry list makes the multi-panel workspace impossible to see
+// without hand-forging session IDs. Each extra session streams a
+// different fixture (sessionFixtures) so the panels don't all show
+// the same transcript.
+var mockSessions = []map[string]any{
+	mockSession,
+	{
+		"app_name":        "core-agent",
+		"user_id":         "smoke@example.com",
+		"session_id":      "ops-triage",
+		"has_event_log":   true,
+		"status":          "active",
+		"last_touched_at": "2026-07-20T11:52:00Z",
+	},
+	{
+		"app_name":        "core-agent",
+		"user_id":         "smoke@example.com",
+		"session_id":      "docs-writer",
+		"has_event_log":   true,
+		"status":          "idle",
+		"last_touched_at": "2026-07-20T09:14:00Z",
+	},
+	{
+		"app_name":        "mast",
+		"user_id":         "smoke@example.com",
+		"session_id":      "repo-indexer",
+		"has_event_log":   true,
+		"status":          "active",
+		"last_touched_at": "2026-07-20T11:59:00Z",
+	},
+}
+
+// sessionFixtures picks a per-session fixture for GET .../events when
+// the request doesn't name one explicitly. Unlisted session IDs
+// (including smoke-session) fall through to the server's --fixture,
+// so the smoke suite's expectations are unaffected.
+var sessionFixtures = map[string]string{
+	"ops-triage":   "003-tool-result-with-latency",
+	"docs-writer":  "004-observer-mode-usage-update-only",
+	"repo-indexer": "002-cost-ceiling-mid-turn",
 }
 
 // Sidebar-stub payloads. Values chosen so the sidebar panels populate
@@ -161,6 +245,12 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	mux.HandleFunc("POST /sessions/", h.sessionPost)
 	mux.HandleFunc("DELETE /sessions/", h.deleteSession)
 
+	// Test-only introspection. Not part of the attach protocol —
+	// the underscore marks it as belonging to the mock, not to
+	// anything a real backend serves.
+	mux.HandleFunc("GET /_mock/turn-requests", h.turnRequests)
+	mux.HandleFunc("DELETE /_mock/turn-requests", h.turnRequests)
+
 	// Session-agnostic endpoints.
 	mux.HandleFunc("GET /whoami", h.whoami)
 	mux.HandleFunc("GET /peers", h.peers)
@@ -219,7 +309,11 @@ func isKnownSessionEndpoint(name string) bool {
 // ─── Handlers ────────────────────────────────────────────────────────
 
 func (h *mockHandler) listSessions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": []any{mockSession}})
+	out := make([]any, 0, len(mockSessions))
+	for _, s := range mockSessions {
+		out = append(out, s)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
 
 func (h *mockHandler) createSession(w http.ResponseWriter, r *http.Request) {
@@ -344,6 +438,9 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
+	if tail[0] == "inject" || tail[0] == "wake" {
+		h.countPost(tail[0])
+	}
 	switch tail[0] {
 	case "interrupt":
 		// /interrupt returns X-Interrupted: nothing-in-flight so the
@@ -417,7 +514,14 @@ func (h *mockHandler) preflight(w http.ResponseWriter, _ *http.Request) {
 func (h *mockHandler) sseEvents(w http.ResponseWriter, r *http.Request) {
 	fixture := r.URL.Query().Get("fixture")
 	if fixture == "" {
-		fixture = h.fixture
+		// No explicit fixture: give the demo sessions distinct
+		// transcripts, everything else the server default.
+		_, sid, _, _ := sessionSegments(r.URL.Path)
+		if named, ok := sessionFixtures[sid]; ok {
+			fixture = named
+		} else {
+			fixture = h.fixture
+		}
 	}
 	frames, err := loadFixture(h.fixturesDir, fixture)
 	if err != nil {

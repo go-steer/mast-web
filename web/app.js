@@ -932,10 +932,23 @@
           },
         };
         connectionStore.setActiveTurn(turn);
-        // Send the operator prompt and wake the agent.
+        // /inject alone. It reads like half the operation, but
+        // InjectAs already ends in RequestWake — operator input has to
+        // pierce an active sleep (core-agent pkg/agent/inbox.go) — so
+        // any *second* wake asks for a second turn. The wake channel
+        // is buffered(1) and coalescing, but the loop drains the first
+        // fire immediately, so the second lands in an empty buffer and
+        // runs a turn with nothing new in the inbox.
+        //
+        // Measured against a live core-agent, one prompt each:
+        //   POST /inject + POST /wake  → 2 turn-complete
+        //   POST /wake {prompt}        → 2 turn-complete
+        //   POST /inject               → 1 turn-complete
+        // The middle one is core-agent's own paired form (doWake calls
+        // InjectAs then RequestWake), so it carries the same double —
+        // switching endpoints doesn't help, only dropping the wake.
         Promise.resolve()
           .then(() => this.client.inject(text))
-          .then(() => this.client.wake())
           .catch((e) => activeTurn && activeTurn.finish(null, e));
       });
     },
@@ -2422,6 +2435,11 @@
     { id: 'high-contrast', label: 'High Contrast (WCAG AAA)' },
     { id: 'mono', label: 'Monochrome' },
     { id: 'paper', label: 'Paper (soft light)' },
+    { id: 'grayscale-dark', label: 'Google Grayscale Dark + Gemini Aurora' },
+    { id: 'grayscale-light', label: 'Google Grayscale Light + Gemini Aurora' },
+    { id: 'cloud-light', label: 'Google Cloud Light + Gemini Aurora' },
+    { id: 'pantheon-light', label: 'Google Pantheon Light + Gemini Aurora' },
+    { id: 'pantheon-dark', label: 'Google Pantheon Dark + Gemini Aurora' },
   ];
 
   function applyTheme(id) {

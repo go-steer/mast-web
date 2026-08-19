@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mast-web // spatial</title>
+    <!-- Same policy as index.html, for the same reason: this page holds
+         agent credentials in localStorage, so any injected script is a
+         credential-exfiltration path. Everything it loads is same-origin
+         (see web/vendor/), so script-src can be a flat 'self'. Kept
+         verbatim rather than factored out — the two shells are separate
+         entry points and a policy that drifts silently is worse than one
+         that is duplicated visibly. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
+    />
+    <!-- styles.css supplies the palette, all six themes, and every
+         transcript primitive (.message / .md-content / .tool-row /
+         .turn-footer); spatial.css only adds the 3D scene and the
+         per-panel terminal chrome on top. -->
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="vendor/highlight-github-dark-11.12.0.min.css" />
+    <link rel="stylesheet" href="spatial.css" />
+  </head>
+  <body class="spatial">
+    <!-- Camera viewport. #scene-world is the only element that moves
+         when you orbit; every panel is a child of it and inherits the
+         perspective transform. -->
+    <div id="scene-viewport" tabindex="0" aria-label="Spatial terminal scene">
+      <div id="scene-world">
+        <div class="scene-plane" id="grid-floor"></div>
+        <div class="scene-plane" id="grid-ceiling"></div>
+        <div class="scene-plane" id="grid-wall"></div>
+        <div id="horizon"></div>
+        <!-- Terminal panels are injected here by spatial.js. -->
+      </div>
+    </div>
+
+    <!-- Non-interactive atmosphere layers, painted over the scene. -->
+    <div id="scene-scanlines" aria-hidden="true"></div>
+    <div id="scene-vignette" aria-hidden="true"></div>
+
+    <header id="spatial-hud">
+      <button type="button" class="hud-btn hud-toggle" id="btn-sidebar" title="Toggle agent list">
+        ☰
+      </button>
+      <span class="hud-brand">⟨m⟩ast</span>
+      <span class="hud-sep">//</span>
+      <span class="hud-item">SPATIAL_SHELL v0.2</span>
+      <span class="hud-sep">|</span>
+      <span class="hud-item" id="hud-panels">0 terminals</span>
+      <span class="hud-sep">|</span>
+      <span class="hud-item" id="hud-camera">yaw 0° pitch 0°</span>
+      <span class="hud-spacer"></span>
+      <!-- Options are filled in by spatial.js, which shares the theme
+           list and the storage key with the classic shell's /theme. -->
+      <button
+        type="button"
+        class="hud-btn hud-toggle"
+        id="btn-audio"
+        title="Room audio (off)"
+        aria-label="Room audio"
+        aria-pressed="false"
+      >
+        &#9834;
+      </button>
+      <select class="hud-btn" id="hud-theme" title="Theme" aria-label="Theme"></select>
+      <button type="button" class="hud-btn" id="btn-tile">tile</button>
+      <button type="button" class="hud-btn" id="btn-reset">reset view</button>
+    </header>
+
+    <!-- Agent / session picker. Every row is one attach-protocol
+         session; clicking one opens (or re-centers) its terminal. -->
+    <aside id="spatial-sidebar" aria-label="Agents and sessions">
+      <div class="side-head">
+        <span class="side-title">AGENTS</span>
+        <button type="button" class="side-icon" id="btn-refresh" title="Re-list sessions">↻</button>
+      </div>
+      <div id="daemon-list"></div>
+      <form id="add-daemon" autocomplete="off">
+        <label class="side-label" for="add-endpoint">Attach a daemon</label>
+        <input id="add-endpoint" placeholder="/ or http://localhost:7777" value="/" />
+        <input id="add-token" type="password" placeholder="token (optional)" />
+        <button type="submit" class="hud-btn side-wide">attach</button>
+      </form>
+      <p class="side-hint">
+        Click a session to open its terminal, or press <b>o</b> (the <b>&#8862;</b> button) to open
+        them all. Click a terminal to bring it forward; drag its title bar to move it. Hold
+        <b>WASD</b> to fly the camera, <b>Q</b>/<b>E</b> to tilt.
+      </p>
+    </aside>
+
+    <!-- Overhead plan of the room. The scene answers "what is this
+         terminal saying"; the radar answers "what else is out there and
+         which way am I facing", which orbiting past ±40° otherwise
+         makes you guess at. spatial.js keeps one blip per open terminal,
+         plus a wedge for the camera's heading. -->
+    <div id="hud-radar" aria-hidden="true">
+      <div class="radar-grid"></div>
+      <div class="radar-sweep"></div>
+      <div class="radar-wedge"></div>
+      <div class="radar-blips"></div>
+      <div class="radar-eye"></div>
+    </div>
+
+    <footer id="spatial-status">
+      <span class="status-item" id="status-focus">active: —</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">click panel: focus</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">drag bar: move</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">drag floor: orbit</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">wasd: fly</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">esc: send back</span>
+      <span class="hud-sep">|</span>
+      <span class="status-item">o: open all</span>
+      <span class="hud-spacer"></span>
+      <span class="status-item" id="status-clock">--:--:--</span>
+    </footer>
+
+    <!-- Markdown + syntax highlighting, vendored at exact versions and
+         shared byte-for-byte with index.html. See web/vendor/README.md
+         for provenance; the short version is that this tree is
+         go:embed-ed into the server binary, so a CDN dependency breaks
+         rendering in air-gapped deploys. -->
+    <script src="vendor/marked-12.0.2.min.js"></script>
+    <script src="vendor/marked-highlight-2.2.4.umd.js"></script>
+    <script src="vendor/highlight-11.12.0.min.js"></script>
+    <!-- attach-core: the same wire layer index.html loads, in the same
+         order. No state/ stores and no app.js — the spatial shell keeps
+         its state per terminal instead of in a set of singletons. -->
+    <script src="attach-core/errors.js"></script>
+    <script src="attach-core/protocol.js"></script>
+    <script src="attach-core/replay.js"></script>
+    <script src="attach-core/prompter.js"></script>
+    <script src="attach-core/client.js"></script>
+    <script src="slash-render.js"></script>
+    <script src="terminal.js"></script>
+    <!-- Spatial-only, and optional: spatial.js calls it through a guard,
+         so a browser without Web Audio just gets a silent room. -->
+    <script src="spatial-audio.js"></script>
+    <script src="spatial.js"></script>
+  </body>
+</html>

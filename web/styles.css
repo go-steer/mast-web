@@ -27,6 +27,12 @@
   --green: var(--aqua);
   --red: var(--fuchsia);
   --yellow: var(--brand-yellow);
+
+  /* The semantic blue slot, and the only one anything outside this block
+     should paint text with. The nine Go brand colors above are fixed
+     pigments — no theme overrides them — so a rule that reaches for
+     --light-blue directly paints pale cyan on every background, including
+     the near-white ones. Every theme sets --blue. */
   --blue: var(--light-blue);
   --sidebar-w: 280px;
 
@@ -38,6 +44,67 @@
   --glow-amt: 34%;
   --frame-amt: 46%;
   --scan: rgb(255 255 255 / 2.5%);
+
+  /* Panel hue slots. The spatial shell colors each terminal from one of
+     four slots. They default to the status palette so existing themes
+     are unchanged, but a theme can now recolor terminals without
+     dragging every "connected" dot and error line along with them. */
+  --hue-1: var(--accent);
+  --hue-2: var(--green);
+  --hue-3: var(--yellow);
+  --hue-4: var(--red);
+
+  /* Gemini Aurora. One gradient, spent sparingly on the active terminal
+     and the wordmark; its stops are also what the Google themes hand to
+     the four hue slots above. */
+  --aurora: linear-gradient(90deg, #217bfe 0%, #078efb 33%, #a770ef 66%, #ff5e62 100%);
+  --aurora-1: #217bfe;
+  --aurora-2: #078efb;
+  --aurora-3: #a770ef;
+  --aurora-4: #ff5e62;
+  --brand-image: none;
+  --brand-color: var(--accent);
+
+  /* Room lighting model, consumed only by spatial.css. The defaults
+     below reproduce the current dark room verbatim, so a theme that
+     says nothing about the room still gets the neon one.
+
+     Only hue-independent knobs belong here. A custom property's own
+     var() references are resolved on the element that *declares* it,
+     not where it is used — so anything mentioning the per-panel --hue
+     has to be declared on .panel / .panel-cast (see the companion
+     blocks under each theme below), or it computes to nothing. */
+  --room-core: #0a1a22;
+  --room-mid: #04070a;
+  --room-edge: #000;
+  --room-vignette: rgb(0 0 0 / 72%);
+  --room-surface: rgb(0 0 0 / 94%);
+  --room-surface-bar: rgb(0 0 0 / 70%);
+  --room-on-hue: #000;
+  --room-tint: 6%;
+  --room-tint-bar: 22%;
+  --cast-opacity: 0.55;
+  --cast-opacity-active: 0.85;
+
+  /* Aerial perspective. A distant panel is seen through more of the
+     room, so it drifts toward the room's own colour — the oldest depth
+     cue there is, and the one that makes a flat-lit CSS scene read as
+     having air in it. --room-fog is what a panel dissolves *into*
+     (the backdrop's mid stop); --fog-max is how completely. */
+  --room-fog: var(--room-mid);
+  --fog-max: 0.62;
+
+  /* The travelling highlight on a focused panel's glass, and how bright
+     the boot flash burns. Both are "light on a surface", so both go up
+     in a dark room and nearly vanish on paper. */
+  --sheen: rgb(255 255 255 / 8%);
+  --flash: rgb(255 255 255 / 70%);
+
+  /* How far a non-focused terminal falls back into the room. Fading
+     toward black hides a panel much faster than fading toward white
+     does the reverse, so light rooms hold theirs higher. */
+  --panel-recede: 0.42;
+  --panel-recede-busy: 0.72;
 }
 
 /* ─── Themes (v0.3.0 PR 7) ──────────────────────────────────────────
@@ -121,7 +188,11 @@ body[data-theme='mono'] {
   --accent: #d4d4d4;
   --accent-hover: #fff;
   --green: #7a7a7a;
-  --blue: #7a7a7a;
+
+  /* Lighter than --green even though mono flattens the palette: --blue is
+     the slot the status line, inline code and table headers paint text
+     with, and #7a7a7a is dimmer than --text-dim. */
+  --blue: #a8a8a8;
   --red: #d3574d;
   --yellow: #d9c467;
 }
@@ -145,6 +216,420 @@ body[data-theme='paper'] {
   --scan: rgb(0 0 0 / 1.5%);
 }
 
+/* ─── Google palettes + Gemini Aurora ───────────────────────────────
+   The room chrome stays grayscale (Google Material greys); the color
+   budget is spent entirely on the terminals, which take one Aurora
+   stop each. See google-colors.md. */
+
+body[data-theme='grayscale-dark'] {
+  --bg: #202124; /* Grey 900 */
+  --bg-surface: #1a1b1e;
+  --bg-elevated: #2a2b2e;
+  --border: #3c4043; /* Grey 800 */
+  --border-soft: #5f6368; /* Grey 700 */
+  --text: #e8eaed; /* Grey 200 */
+  --text-dim: #9aa0a6; /* Grey 500 */
+  --accent: #bdc1c6; /* Grey 400 — the room stays grey … */
+  --accent-hover: #e8eaed;
+  --green: #81c995;
+  --red: #f28b82;
+  --yellow: #fdd663;
+  --blue: #8ab4f8;
+
+  /* … and the color lives in the terminals. */
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 20%;
+  --frame-amt: 40%;
+  --scan: rgb(255 255 255 / 1.8%);
+  --room-core: #2a2b2e;
+  --room-mid: #202124;
+  --room-edge: #121212;
+  --room-vignette: rgb(0 0 0 / 58%);
+  --room-surface: rgb(18 18 18 / 94%);
+  --room-surface-bar: rgb(32 33 36 / 82%);
+
+  /* White, not Grey 900. Every Aurora theme puts white type on the
+     gradient, because dark lettering fights it — the stops are
+     saturated enough that near-black reads as a hole punched in the
+     sweep rather than as text on it. See the note in the Pantheon
+     block: this is a deliberate trade against a contrast measurement. */
+  --room-on-hue: #fff;
+}
+
+body[data-theme='grayscale-light'] {
+  --bg: #f8f9fa; /* Grey 50 */
+  --bg-surface: #fff;
+  --bg-elevated: #f1f3f4;
+  --border: #dadce0; /* Grey 300 */
+  --border-soft: #bdc1c6; /* Grey 400 — Grey 300 vanishes on a white HUD */
+  --text: #202124;
+  --text-dim: #5f6368;
+  --accent: #5f6368; /* Grey 700 */
+  --accent-hover: #202124;
+  --green: #188038;
+  --red: #d50000;
+  --yellow: #dc6d00;
+  --blue: #1a73e8;
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 13%;
+  --frame-amt: 34%;
+  --scan: transparent;
+}
+
+/* Google Cloud's brand palette rather than the console's: it builds
+   from white, and its accent is Blue 500 instead of a neutral grey. */
+body[data-theme='cloud-light'] {
+  --bg: #f8f9fc; /* Google Grey 10 */
+  --bg-surface: #fff; /* "build from white" — panels are pure white */
+  --bg-elevated: #eef1f8;
+  --border: #dadce0;
+  --border-soft: #b9bfcc; /* a Grey 300 hairline vanishes on a white HUD */
+  --text: #212226; /* Google Grey 1000; the brand avoids pure black */
+  --text-dim: #5f6368;
+  --accent: #3186ff; /* Google Blue 500 */
+  --accent-hover: #1967d2;
+
+  /* Brand Green/Red/Yellow 500 (#00af57 / #fc413d / #fec700) are fill
+     colours — as text on white they run 2.5–3.5:1 and fail WCAG AA.
+     These four vars drive error lines, warning text and connection
+     labels, so they take the accessible Pantheon equivalents; the
+     brand tones stay where they belong, on fills and accents. */
+  --green: #188038;
+  --red: #d50000;
+  --yellow: #dc6d00;
+  --blue: #1a73e8;
+
+  /* Where the grayscale pair gives every terminal an Aurora stop, this
+     one is a Google theme first: the roster is Blue, Red, Green and a
+     Gemini-leaning violet, and the Aurora is held back for whichever
+     terminal is active (its bar, edge and floor pool) plus the
+     wordmark. Weights are the GM2 600/700 tones, not the brand 500s:
+     --hue is real text here (.panel's colour, the SEND label, the
+     title bar), and every 500 fails AA on white — these four run
+     4.5-5.4:1, so they are also a legibility gain on the Aurora stops
+     they replace. */
+  --hue-1: #1a73e8; /* Google Blue 600 */
+  --hue-2: #d93025; /* Google Red 600 */
+  --hue-3: #188038; /* Google Green 700 */
+  --hue-4: #9334e6; /* Google Purple 600 — echoes the Aurora amethyst */
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 13%;
+  --frame-amt: 30%;
+  --scan: transparent;
+
+  /* Softened, so the grid reads as Cloud rather than as a blue cage.
+     The horizon tint is a companion rule below — the shared light-room
+     block would outrank it here. */
+  --grid-line: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
+/* ─── Pantheon (Cloud Console) ───────────────────────────────────────
+   The console's own UI palette, which is GM2 with dashboard-specific
+   contrast tweaks — Blue 600 in light, Blue 300 in dark, elevation by
+   grey rather than by shadow. Both variants take the third Aurora
+   treatment: see the companion block below. */
+
+body[data-theme='pantheon-light'] {
+  --bg: #f8f9fa; /* page background */
+  --bg-surface: #fff; /* panels and containers */
+  --bg-elevated: #e8f0fe; /* the console's focus tint */
+  --border: #dadce0;
+  --border-soft: #bdc1c6; /* the #e8eaed secondary divider is invisible here */
+  --text: #202124; /* Grey 900 */
+  --text-dim: #5f6368; /* Grey 700 */
+  --accent: #1a73e8; /* Blue 600 — primary / focus */
+  --accent-hover: #1967d2; /* Blue 700 — active state */
+  --green: #188038;
+  --red: #d50000;
+  --yellow: #dc6d00;
+  --blue: #1a73e8;
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 13%;
+  --frame-amt: 30%;
+  --scan: transparent;
+  --grid-line: color-mix(in srgb, var(--accent) 20%, var(--border));
+}
+
+body[data-theme='pantheon-dark'] {
+  /* Elevation by lighter grey, not by shadow — the console has no drop
+     shadows in dark mode, so the only thing that says "this is on top"
+     is that it is paler: #202124 canvas, #2a2b2e cards, #303134 above
+     them. This is the inverse of how the other dark themes here work
+     (surfaces darker than the page) and it is the point of the theme. */
+  --bg: #202124;
+  --bg-surface: #2a2b2e;
+  --bg-elevated: #303134;
+  --border: #3c4043; /* Grey 800 */
+  --border-soft: #5f6368;
+  --text: #e8eaed; /* Grey 200 */
+  --text-dim: #9aa0a6; /* Grey 500 */
+
+  /* 300-level everything: the console drops high-saturation colour in
+     dark mode because it goes harsh against the greys. */
+  --accent: #8ab4f8; /* Blue 300 */
+  --accent-hover: #aecbfa;
+  --green: #81c995;
+  --red: #f28b82;
+  --yellow: #fdd663;
+  --blue: #8ab4f8;
+  --hue-1: var(--aurora-1);
+  --hue-2: var(--aurora-2);
+  --hue-3: var(--aurora-3);
+  --hue-4: var(--aurora-4);
+  --brand-image: var(--aurora);
+  --brand-color: transparent;
+  --glow-amt: 18%;
+  --frame-amt: 38%;
+  --scan: rgb(255 255 255 / 1.6%);
+
+  /* The room reads bottom-up too: #121212 backing at the horizon, the
+     Grey 900 canvas across the middle, cards floating a shade paler. */
+  --room-core: #2a2b2e;
+  --room-mid: #202124;
+  --room-edge: #121212;
+  --room-vignette: rgb(0 0 0 / 60%);
+  --room-surface: rgb(42 43 46 / 94%);
+  --room-surface-bar: rgb(48 49 52 / 88%);
+
+  /* "On primary" — white across every Aurora theme, matching Cloud.
+     The console's own answer is Grey 900, and against these stops a
+     near-black is also the better *measurement* (4.7-6.3:1, where
+     white runs 2.98-3.96:1 and misses AA, since a 10px bold title is
+     not WCAG "large" text). It is the worse *result*: dark lettering
+     punches a hole in the gradient instead of sitting on it. Chosen
+     with the numbers on the table. If it needs rescuing later, a
+     text-shadow behind the title buys legibility without touching the
+     colour. */
+  --room-on-hue: #fff;
+
+  /* Same reasoning as the light variant: the slice is the point, so the
+     pools stay strong and the unfocused terminals stay present. */
+  --cast-opacity: 0.72;
+  --cast-opacity-active: 0.95;
+  --panel-recede: 0.8;
+  --panel-recede-busy: 0.94;
+}
+
+/* Companion block: everything the Aurora themes change about a panel
+   or its floor cast has to be declared *on* those elements, because
+   .panel is where --hue exists and because a declaration on the element
+   itself always beats one inherited from <body>. */
+body:is(
+    [data-theme='grayscale-dark'],
+    [data-theme='grayscale-light'],
+    [data-theme='cloud-light'],
+    [data-theme='pantheon-light'],
+    [data-theme='pantheon-dark']
+  )
+  :is(.panel, .panel-cast) {
+  --panel-edge-active: var(--aurora);
+  --bar-fill-active: var(--aurora);
+  --cast-fill-active: var(--aurora);
+
+  /* Matches the grazing-angle falloff of the default radial cast; the
+     gradient supplies the color, the mask supplies the shape. */
+  --cast-mask-active: radial-gradient(
+    ellipse 42% 100% at 50% 50%,
+    #000 0%,
+    rgb(0 0 0 / 62%) 38%,
+    transparent 100%
+  );
+}
+
+/* box-shadow cannot take a gradient, so the active panel's Aurora edge
+   is approximated by three directional casts: blue off the left edge,
+   coral off the right, amethyst behind. */
+body:is([data-theme='grayscale-dark'], [data-theme='pantheon-dark']) .panel {
+  --panel-shadow-active:
+    -20px 0 36px color-mix(in srgb, var(--aurora-1) 45%, transparent),
+    20px 0 36px color-mix(in srgb, var(--aurora-4) 40%, transparent),
+    0 0 76px color-mix(in srgb, var(--aurora-3) 26%, transparent),
+    inset 0 0 30px rgb(255 255 255 / 6%);
+}
+
+/* Themes 1 and 4 give each terminal a single flat colour — one Aurora
+   stop, or one Google primary. Pantheon takes the third route: every
+   terminal wears a *slice* of the Aurora, running from its own slot
+   into the next one's, so the four of them read as one gradient
+   wrapped around the room rather than as four unrelated colours. The
+   whole four-stop sweep stays reserved for the active terminal. */
+body:is([data-theme='pantheon-light'], [data-theme='pantheon-dark']) :is(.panel, .panel-cast) {
+  /* Corner to corner: across a 440×320 panel a horizontal sweep spends
+     most of its travel behind the title bar, where it can't be read as
+     a gradient at all. 4px because 2px of gradient at room distance is
+     a coloured line, not a gradient. */
+  --panel-border-w: 4px;
+  --panel-edge: linear-gradient(135deg, var(--hue) 0%, var(--hue-next) 100%);
+
+  /* Every title bar is filled with its slice at full strength, not a
+     tint of it — the console fills its own headers, and a wash only
+     reads once you're already looking at the panel. What separates the
+     active terminal is then the *whole* Aurora against its neighbours'
+     two stops, plus the halo and the fact that it has squared up. */
+  --bar-fill: linear-gradient(100deg, var(--hue) 0%, var(--hue-next) 100%);
+  --bar-ink: var(--room-on-hue);
+  --bar-title-shadow: none;
+
+  /* The transcript keeps a frame of the same slice, pulled back to 70%
+     so it reads as an inner edge rather than competing with the 4px
+     one it sits inside. */
+  --screen-edge: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--hue) 70%, transparent) 0%,
+    color-mix(in srgb, var(--hue-next) 70%, transparent) 100%
+  );
+
+  /* …and so does the floor pool, which is where the slice gets the most
+     room of anywhere. The radial falloff moves into the mask because
+     the fill is busy carrying the gradient. */
+  --cast-fill: linear-gradient(100deg, var(--hue) 0%, var(--hue-next) 100%);
+  --cast-mask: radial-gradient(
+    ellipse 42% 100% at 50% 50%,
+    #000 0%,
+    rgb(0 0 0 / 62%) 38%,
+    transparent 100%
+  );
+}
+
+/* Chrome text is the one thing that must not be a slice: the console's
+   own rule is coloured surfaces, neutral type. Light reads it off
+   --text; dark can't (Grey 200 on a tinted panel loses the terminal's
+   identity), so it keeps the hue but lifts it to the 300-level
+   lightness the dark palette uses everywhere else. Neither shows up in
+   the title bar, which is now a solid fill wearing --room-on-hue — this
+   is the SEND label, the elapsed counter and the caret. */
+body[data-theme='pantheon-light'] .panel {
+  --hue-ink: var(--text);
+}
+
+/* Resting panels also light their own slice, rather than every panel
+   sharing one hue-coloured halo: this terminal's colour spills left,
+   the next one's right. It is what makes the run of four read as a
+   single sweep from the far side of the room. */
+body[data-theme='pantheon-dark'] .panel {
+  --hue-ink: color-mix(in srgb, var(--hue) 62%, #fff);
+  --panel-shadow:
+    -14px 0 30px color-mix(in srgb, var(--hue) 38%, transparent),
+    14px 0 30px color-mix(in srgb, var(--hue-next) 34%, transparent),
+    0 0 60px color-mix(in srgb, var(--hue) 16%, transparent), inset 0 0 26px rgb(255 255 255 / 4%);
+}
+
+/* Every light theme wants the same room: pale gradient, quiet grid,
+   paper panels, drop shadows instead of a neon halo. Declaring it once
+   here is also the repair for solarized-light and paper, which until
+   now floated light panels in a black void.
+
+   Matched by the `-light` suffix rather than by name so a new light
+   theme joins by being named one; `paper` predates the convention. */
+body.spatial:is([data-theme$='-light'], [data-theme='paper']) {
+  --room-core: var(--bg-surface);
+  --room-mid: var(--bg);
+  --room-edge: color-mix(in srgb, var(--text) 12%, var(--bg));
+  --room-vignette: color-mix(in srgb, var(--text) 14%, transparent);
+  --room-surface: color-mix(in srgb, var(--bg-surface) 96%, transparent);
+  --room-surface-bar: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  --room-on-hue: #fff;
+  --room-tint: 2%;
+  --room-tint-bar: 8%;
+  --cast-opacity: 0.18;
+  --cast-opacity-active: 0.3;
+  --panel-recede: 0.66;
+  --panel-recede-busy: 0.88;
+
+  /* Haze reads *harder* in a bright room — distant things go pale, not
+     dim — but it eats dark text far faster than it eats light text, so
+     the ceiling comes down rather than up. Sheen and flash are white on
+     near-white here, which is nothing; tint them with the room instead. */
+  --fog-max: 0.5;
+  --sheen: color-mix(in srgb, var(--accent) 9%, transparent);
+  --flash: color-mix(in srgb, var(--accent) 55%, #fff);
+}
+
+/* Cloud's horizon is tinted with the brand blue rather than the
+   neutral grey the block above derives from --text. Separate rule
+   because that block would otherwise outrank the palette. */
+body.spatial[data-theme='cloud-light'] {
+  --room-edge: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  --room-vignette: color-mix(in srgb, var(--accent) 12%, transparent);
+
+  /* Four Google colours are only worth having if the room shows them.
+     The shared light values are tuned for hues that are decorative
+     here; these let each terminal put a legible pool of its own colour
+     on the floor and a wash of it in its title bar, which is where
+     most of the Blue/Red/Green actually lands. */
+  --room-tint: 3%;
+  --room-tint-bar: 15%;
+  --cast-opacity: 0.28;
+  --cast-opacity-active: 0.42;
+}
+
+/* A gradient you can't see isn't a gradient. The shared light values
+   are tuned for a flat hue per panel; the slice needs a little more
+   room in the title bar and on the floor before the travel between one
+   terminal's colour and the next reads at all. */
+body.spatial[data-theme='pantheon-light'] {
+  --room-edge: color-mix(in srgb, var(--accent) 12%, var(--bg));
+
+  /* No --room-on-hue here: the shared light block's white is what this
+     theme wants, same as Cloud. See the note in the dark variant. */
+
+  /* Strong, but short of the point where the pools stop being four
+     pools and become one wash that swallows the floor grid. */
+  --cast-opacity: 0.32;
+  --cast-opacity-active: 0.5;
+
+  /* Recede less than the other light themes. Four saturated title bars
+     are the whole idea; dimming the three you aren't typing into to
+     two-thirds throws most of it away. */
+  --panel-recede: 0.82;
+  --panel-recede-busy: 0.94;
+}
+
+/* Material elevation instead of neon: two grey drop shadows plus a
+   hue-tinted hairline, which is all the panel identity a light room
+   needs once the glow is gone. Scoped to .panel because --hue only
+   exists there. */
+body.spatial:is([data-theme$='-light'], [data-theme='paper']) .panel {
+  --panel-shadow:
+    0 1px 2px rgb(60 64 67 / 30%), 0 6px 18px rgb(60 64 67 / 15%),
+    0 0 0 1px color-mix(in srgb, var(--hue) 38%, var(--border));
+  --panel-shadow-active:
+    0 2px 6px rgb(60 64 67 / 30%), 0 12px 34px rgb(60 64 67 / 20%),
+    0 0 24px color-mix(in srgb, var(--hue) 26%, transparent);
+}
+
+/* Pantheon light keeps Material's grey elevation but adds the slice to
+   it: this terminal's colour spills off the left of the card, the next
+   one's off the right. Has to sit after the shared block above — same
+   specificity, so source order is what decides it. */
+body.spatial[data-theme='pantheon-light'] .panel {
+  --panel-shadow:
+    0 1px 2px rgb(60 64 67 / 26%), 0 10px 28px rgb(60 64 67 / 14%),
+    -12px 6px 26px color-mix(in srgb, var(--hue) 32%, transparent),
+    12px 6px 26px color-mix(in srgb, var(--hue-next) 28%, transparent);
+  --panel-shadow-active:
+    0 2px 6px rgb(60 64 67 / 28%), 0 14px 40px rgb(60 64 67 / 18%),
+    -24px 0 44px color-mix(in srgb, var(--aurora-1) 42%, transparent),
+    24px 0 44px color-mix(in srgb, var(--aurora-4) 38%, transparent),
+    0 0 74px color-mix(in srgb, var(--aurora-3) 24%, transparent);
+}
+
 body {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
   background: var(--bg);
@@ -158,6 +643,14 @@ body {
      the theme's --accent (themes override it on body, not :root). */
   --glow: color-mix(in srgb, var(--accent) var(--glow-amt), transparent);
   --frame: color-mix(in srgb, var(--accent) var(--frame-amt), transparent);
+
+  /* The floor and ceiling grids, split from --accent so a theme can
+     keep a saturated accent for buttons and links while the room it
+     draws stays quiet — a full-strength brand blue tiled across a
+     4000px floor is a very different amount of colour. Same reason as
+     above for living on body: in :root it would resolve --accent
+     against the default palette and hand every theme a cyan grid. */
+  --grid-line: var(--accent);
 }
 
 /* Layout */
@@ -945,7 +1438,7 @@ body[data-layout='chat'] .message.user {
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;
-  color: var(--light-blue);
+  color: var(--blue);
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
 }
 
@@ -972,7 +1465,7 @@ body[data-layout='chat'] .message.user {
 .message.assistant .md-content h2,
 .message.assistant .md-content h3,
 .message.assistant .md-content h4 {
-  color: var(--light-blue);
+  color: var(--blue);
   margin: 14px 0 6px;
   line-height: 1.3;
 }
@@ -1023,8 +1516,8 @@ body[data-layout='chat'] .message.user {
 }
 
 .message.assistant .md-content a:hover {
-  color: var(--light-blue);
-  border-bottom-color: var(--light-blue);
+  color: var(--blue);
+  border-bottom-color: var(--blue);
 }
 
 /* Blockquote */
@@ -1059,7 +1552,7 @@ body[data-layout='chat'] .message.user {
 
 .message.assistant .md-content th {
   background: var(--bg-elevated);
-  color: var(--light-blue);
+  color: var(--blue);
   font-weight: 600;
 }
 
@@ -1199,7 +1692,7 @@ body[data-layout='chat'] .message.user {
 
 .citation-pill a:hover {
   background: rgba(0, 162, 156, 0.28);
-  color: var(--light-blue);
+  color: var(--blue);
 }
 
 .citation-sources {
@@ -1228,7 +1721,7 @@ body[data-layout='chat'] .message.user {
 }
 
 .citation-sources a:hover {
-  color: var(--light-blue);
+  color: var(--blue);
   text-decoration: underline;
 }
 
@@ -1448,7 +1941,7 @@ body[data-layout='chat'] .message.user {
   padding: 8px 12px;
   font-size: 12px;
   font-style: italic;
-  color: var(--light-blue);
+  color: var(--blue);
   letter-spacing: 0.02em;
   animation: thinking-pulse 1.4s ease-in-out infinite;
 }
@@ -1648,7 +2141,7 @@ body[data-layout='chat'] .message.user {
   padding: 0 12px;
   margin: 0 -12px;
   font-size: 11px;
-  color: var(--light-blue);
+  color: var(--blue);
   gap: 16px;
 }
 
@@ -1659,7 +2152,7 @@ body[data-layout='chat'] .message.user {
 }
 
 #status-bar .status-item:not(.powered-by) {
-  color: var(--light-blue);
+  color: var(--blue);
 }
 
 #status-elapsed {
@@ -2058,7 +2551,7 @@ body.sidebar-collapsed #sidebar {
 }
 
 .slash-tree-key {
-  color: var(--light-blue, #4a9eff);
+  color: var(--blue, #4a9eff);
   font-weight: 600;
 }
 

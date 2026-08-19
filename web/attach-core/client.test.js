@@ -190,6 +190,18 @@ describe('AttachClient', () => {
       );
     });
 
+    // Regression guard: core-agent's browserWriteGuard 415s every write
+    // method without `Content-Type: application/json`, including a
+    // body-less DELETE. This call site was the only one missing it, so
+    // deleteSession failed against every real backend.
+    it('deleteSession sends Content-Type: application/json (csrf.go 415 guard)', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 204, text: () => '' });
+      await client.deleteSession('core-agent', 'sess-abc');
+      const [, opts] = globalThis.fetch.mock.calls[0];
+      expect(opts.headers['Content-Type']).toBe('application/json');
+    });
+
     it('deleteSession surfaces 403 as a permanent error (bootstrap default guard)', async () => {
       const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
       globalThis.fetch = vi.fn().mockResolvedValue({
@@ -234,6 +246,134 @@ describe('AttachClient', () => {
       expect(sessions[0].status).toBe('active');
       expect(sessions[0].lastTouchedAt).toBe('2026-07-20T12:00:00Z');
       expect(sessions[1].status).toBe('idle');
+    });
+
+    // autoSelectSession used to throw on an empty list, on the reading
+    // that empty meant "daemon has no session store". In a hosted
+    // deployment the agent scopes GET /sessions to the calling
+    // identity, so a brand-new user lists zero sessions against a
+    // perfectly healthy daemon — the old behavior locked every new
+    // user out on their first visit.
+    it('autoSelectSession creates a session when the caller owns none', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      const calls = [];
+      globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+        calls.push(`${opts?.method || 'GET'} ${url}`);
+        if (opts?.method === 'POST') {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            text: () =>
+              Promise.resolve(
+                JSON.stringify({ app: 'core-agent', user: 'bob@example.com', sessionID: 'new-1' })
+              ),
+          });
+        }
+        // Empty before the create, populated after.
+        const made = calls.some((c) => c.startsWith('POST'));
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              sessions: made
+                ? [{ app: 'core-agent', user: 'bob@example.com', sessionID: 'new-1' }]
+                : [],
+            }),
+        });
+      });
+
+      const s = await client.autoSelectSession();
+      expect(s.id).toBe('new-1');
+      expect(client.sessionId).toBe('new-1');
+      expect(calls).toEqual([
+        'GET https://example/sessions',
+        'POST https://example/sessions',
+        'GET https://example/sessions',
+      ]);
+    });
+
+    it('autoSelectSession falls back to the create response if the re-list is still empty', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+        if (opts?.method === 'POST') {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            text: () =>
+              Promise.resolve(
+                JSON.stringify({ app: 'core-agent', user: 'bob@example.com', sessionID: 'new-2' })
+              ),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      });
+
+      const s = await client.autoSelectSession();
+      expect(s).toMatchObject({ id: 'new-2', app: 'core-agent', user: 'bob@example.com' });
+      expect(client.sessionId).toBe('new-2');
+    });
+
+    // A daemon that genuinely can't make sessions answers 501, which
+    // is the case the old "start with --session-db" text described.
+    // Keep that advice, now attached to the request that establishes it.
+    it('autoSelectSession surfaces the create failure with the session-store hint', async () => {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+        if (opts?.method === 'POST') {
+          return Promise.resolve({
+            ok: false,
+            status: 501,
+            text: () => Promise.resolve('no session factory'),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ sessions: [] }),
+        });
+      });
+
+      let err;
+      try {
+        await client.autoSelectSession();
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain('501');
+      expect(err.message).toContain('--session-db');
+    });
+
+    // Regression guard, matching the one in prompter.test.js: the SSE
+    // URL used to carry ?access_token=<token>, which core-agent never
+    // read (checkAttachToken looks only at X-Attach-Token and
+    // Authorization) and which leaked the credential into access logs.
+    it('connect() never puts the token in the SSE URL', async () => {
+      const opened = [];
+      const priorES = globalThis.EventSource;
+      globalThis.EventSource = class {
+        constructor(url) {
+          opened.push(url);
+          this.addEventListener = () => {};
+        }
+        close() {}
+      };
+      try {
+        const client = new AttachClient({
+          endpoint: 'https://example',
+          token: 'secret',
+          sessionId: 'sess-abc',
+          onEvent: () => {},
+        });
+        await client.connect();
+        expect(opened).toHaveLength(1);
+        expect(opened[0]).toBe('https://example/sessions/sess-abc/events');
+        expect(opened[0]).not.toContain('secret');
+        expect(opened[0]).not.toContain('access_token');
+      } finally {
+        globalThis.EventSource = priorES;
+      }
     });
 
     it('sessionGen bumps on connect() and tags emitted events', () => {

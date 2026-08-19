@@ -1,0 +1,501 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# End-to-end check of hosted multi-user mode against a REAL core-agent
+# (or mast) daemon. This is deliberately not part of `npm run ci`: it
+# needs an agent binary, which CI doesn't have.
+#
+# It is also the only test that can catch a whole class of bug. The Go
+# tests use a fake backend that we wrote, so they prove we send what we
+# meant to send — not that a real agent accepts it. Three things here
+# are only checkable against the real thing:
+#
+#   1. core-agent's browserWriteGuard accepts our proxied writes. Our
+#      unit test reimplements that guard; this runs the actual one.
+#   2. A client-supplied X-Asserted-Caller really is scrubbed before
+#      the real caller middleware sees it. If it weren't, any user
+#      could become any other user.
+#   3. Both SSE streams connect. There is no ?access_token= parameter
+#      in the attach protocol, so a token-protected backend 401s every
+#      EventSource. The mock never noticed because it takes a blank
+#      token.
+#
+# Usage:
+#     dev/tools/e2e-real-backend
+#     CORE_AGENT_BIN=/path/to/core-agent dev/tools/e2e-real-backend
+#     KEEP_RUNNING=1 dev/tools/e2e-real-backend   # leave both up for a browser
+#
+# Environment:
+#     CORE_AGENT_BIN  agent binary (default: core-agent, then mast, on PATH)
+#     AGENT_PORT      default 7787
+#     WEB_PORT        default 7788
+#     KEEP_RUNNING    non-empty: don't tear down after the assertions
+#     MODEL_PROVIDER  default echo (see "model provider" below)
+#     MODEL_NAME      default echo
+#
+# With KEEP_RUNNING=1 the SPA is at http://127.0.0.1:$WEB_PORT — but note
+# that a browser cannot set X-Test-User, which is the whole point of
+# proxy-header mode: a real deployment has an authenticating proxy in
+# front doing it. curl below plays that role.
+
+. "$(dirname "$0")/common.sh"
+
+ROOT="$(repo_root)"
+AGENT_PORT="${AGENT_PORT:-7787}"
+WEB_PORT="${WEB_PORT:-7788}"
+AGENT_URL="http://127.0.0.1:${AGENT_PORT}"
+WEB_URL="http://127.0.0.1:${WEB_PORT}"
+
+# The public origin a hosted deployment would be reached at. Section 4
+# depends on this being NON-loopback: core-agent's originAllowed lets
+# any loopback Origin through, so a rig that used http://127.0.0.1 as
+# the browser origin would pass the CSRF tests without the proxy's
+# Origin strip doing any work at all. mast-web-server is told this is
+# its external URL, exactly as it would be behind a TLS-terminating LB.
+BROWSER_ORIGIN="https://mast.example.com"
+
+# Model provider. `echo` needs no credential, which is what keeps this
+# runnable anywhere — every assertion below is about auth plumbing, and
+# none of them care what the model says. Point it at a real provider
+# when you want the KEEP_RUNNING rig to actually answer you:
+#
+#     gcloud auth application-default login
+#     MODEL_PROVIDER=vertex MODEL_NAME=gemini-3.7-flash \
+#       GOOGLE_CLOUD_PROJECT=my-project KEEP_RUNNING=1 make e2e
+#
+# Vertex additionally reads GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
+# from the environment; they're inherited by the agent process, so set
+# them alongside. Note the echo provider replays the prompt verbatim, so
+# with the default a "reply" that looks like your own question is
+# correct behavior, not a bug.
+MODEL_PROVIDER="${MODEL_PROVIDER:-echo}"
+MODEL_NAME="${MODEL_NAME:-echo}"
+
+# Distinct per identity so a leak shows up as the wrong name rather
+# than as a pass.
+SA_TOKEN="sa-token-$RANDOM$RANDOM"
+ALICE_TOKEN="alice-token-$RANDOM$RANDOM"
+BOB_TOKEN="bob-token-$RANDOM$RANDOM"
+
+AGENT_BIN="${CORE_AGENT_BIN:-}"
+if [[ -z "$AGENT_BIN" ]]; then
+  AGENT_BIN="$(command -v core-agent || command -v mast || true)"
+fi
+if [[ -z "$AGENT_BIN" ]]; then
+  cat >&2 <<'EOF'
+e2e-real-backend: no agent binary found.
+
+Build one:
+    git clone https://github.com/go-steer/core-agent && cd core-agent
+    go build -o /tmp/core-agent ./cmd/core-agent
+
+then re-run with:
+    CORE_AGENT_BIN=/tmp/core-agent dev/tools/e2e-real-backend
+EOF
+  exit 1
+fi
+
+# Refuse to start on a port something else already holds. Worth the ten
+# lines: the front proxies default to WEB_PORT+1 and WEB_PORT+2, and
+# Playwright's smoke server (playwright.config.js) reuses an existing
+# listener on its port rather than failing. Overlap the two and the
+# smoke suite silently runs its specs against this rig — six confusing
+# failures with no hint that a port is the cause.
+for p in "$AGENT_PORT" "$WEB_PORT" $((WEB_PORT + 1)) $((WEB_PORT + 2)); do
+  if curl -sS -o /dev/null --max-time 1 "http://127.0.0.1:${p}/" 2>/dev/null; then
+    echo "e2e-real-backend: port $p is already in use." >&2
+    echo "  This rig needs $AGENT_PORT, $WEB_PORT, and the two above $WEB_PORT." >&2
+    echo "  Re-run with AGENT_PORT=… WEB_PORT=… to move it." >&2
+    exit 1
+  fi
+done
+
+SCRATCH="$(mktemp -d)"
+AGENT_PID=""
+WEB_PID=""
+FAILURES=0
+
+cleanup() {
+  [[ -n "$WEB_PID" ]] && kill "$WEB_PID" 2>/dev/null || true
+  [[ -n "$AGENT_PID" ]] && kill "$AGENT_PID" 2>/dev/null || true
+  wait 2>/dev/null || true
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
+
+# ── assertions ───────────────────────────────────────────────────────
+
+pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+fail() {
+  printf '  \033[31m✗\033[0m %s\n' "$1"
+  printf '      want: %s\n      got:  %s\n' "$2" "$3"
+  FAILURES=$((FAILURES + 1))
+}
+check() { # check <label> <want> <got>
+  if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1" "$2" "$3"; fi
+}
+check_contains() { # check_contains <label> <needle> <haystack>
+  if [[ "$3" == *"$2"* ]]; then pass "$1"; else fail "$1" "*$2*" "$3"; fi
+}
+check_not_contains() {
+  if [[ "$3" != *"$2"* ]]; then pass "$1"; else fail "$1" "NOT *$2*" "$3"; fi
+}
+section() { printf '\n\033[1m▸ %s\033[0m\n' "$1"; }
+
+# json <key> — pull a top-level-ish string value out without a jq
+# dependency. Good enough for the flat responses we assert on.
+json() { sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1; }
+
+# wait_for <url> <what> — any HTTP response counts as up. The attach
+# listener has no health endpoint and 401s an unauthenticated read, so
+# "it answered at all" is the only portable readiness signal.
+wait_for() {
+  for _ in $(seq 1 150); do
+    if curl -sS -o /dev/null "$1" 2>/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  echo "e2e-real-backend: $2 never came up at $1" >&2
+  return 1
+}
+
+# ── backend config ───────────────────────────────────────────────────
+#
+# The asserted callers need user-table rows of their own: core-agent's
+# resolveProxyAssertion rejects an asserted identity it doesn't know,
+# and LoadUsersFile requires a unique non-empty token per row. So
+# pre-provisioning users mints live bearer credentials that bypass the
+# BFF entirely — which is exactly why test 3.3 below exists, and why
+# Appendix A of the auth plan wants a just-in-time option upstream.
+
+mkdir -p "$SCRATCH/.agents"
+cat >"$SCRATCH/.agents/config.json" <<EOF
+{
+  "model": { "provider": "$MODEL_PROVIDER", "name": "$MODEL_NAME" },
+  "attach": {
+    "multi_session": {
+      "enabled": true,
+      "auth": { "kind": "bearer_table", "table_file": "$SCRATCH/users.json" },
+      "proxy_identities": ["sa:mast-web"]
+    }
+  }
+}
+EOF
+
+cat >"$SCRATCH/users.json" <<EOF
+{
+  "version": 1,
+  "users": [
+    { "identity": "sa:mast-web",       "token": "$SA_TOKEN" },
+    { "identity": "alice@example.com", "token": "$ALICE_TOKEN" },
+    { "identity": "bob@example.com",   "token": "$BOB_TOKEN" }
+  ]
+}
+EOF
+chmod 600 "$SCRATCH/users.json" # the loader rejects anything laxer
+
+# ── boot ─────────────────────────────────────────────────────────────
+
+section "starting $AGENT_BIN on $AGENT_URL (model: $MODEL_PROVIDER/$MODEL_NAME)"
+(
+  cd "$SCRATCH" # config discovery walks up from cwd looking for .agents/
+  # --session-db is a BOOLEAN on core-agent (bare = default location);
+  # --session-db-path both enables it and sets the path. The provider
+  # comes from config.json — the --provider flag alone doesn't satisfy
+  # the model resolver.
+  exec "$AGENT_BIN" \
+    --attach-listen="127.0.0.1:${AGENT_PORT}" \
+    --session-db-path="$SCRATCH/sessions.db" \
+    --no-repl
+) >"$SCRATCH/agent.log" 2>&1 </dev/null &
+AGENT_PID=$!
+
+if [[ ! -f "$ROOT/internal/webui/dist/index.html" ]]; then
+  echo "▸ building SPA assets for go:embed…"
+  "$ROOT/dev/tools/build" >/dev/null
+fi
+go build -o "$SCRATCH/mast-web-server" "$ROOT/cmd/mast-web-server"
+
+section "starting mast-web-server on $WEB_URL"
+"$SCRATCH/mast-web-server" \
+  --mode=proxy \
+  --listen="127.0.0.1:${WEB_PORT}" \
+  --backend-url="$AGENT_URL" \
+  --backend-token="$SA_TOKEN" \
+  --auth-mode=proxy-header \
+  --auth-header=X-Test-User \
+  --external-url="$BROWSER_ORIGIN" \
+  >"$SCRATCH/web.log" 2>&1 &
+WEB_PID=$!
+
+wait_for "$AGENT_URL/sessions" "core-agent" || { cat "$SCRATCH/agent.log" >&2; exit 1; }
+wait_for "$WEB_URL/healthz" "mast-web-server" || { cat "$SCRATCH/web.log" >&2; exit 1; }
+
+# curl helpers. as_user plays the part of the authenticating proxy that
+# would sit in front of mast-web-server in a real deployment.
+as_user() { # as_user <identity> <curl args...>
+  local who="$1"
+  shift
+  curl -sS -H "X-Test-User: $who" "$@"
+}
+status_of() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+
+# ── 1. discovery ─────────────────────────────────────────────────────
+
+section "1. GET /config"
+
+body="$(curl -sS "$WEB_URL/config")"
+check "reports the auth mode"              "proxy-header" "$(printf '%s' "$body" | json mode | tail -1)"
+check_contains "reports unauthenticated"   '"authenticated":false' "$body"
+check_not_contains "leaks no identity"     '"identity"' "$body"
+
+body="$(as_user alice@example.com "$WEB_URL/config")"
+check_contains "reports the caller once identified" '"identity":"alice@example.com"' "$body"
+check "health probes stay open" "200" "$(status_of "$WEB_URL/healthz")"
+
+# ── 2. identity reaches the agent ────────────────────────────────────
+
+section "2. identity forwarding"
+
+body="$(as_user alice@example.com "$WEB_URL/attach/whoami")"
+check "agent sees alice"        "alice@example.com" "$(printf '%s' "$body" | json identity)"
+check "as an assertion"         "asserted"          "$(printf '%s' "$body" | json source)"
+check "asserted by the BFF"     "sa:mast-web"       "$(printf '%s' "$body" | json proxy_by)"
+
+body="$(as_user bob@example.com "$WEB_URL/attach/whoami")"
+check "agent sees bob"          "bob@example.com"   "$(printf '%s' "$body" | json identity)"
+
+body="$(curl -sS "$WEB_URL/attach/whoami")"
+check "unauthenticated is 401"  "401" "$(status_of "$WEB_URL/attach/whoami")"
+check_contains "…as JSON, not a login page" '"error":"unauthenticated"' "$body"
+
+# ── 3. the impersonation paths ───────────────────────────────────────
+#
+# Each of these is a full account takeover if the scrub regresses.
+
+section "3. header scrubbing"
+
+# Control. Everything below is vacuous unless the assertion path is
+# actually live on this backend — a typo in proxy_identities would make
+# the scrub tests pass for the wrong reason.
+body="$(curl -sS -H "Authorization: Bearer $SA_TOKEN" \
+  -H 'X-Asserted-Caller: bob@example.com' "$AGENT_URL/whoami")"
+check "3.0 control: direct assertion IS honored by the agent" "bob@example.com" "$(printf '%s' "$body" | json identity)"
+
+body="$(as_user alice@example.com -H 'X-Asserted-Caller: bob@example.com' "$WEB_URL/attach/whoami")"
+check "3.1 client X-Asserted-Caller is dropped" "alice@example.com" "$(printf '%s' "$body" | json identity)"
+
+body="$(as_user alice@example.com -H "Authorization: Bearer $BOB_TOKEN" "$WEB_URL/attach/whoami")"
+check "3.2 client Authorization is dropped"     "alice@example.com" "$(printf '%s' "$body" | json identity)"
+
+body="$(as_user alice@example.com -H "X-Attach-Token: $BOB_TOKEN" "$WEB_URL/attach/whoami")"
+check "3.3 client X-Attach-Token is dropped"    "alice@example.com" "$(printf '%s' "$body" | json identity)"
+
+body="$(as_user alice@example.com -H 'Cookie: session=stolen' "$WEB_URL/attach/whoami")"
+check "3.4 cookies don't reach the agent"       "alice@example.com" "$(printf '%s' "$body" | json identity)"
+
+# ── 4. writes survive the real CSRF guard ────────────────────────────
+#
+# The regression test for the whole Origin analysis: a browser-shaped
+# Origin has to make it through core-agent's browserWriteGuard, which
+# it can only do because the proxy strips Origin outbound.
+
+section "4. writes through the real browserWriteGuard"
+
+# Control for the Origin analysis: the same write, sent straight to the
+# agent carrying the hosted browser Origin, is refused. That 403 is what
+# the proxy's outbound Origin strip exists to prevent — without it every
+# write from a hosted BFF would fail this way, which is finding 5 of the
+# auth plan reproduced against the real guard.
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $SA_TOKEN" -H 'Content-Type: application/json' \
+  -H "Origin: $BROWSER_ORIGIN" -d '{}' "$AGENT_URL/sessions")"
+check "4.0 control: a hosted browser Origin is refused at the agent" "403" "$code"
+
+resp="$(as_user alice@example.com \
+  -H 'Content-Type: application/json' \
+  -H "Origin: $BROWSER_ORIGIN" \
+  -d '{}' -w '\n%{http_code}' "$WEB_URL/attach/sessions")"
+code="$(printf '%s' "$resp" | tail -1)"
+body="$(printf '%s' "$resp" | sed '$d')"
+check "4.1 POST /sessions succeeds" "201" "$code"
+ALICE_SESSION="$(printf '%s' "$body" | json sessionID)"
+[[ -z "$ALICE_SESSION" ]] && ALICE_SESSION="$(printf '%s' "$body" | json session_id)"
+if [[ -n "$ALICE_SESSION" ]]; then
+  pass "4.2 got a session id ($ALICE_SESSION)"
+else
+  fail "4.2 got a session id" "non-empty" "$body"
+fi
+
+code="$(as_user alice@example.com -o /dev/null -w '%{http_code}' \
+  -H "Origin: $BROWSER_ORIGIN" -d '{}' "$WEB_URL/attach/sessions")"
+check "4.3 write without JSON content-type is 415" "415" "$code"
+
+code="$(as_user alice@example.com -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' -H 'Origin: https://evil.example' \
+  -d '{}' "$WEB_URL/attach/sessions")"
+check "4.4 cross-site Origin is 403" "403" "$code"
+
+# ── 5. per-user isolation ────────────────────────────────────────────
+
+section "5. session isolation"
+
+body="$(as_user alice@example.com "$WEB_URL/attach/sessions")"
+check_contains "5.1 alice sees her session" "$ALICE_SESSION" "$body"
+
+body="$(as_user bob@example.com "$WEB_URL/attach/sessions")"
+check_not_contains "5.2 bob does not" "$ALICE_SESSION" "$body"
+
+# ── 6. both SSE streams ──────────────────────────────────────────────
+#
+# The reason this script exists (see the header). Against a real
+# token-protected backend the old ?access_token= path 401'd here.
+
+section "6. SSE streams"
+
+n=0
+for stream in "events" "perms/stream"; do
+  n=$((n + 1))
+  out="$(as_user alice@example.com -N --max-time 3 -D "$SCRATCH/h.txt" \
+    "$WEB_URL/attach/sessions/$ALICE_SESSION/$stream" 2>/dev/null || true)"
+  code="$(head -1 "$SCRATCH/h.txt" | awk '{print $2}')"
+  check "6.$n /$stream connects" "200" "$code"
+  check_contains "6.$n /$stream is an event stream" "text/event-stream" "$(tr -d '\r' <"$SCRATCH/h.txt")"
+done
+
+# Only /events has something to say on an idle session; perms/stream
+# stays open and silent until a permission is actually requested, so
+# "it connected as an event stream" is the whole assertion there.
+check_contains "6.3 /events delivers frames" "data:" \
+  "$(as_user alice@example.com -N --max-time 3 \
+    "$WEB_URL/attach/sessions/$ALICE_SESSION/events" 2>/dev/null || true)"
+
+# ── report ───────────────────────────────────────────────────────────
+
+if [[ $FAILURES -gt 0 ]]; then
+  printf '\n\033[31m✗ %d assertion(s) failed\033[0m\n' "$FAILURES"
+  echo "--- agent log ---"; tail -30 "$SCRATCH/agent.log"
+  echo "--- mast-web-server log ---"; tail -30 "$SCRATCH/web.log"
+  exit 1
+fi
+
+printf '\n\033[32m✓ hosted multi-user mode works against a real backend\033[0m\n'
+
+[[ -z "${KEEP_RUNNING:-}" ]] && exit 0
+
+# ── KEEP_RUNNING: a browsable rig ────────────────────────────────────
+#
+# A browser cannot set X-Test-User, and that is the point of
+# proxy-header mode: something in front is supposed to do it. So stand
+# up one tiny header-injecting proxy per identity — the local stand-in
+# for IAP / oauth2-proxy — and hand out a port per user. Two ports, two
+# browser profiles, and per-user isolation is visible rather than
+# asserted.
+#
+# Note the Del before the Set. A fronting proxy that doesn't strip the
+# client's copy of the header lets any visitor claim any identity;
+# mast-web-server warns about exactly this at startup and cannot check
+# it from where it sits.
+
+cat >"$SCRATCH/frontproxy.go" <<'GO'
+package main
+
+import (
+	"log"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+)
+
+func main() {
+	target, err := url.Parse(os.Getenv("FRONT_TARGET"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	user := os.Getenv("FRONT_USER")
+	// The Host a browser actually reaches this proxy at. A real load
+	// balancer passes the public Host through to its backend, and
+	// mast-web-server's CSRF check compares the browser's Origin
+	// against it — so leaving SetURL's backend host here 403s every
+	// write from anything but a plain localhost browser.
+	publicHost := os.Getenv("FRONT_PUBLIC_HOST")
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Host = publicHost
+			pr.Out.Header.Del("X-Test-User") // never trust the client's copy
+			pr.Out.Header.Set("X-Test-User", user)
+		},
+		FlushInterval: -1, // stream SSE through immediately
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s %s host=%q origin=%q", r.Method, r.URL.Path, r.Host, r.Header.Get("Origin"))
+		rp.ServeHTTP(w, r)
+	})
+	log.Fatal(http.ListenAndServe(os.Getenv("FRONT_LISTEN"), handler))
+}
+GO
+(cd "$SCRATCH" && go build -o frontproxy frontproxy.go)
+
+FRONT_PORT=$((WEB_PORT + 1))
+declare -a FRONT_URLS=()
+for who in alice@example.com bob@example.com; do
+  # Cloud dev environments (Cloud Workstations, Codespaces, gitpod) put
+  # a per-port public hostname in front of localhost, and the browser's
+  # Origin is THAT host — not 127.0.0.1. WEB_HOST is Cloud Workstations'
+  # own env var; the fallback is a plain local browser.
+  if [[ -n "${WEB_HOST:-}" ]]; then
+    public_host="${FRONT_PORT}-${WEB_HOST}"
+    public_origin="https://${public_host}"
+  else
+    public_host="127.0.0.1:${FRONT_PORT}"
+    public_origin="http://${public_host}"
+  fi
+  FRONT_LISTEN="127.0.0.1:${FRONT_PORT}" FRONT_TARGET="$WEB_URL" FRONT_USER="$who" \
+    FRONT_PUBLIC_HOST="$public_host" \
+    "$SCRATCH/frontproxy" >"$SCRATCH/front-$FRONT_PORT.log" 2>&1 &
+  wait_for "http://127.0.0.1:${FRONT_PORT}/healthz" "front proxy for $who"
+  FRONT_URLS+=("  $public_origin  →  $who")
+  FRONT_PORT=$((FRONT_PORT + 1))
+done
+
+cat <<EOF
+
+────────────────────────────────────────────────────────────────────
+ Open one of these — each is a different signed-in user:
+
+$(printf '%s\n' "${FRONT_URLS[@]}")
+
+ In the setup modal: endpoint  /attach   token  (leave blank)
+
+ The browser holds no agent credential. mast-web-server injects the
+ service token and asserts your identity; core-agent's ACLs do the
+ rest, so alice and bob see different session lists.
+
+ Direct (no identity, every API call 401s):  $WEB_URL
+ Agent:  $AGENT_URL     Logs:  $SCRATCH
+────────────────────────────────────────────────────────────────────
+
+Ctrl-C to stop everything.
+EOF
+
+cleanup() {
+  pkill -P $$ 2>/dev/null || true
+  [[ -n "$WEB_PID" ]] && kill "$WEB_PID" 2>/dev/null || true
+  [[ -n "$AGENT_PID" ]] && kill "$AGENT_PID" 2>/dev/null || true
+  wait 2>/dev/null || true
+  rm -rf "$SCRATCH"
+}
+wait "$WEB_PID"

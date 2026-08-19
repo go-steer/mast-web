@@ -120,15 +120,20 @@ describe('AttachCorePrompter', () => {
   });
 
   describe('URL construction', () => {
-    it('_streamURL includes access_token query param when token present', () => {
+    // Regression guard: this used to append ?access_token=<token>,
+    // which authenticated nothing (core-agent's checkAttachToken reads
+    // only X-Attach-Token / Authorization) and leaked the credential
+    // into proxy access logs. The token must never reach the URL.
+    it('_streamURL never puts the token in the query string', () => {
       const p = new AttachCorePrompter.Prompter({
         endpoint: 'https://example',
         token: 'secret',
         sessionId: 'sess-abc',
       });
-      expect(p._streamURL()).toBe(
-        'https://example/sessions/sess-abc/perms/stream?access_token=secret'
-      );
+      const url = p._streamURL();
+      expect(url).toBe('https://example/sessions/sess-abc/perms/stream');
+      expect(url).not.toContain('secret');
+      expect(url).not.toContain('access_token');
     });
 
     it('_streamURL omits query param when no token (unauthenticated dev)', () => {

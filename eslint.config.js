@@ -19,6 +19,13 @@ import globals from "globals";
 
 export default [
   {
+    // Vendored third-party bundles (web/vendor/) are shipped verbatim so
+    // their bytes stay diffable against the published release. Linting
+    // minified UMD output is noise, and any autofix would break the
+    // provenance check in web/vendor/README.md.
+    ignores: ["web/vendor/**"],
+  },
+  {
     files: ["web/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,

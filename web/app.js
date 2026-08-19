@@ -1178,6 +1178,16 @@
         // Suppress replay-flood tokens from the transcript. Aggregate
         // state (usage etc.) isn't affected by stream-chunk anyway.
         if (ev.replay) return;
+        // Suppress the prompt echo. A real backend replays the prompt
+        // the model received as a user-authored agent frame ahead of
+        // the reply — [Inbox] wrapper and all — so rendering it puts
+        // the operator's own message inside the agent bubble. The
+        // filter belongs here rather than in fanoutAgentFrame: those
+        // fixtures are a cross-implementation spec contract shared
+        // with core-agent's coretuiremote adapter, so the wire
+        // decomposition stays faithful and the renderer decides what
+        // to draw. Fixture 006 pins the shape.
+        if (ev.data.author === 'user') return;
         let turn = activeTurn;
         // Externally-driven turn: if events arrive without an
         // activeTurn (peer-observed / observer-mode / autonomous

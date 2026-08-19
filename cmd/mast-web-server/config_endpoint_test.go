@@ -1,0 +1,127 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func getConfig(t *testing.T, cfg config, authn authenticator, mutate func(*http.Request)) (int, http.Header, configResponse) {
+	t.Helper()
+	r := httptest.NewRequest("GET", configPath, nil)
+	if mutate != nil {
+		mutate(r)
+	}
+	w := httptest.NewRecorder()
+	configHandler(cfg, authn).ServeHTTP(w, r)
+
+	var out configResponse
+	if w.Code == http.StatusOK {
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode /config: %v (%q)", err, w.Body.String())
+		}
+	}
+	return w.Code, w.Header(), out
+}
+
+func TestConfigEndpoint_StaticModeReportsNoAuth(t *testing.T) {
+	// static and mock must keep today's behavior: the SPA shows the
+	// setup modal and talks to a backend of the operator's choosing.
+	code, _, got := getConfig(t, config{mode: modeStatic, apiPrefix: "/attach"}, noAuth{}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d", code)
+	}
+	if got.Mode != modeStatic {
+		t.Fatalf("mode = %q", got.Mode)
+	}
+	if got.Auth.Mode != authModeNone || !got.Auth.Authenticated {
+		t.Fatalf("auth = %+v, want mode=none authenticated=true", got.Auth)
+	}
+	if got.APIPrefix != "" {
+		t.Fatalf("api_prefix = %q, want empty outside proxy mode", got.APIPrefix)
+	}
+}
+
+func TestConfigEndpoint_ProxyModeReportsPrefixAndIdentity(t *testing.T) {
+	cfg := config{mode: modeProxy, apiPrefix: "/attach", authMode: authModeProxyHeader}
+	code, _, got := getConfig(t, cfg, headerAuth{header: "X-Test-User"}, func(r *http.Request) {
+		r.Header.Set("X-Test-User", "alice@example.com")
+	})
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d", code)
+	}
+	if got.APIPrefix != "/attach" {
+		t.Fatalf("api_prefix = %q", got.APIPrefix)
+	}
+	if got.Auth.Mode != authModeProxyHeader {
+		t.Fatalf("auth.mode = %q", got.Auth.Mode)
+	}
+	if !got.Auth.Authenticated || got.Auth.Identity != "alice@example.com" {
+		t.Fatalf("auth = %+v", got.Auth)
+	}
+}
+
+func TestConfigEndpoint_ReportsUnauthenticatedWithout200Failing(t *testing.T) {
+	// /config is exempt from withAuth on purpose: an unauthenticated
+	// SPA still has to be able to discover that it is unauthenticated.
+	cfg := config{mode: modeProxy, apiPrefix: "/attach", authMode: authModeProxyHeader}
+	code, _, got := getConfig(t, cfg, headerAuth{header: "X-Test-User"}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d", code)
+	}
+	if got.Auth.Authenticated {
+		t.Fatal("want authenticated=false")
+	}
+	if got.Auth.Identity != "" {
+		t.Fatalf("identity leaked: %q", got.Auth.Identity)
+	}
+}
+
+func TestConfigEndpoint_IsNotCacheable(t *testing.T) {
+	// The body names the caller. An intermediate reusing it across
+	// users would be an identity mix-up.
+	_, hdr, _ := getConfig(t, config{mode: modeProxy, apiPrefix: "/attach"}, noAuth{}, nil)
+	if cc := hdr.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
+	}
+}
+
+func TestConfigEndpoint_ReservesMultiDaemonSeam(t *testing.T) {
+	// Emitted now, always false/empty, so the later backend alias map
+	// is an additive change rather than a wire break.
+	_, _, got := getConfig(t, config{mode: modeProxy, apiPrefix: "/attach"}, noAuth{}, nil)
+	if got.MultiDaemon {
+		t.Fatal("multi_daemon should be false in this phase")
+	}
+	if got.Backends == nil {
+		t.Fatal("backends should serialize as [] rather than null")
+	}
+}
+
+func TestConfigEndpoint_RejectsWrites(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, configPath, nil)
+	w := httptest.NewRecorder()
+	configHandler(config{mode: modeStatic}, noAuth{}).ServeHTTP(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("want 405, got %d", w.Code)
+	}
+	if allow := w.Header().Get("Allow"); allow == "" {
+		t.Fatal("want an Allow header on 405")
+	}
+}

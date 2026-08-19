@@ -79,8 +79,16 @@ USER 65532:65532
 EXPOSE 8080
 
 # Default environment — operator overrides via `docker run -e`.
+#
+# AUTH_MODE is spelled out rather than left implicit: with BACKEND_URL set
+# this container is a credentialed path to the agent, and `none` means
+# every caller who can reach the port shares one identity. A hosted,
+# multi-user deployment wants AUTH_MODE=iap-jwt (plus IAP_AUDIENCE) or
+# proxy-header (plus AUTH_HEADER) — see docs/site/content/docs/deployment.md.
+# The server warns loudly at startup if it ends up open and non-loopback.
 ENV LISTEN=:8080 \
-    API_PREFIX=/attach
+    API_PREFIX=/attach \
+    AUTH_MODE=none
 
 # No HEALTHCHECK directive — distroless images don't ship wget/curl, and
 # adding a probe binary defeats the size goal. K8s / Cloud Run hit the

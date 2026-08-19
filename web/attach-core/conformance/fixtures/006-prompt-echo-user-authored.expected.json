@@ -1,0 +1,45 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.4.0",
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "inbox",
+        "turn-complete",
+        "turn-error",
+        "agent"
+      ],
+      "server": "core-agent"
+    }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "queued", "prompt_id": "p1", "queued_at": "2026-08-15T17:39:18Z" }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "dequeued", "prompt_id": "p1", "queued_at": "2026-08-15T17:39:18Z" }
+  },
+  { "type": "status-update", "data": { "model": "gemini-3-pro", "turn_state": "streaming" } },
+  {
+    "type": "stream-chunk",
+    "data": { "text": "[Inbox]\n- what can you do?\n\n---\n\n", "partial": false, "author": "user" }
+  },
+  {
+    "type": "stream-chunk",
+    "data": { "text": "Quite a lot, actually.", "partial": false, "author": "core_agent" }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p1",
+      "model": "gemini-3-pro",
+      "tokens_in": 45,
+      "tokens_out": 8,
+      "latency_ms": 17
+    }
+  }
+]

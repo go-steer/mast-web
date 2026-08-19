@@ -1,5 +1,6 @@
 {
   "extends": "stylelint-config-standard",
+  "ignoreFiles": ["web/vendor/**"],
   "rules": {
     "selector-class-pattern": null,
     "no-descending-specificity": null,

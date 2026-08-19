@@ -1,0 +1,179 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.4.0",
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "inbox",
+        "turn-complete",
+        "turn-error",
+        "agent"
+      ],
+      "server": "core-agent"
+    }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "queued", "prompt_id": "p1", "queued_at": "2026-08-19T21:15:16Z" }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "dequeued", "prompt_id": "p1", "queued_at": "2026-08-19T21:15:16Z" }
+  },
+  {
+    "type": "status-update",
+    "data": { "model": "gemini-3.7-flash", "turn_state": "streaming" }
+  },
+  {
+    "type": "stream-chunk",
+    "data": { "text": "Priced before the footer exists.", "partial": false, "author": "core_agent" }
+  },
+  {
+    "type": "usage-update",
+    "data": {
+      "tokens_in_total": 5009,
+      "tokens_out_total": 57,
+      "cost_usd_total": 0.000596175,
+      "turns_total": 1,
+      "by_model": {
+        "gemini-3.7-flash": {
+          "tokens_in": 5009,
+          "tokens_out": 57,
+          "cost_usd": 0.000596175,
+          "turns": 1
+        }
+      },
+      "last_turn": {
+        "tokens_in": 5009,
+        "tokens_in_cached": 4999,
+        "tokens_out": 57,
+        "cost_usd": 0.000596175,
+        "model": "gemini-3.7-flash"
+      }
+    }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p1",
+      "model": "gemini-3.7-flash",
+      "tokens_in": 5009,
+      "tokens_out": 57,
+      "latency_ms": 8592
+    }
+  },
+  { "type": "status-update", "data": { "turn_state": "idle" } },
+  {
+    "type": "inbox",
+    "data": { "state": "queued", "prompt_id": "p2", "queued_at": "2026-08-19T21:15:41Z" }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "dequeued", "prompt_id": "p2", "queued_at": "2026-08-19T21:15:41Z" }
+  },
+  {
+    "type": "status-update",
+    "data": { "model": "gemini-3.7-flash", "turn_state": "streaming" }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "A second turn, priced differently.",
+      "partial": false,
+      "author": "core_agent"
+    }
+  },
+  {
+    "type": "usage-update",
+    "data": {
+      "tokens_in_total": 11151,
+      "tokens_out_total": 375,
+      "cost_usd_total": 0.001735425,
+      "turns_total": 2,
+      "by_model": {
+        "gemini-3.7-flash": {
+          "tokens_in": 11151,
+          "tokens_out": 375,
+          "cost_usd": 0.001735425,
+          "turns": 2
+        }
+      },
+      "last_turn": {
+        "tokens_in": 6142,
+        "tokens_in_cached": 5061,
+        "tokens_out": 318,
+        "cost_usd": 0.00113925,
+        "model": "gemini-3.7-flash"
+      }
+    }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p2",
+      "model": "gemini-3.7-flash",
+      "tokens_in": 6142,
+      "tokens_out": 318,
+      "latency_ms": 11204
+    }
+  },
+  { "type": "status-update", "data": { "turn_state": "idle" } },
+  {
+    "type": "inbox",
+    "data": { "state": "queued", "prompt_id": "p3", "queued_at": "2026-08-19T21:16:03Z" }
+  },
+  {
+    "type": "inbox",
+    "data": { "state": "dequeued", "prompt_id": "p3", "queued_at": "2026-08-19T21:16:03Z" }
+  },
+  {
+    "type": "status-update",
+    "data": { "model": "gemini-3.7-flash", "turn_state": "streaming" }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "A third turn, priced after the footer.",
+      "partial": false,
+      "author": "core_agent"
+    }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p3",
+      "model": "gemini-3.7-flash",
+      "tokens_in": 7003,
+      "tokens_out": 122,
+      "latency_ms": 6120
+    }
+  },
+  {
+    "type": "usage-update",
+    "data": {
+      "tokens_in_total": 18154,
+      "tokens_out_total": 497,
+      "cost_usd_total": 0.002658825,
+      "turns_total": 3,
+      "by_model": {
+        "gemini-3.7-flash": {
+          "tokens_in": 18154,
+          "tokens_out": 497,
+          "cost_usd": 0.002658825,
+          "turns": 3
+        }
+      },
+      "last_turn": {
+        "tokens_in": 7003,
+        "tokens_in_cached": 6001,
+        "tokens_out": 122,
+        "cost_usd": 0.0009234,
+        "model": "gemini-3.7-flash"
+      }
+    }
+  },
+  { "type": "status-update", "data": { "turn_state": "idle" } }
+]

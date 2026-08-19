@@ -213,6 +213,11 @@ window.MastTerminal = (function () {
     // ── DOM ──────────────────────────────────────────────────────────
 
     const root = mk('div', 'term');
+    // Which session this transcript belongs to. Nothing styles it; it
+    // is here because a shell that keeps several terminals mounted at
+    // once (solo.html) otherwise has no way to say *which* one it means
+    // from outside — including from a smoke test.
+    root.dataset.session = st.sessionId;
 
     const screen = mk('div', 'term-screen');
     const out = mk('div', 'term-out');
@@ -1061,6 +1066,13 @@ window.MastTerminal = (function () {
         input.blur();
         return;
       }
+      // A chord with alt / ctrl / meta is never text input, so it
+      // belongs to whichever shell is hosting this terminal — solo.html
+      // binds alt+1…9 to its tab strip, and the prompt has focus
+      // essentially always, so swallowing these would make the tab
+      // strip unreachable from the keyboard. Shift is deliberately not
+      // in the list: shift+arrow is selection.
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
       // Every other bare key the spatial shell binds to the camera
       // (arrows, r, +/-) belongs to the text field while it has focus.
       e.stopPropagation();

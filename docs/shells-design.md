@@ -41,6 +41,8 @@ Not much, and it is specific.
 
 **b. An observed turn renders the answer without the question.** `addMessage('user', …)` fires in exactly one place — the local `submitPrompt` path (`app.js:2181`). `beginObserverTurn` mirrors the *assistant* render callbacks only. So when another participant drives a turn, we paint the reply and never paint the prompt. For a single-operator console that is invisible. For anything conversational it is the bug that makes the surface unusable.
 
+Worth being precise about *why*, because it changes the fix: the prompt is not missing from the wire. A real backend replays it as a user-authored `agent` frame ahead of the reply — see the committed fixture `attach-core/conformance/fixtures/006-prompt-echo-user-authored.jsonl`. Both shells receive that frame today and deliberately discard it, because for the client that *sent* the prompt, rendering it duplicates the operator's own message inside the agent bubble. So this is a suppression that is too broad, not an absence. §9 used to list a protocol ask for it; it does not need one.
+
 **c. There is no per-turn speaker.** `capabilities.caller_id` is *connection*-level — "who am I" — and feeds the sidebar identity slot (`app.js:304`). `attach-core/protocol.js` does parse an `author` field off each frame, but it carries the ADK agent author, not the human who caused the turn, and `app.js` never reads it. `X-Asserted-Caller` carries the human identity *inbound*; nothing carries it back out. A conversation with unlabeled speakers is not a conversation.
 
 **d. There is no cross-session unread state.** The single highest-value thing a fleet dashboard needs — *which of my forty agents has said something since I last looked?* — has no representation anywhere in the attach protocol, and arguably should not have one.
@@ -107,7 +109,7 @@ Deliberately *not* a per-backend server-side default. The shell is an operator p
 
 What it needs beyond what exists:
 
-1. **Render observed prompts.** Fix §2b — a `user` row for turns this client did not originate. This is a correctness fix for the observer path and is worth landing on its own, ahead of any shell work, because it improves the console too.
+1. **Render observed prompts.** Fix §2b — a `user` row for turns this client did not originate. This is a correctness fix for the observer path and is worth landing on its own, ahead of any shell work, because it improves the console too. No protocol dependency: the frame already arrives (§2b), so the change is narrowing an existing filter from "drop every user-authored frame" to "drop it only when this client originated the turn". The one real chore is presentational — the replayed text is wrapped as `[Inbox]\n- …\n\n---\n\n` and has to be unwrapped before it is renderable as a speaker turn.
 2. **Per-turn speaker attribution.** Fix §2c — requires a protocol addition (§9). Until it lands, degrade to a generic "operator" label rather than blocking; the shell must not hard-depend on a field the backend may not send.
 3. **Conversation-shaped layout.** Speaker grouping, timestamps, tool calls collapsed by default rather than the console's always-expanded chips.
 4. **Thread history on attach.** `attach-core/replay.js` already handles the replay cutoff. Chat makes the cutoff visible ("history begins here") instead of silently starting mid-stream.
@@ -161,12 +163,11 @@ Scion built the right-hand column; it is the majority of what they shipped. **Ne
 
 ## 9. Protocol asks
 
-One real ask, one nice-to-have. Both go to core-agent / mast, both are additive and forward-compatible.
+One ask. It goes to core-agent / mast, it is additive and forward-compatible, and it is guarded by the capability manifest so shells degrade rather than break against a backend that predates it.
 
-1. **Per-turn caller attribution** — the human identity that drove a turn, carried on the event stream the way `X-Asserted-Caller` carries it inbound. Without it, any multi-participant surface renders unlabeled speakers. This is the blocker for the chat shell's headline feature and the only item here on the critical path.
-2. **An explicit prompt event** — today the injected prompt text is not visibly on the stream for observers; we infer a turn started from its first chunk. An event carrying the prompt would let §5.1 render observed questions from the wire rather than by inference.
+1. **Per-turn caller attribution** — the human identity that drove a turn, carried on the event stream the way `X-Asserted-Caller` carries it inbound. Without it, any multi-participant surface renders unlabeled speakers. This is the blocker for the chat shell's headline feature and the only thing here on the critical path.
 
-Both are guarded by the capability manifest, so shells degrade rather than break against a backend that predates them.
+An earlier draft listed a second ask — an explicit prompt event, on the theory that the injected prompt text never reaches observers and a turn has to be inferred from its first chunk. That was wrong. The prompt does arrive, as a user-authored `agent` frame ahead of the reply; §2b has the fixture. Nothing upstream is needed for §5.1, which unblocks S0 from the protocol entirely. What the existing frame lacks is the *caller*, which is ask 1 — so the two questions were never really separable.
 
 ## 10. Phasing
 
@@ -174,12 +175,12 @@ Each phase is independently useful, and the early ones ship value without commit
 
 | Phase | Scope | Depends on |
 |---|---|---|
-| **S0 — observed prompts** | Render a `user` row for turns this client did not originate. Correctness fix for the observer path; improves the console today. | — |
+| **S0 — observed prompts** | Render a `user` row for turns this client did not originate. Correctness fix for the observer path; improves the console today. Narrows an existing filter — no protocol dependency (§9). | — |
 | **S1 — shell seam** | `shells/registry.js` + extract today's console to `shells/console/` verbatim. No visible change. The proof the seam is right. | S0 |
 | **S2 — framework decision** | Resolve `web-design.md` open question 3 explicitly. Vanilla + build step, or adopt a framework. Do it between S1 and S3, when the cost of being wrong is one shell. | S1 |
 | **S3 — chat shell** | `shells/chat/` per §5. Generic speaker labels until the protocol ask lands. | S1, S2 |
 | **S4 — fleet dashboard** | `shells/fleet/` per §6, incl. localStorage unread watermarks. | S1, S2 |
-| **S5 — spatial shell** | Land `feat/spatial-shell-aurora-themes` as `shells/spatial/` rather than as a fork of app.js. | S1 |
+| **S5 — spatial shell** | Land `feat/spatial-shell-aurora-themes` as `shells/spatial/`. Cheaper than it looks: its renderer (`web/terminal.js`) is already the console with the singleton assumption removed — per-instance client, turn state and DOM root — which is the same de-singletoning S1 asks of `shells/console/`. Treat it as prior art for the shell contract rather than as a fork to untangle. Also carries the spatial shell's own gaps: permissions, slash commands, modals. | S1 |
 | **S6 — attribution** | Consume the protocol ask from §9 once upstream ships it; real speaker names in chat + fleet. | S3, upstream |
 
 S0 is worth doing this week regardless of whether the rest of this doc is accepted.

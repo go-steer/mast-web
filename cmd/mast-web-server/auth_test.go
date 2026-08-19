@@ -97,6 +97,28 @@ func TestHeaderAuth(t *testing.T) {
 	}
 }
 
+func TestHeaderAuth_RejectsAmbiguousDuplicateHeader(t *testing.T) {
+	// A fronting proxy that APPENDS its assertion instead of replacing
+	// leaves the client's copy first, and Header.Get takes the first —
+	// so the naive read hands an attacker any identity they like.
+	// Ambiguity is refused outright rather than resolved by position:
+	// "last wins" would be just as much a guess about the proxy as
+	// "first wins", and guessing wrong is silent impersonation.
+	a := headerAuth{header: "X-Test-User"}
+
+	for _, order := range [][2]string{
+		{"attacker@evil.example", "alice@example.com"}, // proxy appended
+		{"alice@example.com", "attacker@evil.example"}, // proxy prepended
+	} {
+		r := httptest.NewRequest("GET", "/attach/sessions", nil)
+		r.Header.Add("X-Test-User", order[0])
+		r.Header.Add("X-Test-User", order[1])
+		if got, ok := a.Identity(r); ok {
+			t.Errorf("values %v: authenticated as %q; want refused", order, got)
+		}
+	}
+}
+
 // ─── iapJWTAuth ──────────────────────────────────────────────────────
 //
 // These drive the real google.golang.org/api/idtoken validator against

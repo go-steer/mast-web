@@ -112,6 +112,13 @@ Neither is enforceable from inside this process, so the server logs a warning at
 naming the header it trusts. If you can use `iap-jwt`, prefer it — a signature is checkable;
 a header is not.
 
+One case *is* enforced: a request that carries the header **more than once** is refused
+outright (401), not resolved by position. A proxy that appends its assertion rather than
+replacing it leaves the client's copy first, and reading "the" header value would then hand
+an attacker any identity they name. Picking last-wins instead would be an equally blind guess
+about your proxy, so an ambiguous identity is treated as no identity. A correctly configured
+proxy sends exactly one value and never sees this.
+
 ### `--backend-auth`
 
 | Value | What it sends |
@@ -131,15 +138,22 @@ Every proxied request has these deleted before it leaves:
 - **`X-Asserted-Caller`** — always, in every mode. A client-supplied value would otherwise
   reach the agent's caller middleware and impersonate anyone. This is why enabling proxy
   mode and enabling the scrub had to be the same change.
-- **`Origin` and `Referer`** — the agent's write guard passes requests with no `Origin`
-  (that's what a native client looks like), and rejects an `Origin` that isn't its own. Once
-  the BFF enforces the equivalent check inbound, the BFF *is* a native client.
+- **`Origin` and `Referer`** — the agent's write guard *skips its origin check* for a request
+  with no `Origin` (that's what a native client looks like), and rejects an `Origin` that
+  isn't its own. Its `Content-Type` check still runs either way. Once the BFF enforces the
+  equivalent check inbound, the BFF *is* a native client.
 - **`Authorization`, `X-Attach-Token`, `Cookie`** — only when `--auth-mode != none`. In
   `none` mode the client's own token still flows through untouched, which is what keeps
   today's single-operator setup working byte-for-byte.
 
-Inbound, when auth is on, writes must carry `Content-Type: application/json` (else 415) and
-a present `Origin` must match `--external-url` or the request host (else 403).
+Inbound, in **every** proxy-mode deployment, writes must carry `Content-Type: application/json`
+(else 415) and a present `Origin` must match `--external-url` or the request host (else 403).
+
+The guard is not conditional on `--auth-mode`, because the thing that makes a write forgeable
+is an *ambient* credential and `BACKEND_TOKEN` is one: the server stamps it onto every proxied
+request, so it is ambient to anyone who can reach the port regardless of who they are. If your
+fronting proxy rewrites `Host` to the backend's name, set `--external-url` to the address the
+browser actually uses, or same-origin writes will 403.
 
 ### Other hosted flags
 

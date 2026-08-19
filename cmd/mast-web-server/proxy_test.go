@@ -237,6 +237,123 @@ func TestBackendProxy_WriteSurvivesCoreAgentsCSRFGuard(t *testing.T) {
 	}
 }
 
+func TestBackendProxy_RefusesToProxyWithoutAResolvedCaller(t *testing.T) {
+	// The caller rides in a holder seeded by withLogging and filled by
+	// withAuth. If that chain is ever not what we think it is, the old
+	// code proxied anyway with no X-Asserted-Caller — and the agent
+	// would then apply the proxy's own identity, the one allowed to
+	// speak for every user. That is an escalation, so it fails closed.
+	backend := newCaptureBackend(t)
+	front := proxyFront(t, proxyOptions{
+		backendURL:   backend.URL,
+		backendToken: "server-token",
+		authEnabled:  true,
+	}, "") // withAuth resolved nobody
+
+	resp, err := http.Get(front.URL + "/attach/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", resp.StatusCode)
+	}
+	if backend.seen != nil {
+		t.Fatal("request reached the agent with no asserted caller")
+	}
+}
+
+func TestBuildMux_UnauthenticatedProxyStillGuardsWrites(t *testing.T) {
+	// auth-mode=none with a BACKEND_TOKEN is the container image's
+	// primary shape, and there the server stamps the credential onto
+	// every proxied request — so the credential is ambient to whoever
+	// can reach the port. Since proxy.go strips Origin, the agent's own
+	// Origin check no longer fires; the CSRF guard has to be ours.
+	backend := newCaptureBackend(t)
+	cfg := config{
+		mode:         modeProxy,
+		apiPrefix:    "/attach",
+		backendURL:   backend.URL,
+		backendToken: "server-side-secret",
+		authMode:     authModeNone,
+		backendAuth:  backendAuthBearer,
+		webDir:       t.TempDir(),
+	}
+	handler, err := buildMux(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(withLogging(handler))
+	t.Cleanup(srv.Close)
+
+	t.Run("non-preflightable cross-origin write is refused", func(t *testing.T) {
+		backend.seen = nil
+		req, _ := http.NewRequest("POST", srv.URL+"/attach/sessions/s1/inject",
+			strings.NewReader(`{"message":"drive the agent"}`))
+		req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+		req.Header.Set("Origin", "https://evil.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnsupportedMediaType {
+			t.Fatalf("want 415, got %d", resp.StatusCode)
+		}
+		if backend.seen != nil {
+			t.Fatal("forgeable write was forwarded to the agent")
+		}
+	})
+
+	t.Run("cross-origin JSON write is refused on Origin", func(t *testing.T) {
+		backend.seen = nil
+		req, _ := http.NewRequest("POST", srv.URL+"/attach/sessions", strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://evil.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("want 403, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("the SPA's own same-origin write still works", func(t *testing.T) {
+		backend.seen = nil
+		req, _ := http.NewRequest("POST", srv.URL+"/attach/sessions", strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", srv.URL)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("want 200, got %d", resp.StatusCode)
+		}
+		if backend.seen.Get("X-Attach-Token") != "server-side-secret" {
+			t.Fatal("server token did not reach the agent")
+		}
+	})
+
+	t.Run("a headless client with no Origin still works", func(t *testing.T) {
+		backend.seen = nil
+		req, _ := http.NewRequest("POST", srv.URL+"/attach/sessions", strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("want 200 for a non-browser client, got %d", resp.StatusCode)
+		}
+	})
+}
+
 // ─── backend credential ──────────────────────────────────────────────
 
 type stubTokenSource struct {

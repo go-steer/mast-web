@@ -40,6 +40,32 @@ func getConfig(t *testing.T, cfg config, authn authenticator, mutate func(*http.
 	return w.Code, w.Header(), out
 }
 
+func TestConfigEndpoint_VaryNamesTheIdentityHeader(t *testing.T) {
+	// The body carries the caller's identity, so the cache key has to
+	// name the header that identity came from. no-store is what actually
+	// prevents cross-user reuse; a Vary that omits the deciding input is
+	// still a wrong description of the response.
+	cases := []struct {
+		name string
+		cfg  config
+		want string
+	}{
+		{"proxy-header", config{mode: modeProxy, authMode: authModeProxyHeader, authHeader: "X-Forwarded-Email"}, "X-Forwarded-Email"},
+		{"iap-jwt", config{mode: modeProxy, authMode: authModeIAPJWT}, iapAssertionHeader},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, hdr, _ := getConfig(t, tc.cfg, noAuth{}, nil)
+			if got := hdr.Get("Vary"); !strings.Contains(got, tc.want) {
+				t.Errorf("Vary = %q, want it to name %q", got, tc.want)
+			}
+			if got := hdr.Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}
+
 func TestConfigEndpoint_StaticModeReportsNoAuth(t *testing.T) {
 	// static and mock must keep today's behavior: the SPA shows the
 	// setup modal and talks to a backend of the operator's choosing.

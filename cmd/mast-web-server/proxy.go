@@ -126,6 +126,22 @@ type backendProxy struct {
 }
 
 func (p *backendProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Fail closed on a missing identity. When auth is enabled the caller
+	// has already been verified by withAuth, which records it in the
+	// holder withLogging seeds — so an empty caller here means the
+	// middleware chain is not what we think it is, not that the user is
+	// anonymous. Proxying anyway would send no X-Asserted-Caller, and
+	// the agent would apply the *proxy's* own identity, which is exactly
+	// the identity that is allowed to speak for everyone. Refuse rather
+	// than silently escalate.
+	if p.opts.authEnabled {
+		info := requestInfoFrom(r.Context())
+		if info == nil || info.caller == "" {
+			log.Printf("proxy: refusing %s %s: auth is enabled but no caller was resolved", r.Method, r.URL.Path)
+			http.Error(w, "no caller identity to assert", http.StatusInternalServerError)
+			return
+		}
+	}
 	if p.opts.credential != nil {
 		tok, err := p.opts.credential.token(r.Context())
 		if err != nil {

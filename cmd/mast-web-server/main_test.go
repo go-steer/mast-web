@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -269,6 +270,35 @@ func TestParseFlags_APIPrefixNormalization(t *testing.T) {
 	if cfg.apiPrefix != "/attach" {
 		t.Fatalf("want /attach, got %q", cfg.apiPrefix)
 	}
+}
+
+func TestParseFlags_RootAPIPrefixIsRejectedNotPanicked(t *testing.T) {
+	// "/" normalizes to "", which used to reach buildMux and panic
+	// there: the proxy would register "/" and the SPA fallthrough would
+	// register "/" again. "Proxy everything at the root" is a plausible
+	// thing to configure, so it has to fail as a config error.
+	for _, prefix := range []string{"/", "", "///"} {
+		if _, err := parseFlags([]string{
+			"--mode=proxy", "--backend-url=http://example", "--api-prefix=" + prefix,
+		}); err == nil {
+			t.Errorf("--api-prefix=%q was accepted; want a config error", prefix)
+		}
+	}
+}
+
+func TestBuildMux_RejectedPrefixWouldHavePanicked(t *testing.T) {
+	// Pins the reason the check above exists. Constructed directly
+	// rather than through parseFlags, which now refuses it.
+	cfg := config{
+		mode: modeProxy, backendURL: "http://127.0.0.1:1", apiPrefix: "",
+		backendAuth: backendAuthBearer, webDir: t.TempDir(),
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("expected a duplicate-pattern panic; if this stops panicking the parseFlags guard can relax")
+		}
+	}()
+	_, _ = buildMux(context.Background(), cfg)
 }
 
 // ─── parseFlags: hosted-mode validation ─────────────────────────────

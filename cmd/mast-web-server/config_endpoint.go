@@ -30,9 +30,25 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 const configPath = "/config"
+
+// identityVaryHeaders lists every request header that can change this
+// response's identity field, for Vary.
+func identityVaryHeaders(cfg config) []string {
+	v := []string{"Cookie", "Authorization"}
+	switch cfg.authMode {
+	case authModeProxyHeader:
+		if cfg.authHeader != "" {
+			v = append(v, cfg.authHeader)
+		}
+	case authModeIAPJWT:
+		v = append(v, iapAssertionHeader)
+	}
+	return v
+}
 
 type configResponse struct {
 	Mode      string       `json:"mode"`
@@ -91,7 +107,11 @@ func configHandler(cfg config, authn authenticator) http.Handler {
 		// no-store, not no-cache: the body carries the caller's identity
 		// and must never be reused across users by an intermediate.
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Vary", "Cookie, Authorization")
+		// Vary is belt to no-store's braces, so it has to name the header
+		// the identity actually came from — listing only Cookie and
+		// Authorization would describe a cache key that ignores the input
+		// that changes the body.
+		w.Header().Set("Vary", strings.Join(identityVaryHeaders(cfg), ", "))
 		if r.Method == http.MethodHead {
 			return
 		}

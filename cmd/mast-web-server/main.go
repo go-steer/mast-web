@@ -189,6 +189,16 @@ func parseFlags(args []string) (config, error) {
 		cfg.apiPrefix = "/" + cfg.apiPrefix
 	}
 	cfg.apiPrefix = strings.TrimRight(cfg.apiPrefix, "/")
+	// "/" and "" both normalize to empty, which would make buildMux
+	// register "/" for the proxy and then "/" again for the SPA —
+	// net/http.ServeMux panics on a duplicate pattern. Reject it here so
+	// a plausible "proxy everything at the root" config is a config
+	// error rather than a boot-time stack trace. It would also blind
+	// isAPIPath, which needs a non-empty prefix to tell an API request
+	// from a static asset.
+	if cfg.apiPrefix == "" {
+		return config{}, errors.New(`--api-prefix must name at least one path segment (e.g. /attach); "/" would collide with the SPA route`)
+	}
 
 	// Fixture-dir default: derive from web-dir when possible so
 	// operators running mock mode against a checkout don't need two
@@ -392,10 +402,10 @@ func buildMux(ctx context.Context, cfg config) (http.Handler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("backend proxy: %w", err)
 		}
-		var api http.Handler = http.StripPrefix(cfg.apiPrefix, proxy)
-		if cfg.authMode != authModeNone {
-			api = withCSRF(cfg.externalURL, api)
-		}
+		// CSRF guard on every proxy-mode deployment, not just the
+		// authenticated ones — see withCSRF for why auth-mode=none needs
+		// it too once BACKEND_TOKEN is in play.
+		api := withCSRF(cfg.externalURL, http.StripPrefix(cfg.apiPrefix, proxy))
 		mux.Handle(cfg.apiPrefix+"/", api)
 		log.Printf("proxy: %s/* -> %s (backend-auth=%s)", cfg.apiPrefix, cfg.backendURL, cfg.backendAuth)
 	case modeMock:

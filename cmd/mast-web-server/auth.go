@@ -95,8 +95,29 @@ func (noAuth) Mode() string                          { return authModeNone }
 // headerAuth trusts an identity header set by a fronting proxy.
 type headerAuth struct{ header string }
 
+// Identity accepts the header only when it carries exactly one value.
+//
+// The startup warning says this mode is sound only if the fronting proxy
+// strips client-supplied copies — but a proxy that *appends* its
+// assertion rather than replacing it leaves the client's copy in front
+// of its own, and Header.Get returns the first. That is silent
+// impersonation of anyone the agent's proxy_identities allowlist trusts
+// us to assert. Refusing an ambiguous header makes append-shaped proxies
+// safe too, and costs nothing: a correct configuration sends one value.
+//
+// Not covered: a proxy that comma-joins into a single value. Go keeps
+// separately-added headers separate, so that only happens if something
+// in the chain deliberately folds them; an identity is still rejected
+// downstream unless it happens to be a syntactically valid caller.
 func (h headerAuth) Identity(r *http.Request) (string, bool) {
-	return validCaller(r.Header.Get(h.header))
+	vals := r.Header.Values(h.header)
+	if len(vals) != 1 {
+		if len(vals) > 1 {
+			log.Printf("auth: %s carried %d values; refusing an ambiguous identity", h.header, len(vals))
+		}
+		return "", false
+	}
+	return validCaller(vals[0])
 }
 
 func (h headerAuth) Mode() string { return authModeProxyHeader }
@@ -288,17 +309,27 @@ func isDocumentRequest(r *http.Request) bool {
 // withCSRF is the inbound half of the CSRF story; proxy.go has the
 // outbound half.
 //
-// It only wraps the API prefix, and only when auth is enabled — that is
-// exactly when the browser gains an *ambient* credential (an IAP or
-// session cookie the browser attaches on its own), which is what makes
-// cross-site requests forgeable in the first place. In auth-mode=none
-// the SPA must attach its token from JavaScript, so there is nothing
-// ambient to forge with and today's behavior is left untouched.
+// It wraps the API prefix in every proxy-mode deployment, auth or no
+// auth. An earlier draft mounted it only when auth was enabled, on the
+// reasoning that auth-mode=none has no *ambient* credential to forge
+// with because the SPA attaches its token from JavaScript. That
+// reasoning does not survive BACKEND_TOKEN: in that shape the server
+// stamps the credential onto every proxied request, so the credential
+// is ambient to anyone who can reach the port, whoever they are.
+//
+// Nothing was actually exploitable — proxy.go strips Origin, but the
+// agent's own guard rejects any write without a JSON Content-Type
+// regardless of Origin, and a cross-origin JSON write preflights
+// against a backend that answers no CORS headers. But that left the
+// only remaining check in a different repo, one this proxy has already
+// half-disarmed. Mounting the guard unconditionally costs nothing (every
+// working client already sends JSON; a missing Origin is still allowed
+// for curl and CI) and removes the coupling.
 //
 // The rules mirror core-agent's browserWriteGuard (pkg/attach/csrf.go)
 // because the BFF has taken over that job: proxy.go strips Origin on
-// the way out, so the agent sees a native client and its own guard no
-// longer fires.
+// the way out, so the agent sees a native client and its Origin check
+// no longer fires. Its Content-Type check still does.
 //
 //   - Writes must carry Content-Type: application/json. An HTML form
 //     can only send urlencoded, multipart, or text/plain, so this alone

@@ -68,6 +68,11 @@
       <select class="hud-btn" id="hud-theme" title="Theme" aria-label="Theme"></select>
       <button type="button" class="hud-btn" id="btn-tile">tile</button>
       <button type="button" class="hud-btn" id="btn-reset">reset view</button>
+      <!-- The same terminals, one at a time, at full size. Paired with
+           solo.html's "room ↗" so the two shells are each other's way
+           out; without it the flat one is reachable only by typing the
+           URL. -->
+      <a class="hud-btn" href="solo.html" title="One terminal, full size">solo &#8599;</a>
     </header>
 
     <!-- Agent / session picker. Every row is one attach-protocol
@@ -140,6 +145,11 @@
     <script src="attach-core/client.js"></script>
     <script src="slash-render.js"></script>
     <script src="terminal.js"></script>
+    <!-- Shared with solo.html: the daemon registry + sidebar, and the
+         theme list. index.html is frozen and keeps its own copy of the
+         theme list in app.js. -->
+    <script src="theme.js"></script>
+    <script src="agents.js"></script>
     <!-- Spatial-only, and optional: spatial.js calls it through a guard,
          so a browser without Web Audio just gets a silent room. -->
     <script src="spatial-audio.js"></script>

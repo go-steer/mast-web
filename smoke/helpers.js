@@ -102,6 +102,40 @@ export async function openSpatialSession(page, fixture) {
 }
 
 /**
+ * The solo shell's equivalent of openSpatialSession: load solo.html,
+ * open the mock's first session into a tab, and hand back a locator for
+ * that tab's transcript.
+ *
+ * Same registry defaulting as the spatial shell (MastAgents.loadDaemons
+ * falls back to same-origin `/`), so there is no setup modal here
+ * either. Storage is cleared before first paint because a saved tab
+ * layout would restore sessions we didn't ask for.
+ *
+ * Returns the *visible* .term-screen rather than a panel-scoped one:
+ * this shell keeps every open session mounted, so a panel-scoped
+ * locator would match background transcripts too and a stray hit there
+ * would be a false pass.
+ */
+export async function openSoloSession(page, fixture) {
+  await page.addInitScript(() => {
+    try {
+      localStorage.clear();
+    } catch (_e) {
+      /* blocked storage — solo.js falls back to same-origin anyway */
+    }
+  });
+  const url = fixture ? `/solo.html?fixture=${encodeURIComponent(fixture)}` : '/solo.html';
+  await page.goto(url);
+
+  const row = page.locator('.side-session').first();
+  await expect(row).toBeVisible();
+  await row.click();
+
+  await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
+  return page.locator('#solo-body .term:visible .term-screen');
+}
+
+/**
  * Clear the mock's tally of /inject and /wake posts, so a subsequent
  * read reflects one prompt rather than everything since boot
  * (connecting posts nothing today, but that is not a guarantee worth
@@ -142,8 +176,6 @@ export async function turnRequests(page) {
  * appear in the transcript. Times out at Playwright's default (5s).
  */
 export async function waitForSystemMessage(page, substring) {
-  const row = page
-    .locator('#output-area .message.system', { hasText: substring })
-    .first();
+  const row = page.locator('#output-area .message.system', { hasText: substring }).first();
   await expect(row).toBeVisible();
 }

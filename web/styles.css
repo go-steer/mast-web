@@ -1674,31 +1674,14 @@ body[data-layout='chat'] .message.user {
   align-self: flex-start;
 }
 
-.citation-pill {
-  font-size: 9px;
-  margin: 0 1px;
-  vertical-align: super;
-  line-height: 0;
-}
-
-.citation-pill a {
-  color: var(--aqua);
-  background: rgba(0, 162, 156, 0.12);
-  padding: 1px 4px;
-  border-radius: 3px;
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.citation-pill a:hover {
-  background: rgba(0, 162, 156, 0.28);
-  color: var(--blue);
-}
-
+/* Grounded-source strip: one row per turn, appended after the reply.
+   Vertex gives no claim-to-source spans over the attach wire, so there
+   is nothing to anchor an inline superscript to — the strip is the
+   whole citation UI. */
 .citation-sources {
-  margin-top: 10px;
+  margin-top: 6px;
   padding-top: 8px;
-  border-top: 1px dashed rgba(0, 162, 156, 0.3);
+  border-top: 1px dashed color-mix(in srgb, var(--aqua) 30%, transparent);
   font-size: 11px;
   display: flex;
   flex-wrap: wrap;
@@ -1723,10 +1706,6 @@ body[data-layout='chat'] .message.user {
 .citation-sources a:hover {
   color: var(--blue);
   text-decoration: underline;
-}
-
-.citation-sources a.unused {
-  opacity: 0.55;
 }
 
 .message.builtin-tool {

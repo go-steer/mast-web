@@ -28,14 +28,14 @@
 //
 // What's here today: streaming markdown, tool-call rows with
 // click-to-expand results, turn footers, the thinking indicator,
-// interrupt, and observer-mode rendering of externally-driven turns.
+// interrupt, inline permission prompts, server-dispatched slash
+// commands, grounded-source strips, and observer-mode rendering of
+// externally-driven turns.
 //
-// What isn't here yet, and should be: client-side slash commands,
-// citation pills, the model picker, subagent and guardrail drill-downs,
-// session export, the batch runner, and — the one that actually costs
-// you something — permission prompts. Nothing in the spatial shell
-// subscribes to /perms/stream, so an agent that asks for permission in
-// the room waits forever with no way to answer. These are unported, not
+// What isn't here yet, and should be: the client-side slash commands
+// app.js carries on top of the generic dispatch (/attach, /sessions,
+// /model, …), the model picker, subagent and guardrail drill-downs,
+// session export, and the batch runner. These are unported, not
 // excluded. Parity with app.js is the target; a terminal in a panel
 // should not be a lesser terminal than one in a tab, and where a
 // feature needs a different presentation to fit the panel, that's a
@@ -113,6 +113,55 @@ window.MastTerminal = (function () {
     return (prefix || 'Error: ') + (e && e.message ? e.message : e);
   }
 
+  // Gemini grounding evidence. core-agent projects a turn's grounding
+  // metadata into synthetic events — one per search query the model
+  // issued, one per web source it grounded on — each carrying a single
+  // plain text part and this author (core-agent
+  // pkg/models/gemini/projection.go). They are evidence, not prose:
+  // rendered through onToken they concatenate into the assistant's
+  // bubble as one unbroken run of opaque redirect URLs.
+  const GROUNDING_AUTHOR = 'gemini/google_search';
+
+  // Returns {query} or {title, uri} for a recognized line, null for
+  // anything else — the caller falls back to rendering it as text, so a
+  // new projection line kind degrades to today's behaviour rather than
+  // vanishing.
+  //
+  // The title/uri split is greedy on purpose: it anchors on the last
+  // " — " before the URL, so a title containing an em-dash of its own
+  // stays intact. Vertex omits the title on some chunks, which arrive
+  // as a bare URI.
+  function parseGroundingLine(text) {
+    const s = (text || '').trim();
+    if (!s) return null;
+    if (s.startsWith('query: ')) return { query: s.slice(7) };
+    const titled = /^(.*) — (https?:\/\/\S+)$/.exec(s);
+    if (titled) return { title: titled[1], uri: titled[2] };
+    if (/^https?:\/\/\S+$/.test(s)) return { title: '', uri: s };
+    return null;
+  }
+
+  // The URI is an opaque vertexaisearch redirect, so its hostname is
+  // the same useless string on every source. The title Vertex ships
+  // alongside is already the publisher's domain — prefer it, and fall
+  // back to the hostname only when there is no title at all.
+  function sourceLabel(title, uri) {
+    if (title) return title;
+    try {
+      return new URL(uri).hostname.replace(/^www\./, '');
+    } catch {
+      return uri;
+    }
+  }
+
+  // usage-update.last_turn carries no prompt_id, so a footer may only
+  // claim it when their token counts agree. Two consecutive turns with
+  // identical counts would also have identical costs, so that ambiguity
+  // is harmless; a mismatch means the payload describes another turn.
+  function lastTurnMatches(lt, tokensIn, tokensOut) {
+    return !!lt && lt.costUSD > 0 && lt.tokensIn === tokensIn && lt.tokensOut === tokensOut;
+  }
+
   function mk(tag, cls, text) {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -148,6 +197,11 @@ window.MastTerminal = (function () {
       turns: 0,
       costUSD: 0,
       lastFooter: null,
+      // Most recent usage-update.last_turn, held until a footer claims
+      // it: core-agent emits usage-update *before* turn-complete, so
+      // the priced-out cost arrives while the turn that earned it has
+      // no footer yet, and lastFooter still points at the turn before.
+      pendingLastTurn: null,
       destroyed: false,
     };
 
@@ -159,6 +213,11 @@ window.MastTerminal = (function () {
     // ── DOM ──────────────────────────────────────────────────────────
 
     const root = mk('div', 'term');
+    // Which session this transcript belongs to. Nothing styles it; it
+    // is here because a shell that keeps several terminals mounted at
+    // once (solo.html) otherwise has no way to say *which* one it means
+    // from outside — including from a smoke test.
+    root.dataset.session = st.sessionId;
 
     const screen = mk('div', 'term-screen');
     const out = mk('div', 'term-out');
@@ -385,10 +444,20 @@ window.MastTerminal = (function () {
 
     function addTurnFooter(result) {
       const div = mk('div', 'turn-footer');
+      const tokensIn = result.tokens.in || 0;
+      const tokensOut = result.tokens.out || 0;
+      let cost = result.costUSD || 0;
+      // turn-complete.cost_usd is optional and core-agent omits it, so
+      // the number usually arrives on usage-update.last_turn — ahead of
+      // this footer existing. See st.pendingLastTurn.
+      if (cost <= 0 && lastTurnMatches(st.pendingLastTurn, tokensIn, tokensOut)) {
+        cost = st.pendingLastTurn.costUSD;
+        st.pendingLastTurn = null;
+      }
       div.dataset.totalMs = String(result.totalMs || 0);
-      div.dataset.tokensIn = String(result.tokens.in || 0);
-      div.dataset.tokensOut = String(result.tokens.out || 0);
-      div.dataset.costUsd = String(result.costUSD || 0);
+      div.dataset.tokensIn = String(tokensIn);
+      div.dataset.tokensOut = String(tokensOut);
+      div.dataset.costUsd = String(cost);
       renderTurnFooter(div);
       out.appendChild(div);
       scroll();
@@ -405,23 +474,60 @@ window.MastTerminal = (function () {
       el.textContent = parts.join('  ·  ');
     }
 
-    // turn-complete.cost_usd is v1.1.0-optional; the authoritative
-    // number arrives later on usage-update.last_turn.
-    function backfillTurnFooter(el, costUSD) {
-      if (!el || typeof costUSD !== 'number' || costUSD <= 0) return;
-      if ((Number(el.dataset.costUsd) || 0) === costUSD) return;
-      el.dataset.costUsd = String(costUSD);
+    // Back-fills a stamped footer for servers that emit turn-complete
+    // before usage-update. No-op when the payload describes a different
+    // turn, or when the displayed cost already matches.
+    function backfillTurnFooter(el, lastTurn) {
+      if (!el) return;
+      const tokensIn = Number(el.dataset.tokensIn) || 0;
+      const tokensOut = Number(el.dataset.tokensOut) || 0;
+      if (!lastTurnMatches(lastTurn, tokensIn, tokensOut)) return;
+      if ((Number(el.dataset.costUsd) || 0) === lastTurn.costUSD) return;
+      el.dataset.costUsd = String(lastTurn.costUSD);
       renderTurnFooter(el);
     }
 
-    function addBuiltinToolMessage(label, items) {
-      items.forEach((item) => {
-        const div = mk('div', 'message builtin-tool');
-        div.appendChild(mk('span', 'tool-ts', '[' + nowStamp() + ']'));
-        div.appendChild(mk('span', 'builtin-tool-label', label));
-        div.appendChild(mk('code', '', item));
-        out.appendChild(div);
-      });
+    // One search row per turn, accumulating queries, rather than a row
+    // per query: a single grounded answer routinely issues four or five
+    // searches, and in a panel this narrow a stack of near-identical
+    // rows pushes the reply off screen.
+    function addSearchQueryRow() {
+      const div = mk('div', 'message builtin-tool grounding-search');
+      div.appendChild(mk('span', 'tool-ts', '[' + nowStamp() + ']'));
+      div.appendChild(mk('span', 'builtin-tool-label', '🔍 Search'));
+      div.appendChild(mk('code', '', ''));
+      out.appendChild(div);
+      scroll();
+      return div;
+    }
+
+    function appendSearchQuery(el, query) {
+      if (!el) return;
+      const code = el.querySelector('code');
+      code.textContent = code.textContent ? code.textContent + '  ·  ' + query : query;
+      scroll();
+    }
+
+    function addSourcesStrip() {
+      const div = mk('div', 'message citation-sources');
+      div.appendChild(mk('span', 'citation-sources-label', 'Sources:'));
+      out.appendChild(div);
+      scroll();
+      return div;
+    }
+
+    function appendSource(el, title, uri) {
+      if (!el) return;
+      const a = mk(
+        'a',
+        '',
+        '[' + (el.querySelectorAll('a').length + 1) + '] ' + sourceLabel(title, uri)
+      );
+      a.href = uri;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.title = title ? title + ' — ' + uri : uri;
+      el.appendChild(a);
       scroll();
     }
 
@@ -572,6 +678,9 @@ window.MastTerminal = (function () {
     function beginObserverTurn() {
       let streaming = null;
       const pendingToolEls = [];
+      let searchEl = null;
+      let sourcesEl = null;
+      const seenSources = new Set();
       const startedAt = performance.now();
       root.classList.add('term-observing');
 
@@ -591,13 +700,20 @@ window.MastTerminal = (function () {
           onToolResult(server, tool, latencyMs, errMsg, resultJSON) {
             completeToolMessage(pendingToolEls.shift(), latencyMs, errMsg, resultJSON);
           },
-          onSearchQueries(q) {
+          onGroundingQuery(query) {
             streaming = null;
-            addBuiltinToolMessage('🔍 Search', Array.from(q));
+            if (!searchEl) searchEl = addSearchQueryRow();
+            appendSearchQuery(searchEl, query);
           },
-          onURLFetch(u) {
+          onGroundingSource(title, uri) {
             streaming = null;
-            addBuiltinToolMessage('🌐 URL fetched', Array.from(u));
+            // Vertex repeats a chunk when the model grounds on the same
+            // page from two search rounds; dedupe on the URI so the
+            // strip has one pill per distinct source.
+            if (seenSources.has(uri)) return;
+            seenSources.add(uri);
+            if (!sourcesEl) sourcesEl = addSourcesStrip();
+            appendSource(sourcesEl, title, uri);
           },
         },
         finish(result) {
@@ -642,7 +758,16 @@ window.MastTerminal = (function () {
           if (typeof u.cost_usd_total === 'number') st.costUSD = u.cost_usd_total;
           if (typeof u.turns_total === 'number') st.turns = u.turns_total;
           if (u.last_turn && typeof u.last_turn === 'object') {
-            backfillTurnFooter(st.lastFooter, u.last_turn.cost_usd || 0);
+            const lt = {
+              tokensIn: u.last_turn.tokens_in || 0,
+              tokensOut: u.last_turn.tokens_out || 0,
+              costUSD: u.last_turn.cost_usd || 0,
+            };
+            // Either ordering is legal on the wire: back-fill the
+            // footer if it already exists, otherwise hold the payload
+            // for addTurnFooter to claim.
+            st.pendingLastTurn = lt;
+            backfillTurnFooter(st.lastFooter, lt);
           }
           updateStatus();
           onChange(api, 'usage');
@@ -681,6 +806,24 @@ window.MastTerminal = (function () {
           // rendering it puts the operator's own message inside the
           // agent bubble. submit() has already drawn the real one.
           if (ev.data.author === 'user') return;
+          // Grounding evidence, same reasoning: fanoutAgentFrame keeps
+          // the wire decomposition faithful and the renderer decides
+          // that a search query is a chip and a grounded source is a
+          // pill on a sources strip, not body text. Fixture 007 pins
+          // the shape.
+          if (ev.data.author === GROUNDING_AUTHOR) {
+            const line = parseGroundingLine(ev.data.text);
+            if (line) {
+              const gTurn = activeTurn || beginObserverTurn();
+              if (line.query !== undefined) {
+                if (gTurn.callbacks.onGroundingQuery) gTurn.callbacks.onGroundingQuery(line.query);
+              } else if (gTurn.callbacks.onGroundingSource) {
+                gTurn.callbacks.onGroundingSource(line.title, line.uri);
+              }
+              return;
+            }
+            // Unrecognized shape — fall through and render it as text.
+          }
           const turn = activeTurn || beginObserverTurn();
           if (turn.callbacks.onToken) turn.callbacks.onToken(ev.data.text);
           return;
@@ -838,6 +981,9 @@ window.MastTerminal = (function () {
       const thinking = startThinking();
       let streaming = null;
       const pendingToolEls = [];
+      let searchEl = null;
+      let sourcesEl = null;
+      const seenSources = new Set();
 
       try {
         const result = await runPrompt(trimmed, {
@@ -855,13 +1001,19 @@ window.MastTerminal = (function () {
           onToolResult(server, tool, latencyMs, errMsg, resultJSON) {
             completeToolMessage(pendingToolEls.shift(), latencyMs, errMsg, resultJSON);
           },
-          onSearchQueries(q) {
+          onGroundingQuery(query) {
+            thinking.stop();
             streaming = null;
-            addBuiltinToolMessage('🔍 Search', Array.from(q));
+            if (!searchEl) searchEl = addSearchQueryRow();
+            appendSearchQuery(searchEl, query);
           },
-          onURLFetch(u) {
+          onGroundingSource(title, uri) {
+            thinking.stop();
             streaming = null;
-            addBuiltinToolMessage('🌐 URL fetched', Array.from(u));
+            if (seenSources.has(uri)) return;
+            seenSources.add(uri);
+            if (!sourcesEl) sourcesEl = addSourcesStrip();
+            appendSource(sourcesEl, title, uri);
           },
         });
         st.lastFooter = addTurnFooter(result);
@@ -914,6 +1066,13 @@ window.MastTerminal = (function () {
         input.blur();
         return;
       }
+      // A chord with alt / ctrl / meta is never text input, so it
+      // belongs to whichever shell is hosting this terminal — solo.html
+      // binds alt+1…9 to its tab strip, and the prompt has focus
+      // essentially always, so swallowing these would make the tab
+      // strip unreachable from the keyboard. Shift is deliberately not
+      // in the list: shift+arrow is selection.
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
       // Every other bare key the spatial shell binds to the camera
       // (arrows, r, +/-) belongs to the text field while it has focus.
       e.stopPropagation();

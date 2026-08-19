@@ -547,6 +547,12 @@ window.MastTerminal = (function () {
 
         case 'stream-chunk': {
           if (ev.replay) return; // replay flood, not this view's history
+          // Suppress the prompt echo, same as app.js: a real backend
+          // replays the prompt the model received as a user-authored
+          // frame ahead of the reply — [Inbox] wrapper and all — so
+          // rendering it puts the operator's own message inside the
+          // agent bubble. submit() has already drawn the real one.
+          if (ev.data.author === 'user') return;
           const turn = activeTurn || beginObserverTurn();
           if (turn.callbacks.onToken) turn.callbacks.onToken(ev.data.text);
           return;

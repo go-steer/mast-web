@@ -5,6 +5,7 @@ Design documentation for `mast-web`. The user-facing documentation site lives un
 ## Contents
 
 - **[`web-design.md`](./web-design.md)** — the architecture. Why a web UI, why thin-client-over-attach, what we reuse from cogo-wasm2 and what we don't, stack decisions, phase plan. Evergreen.
+- **[`shells-design.md`](./shells-design.md)** — the shell layer: a shared core with pluggable presentations (terminal console, chat, fleet dashboard, spatial) over one state model. Extends `web-design.md`; covers where a conversational surface belongs and why it isn't switchboard. Draft; folds back into `web-design.md` once the shell registry ships.
 - **[`web-bootstrap.md`](./web-bootstrap.md)** — the concrete plan for shipping phases A+B+C. Includes the CI conventions, project layout, doc migration plan, and the initial commit sequence. The repo-init portion has executed; phases A, B, C remain. This doc rots once they ship.
 - **[`site/`](./site/)** — the Hugo site, deployed to [`go-steer.github.io/mast-web`](https://go-steer.github.io/mast-web/).
 
@@ -15,6 +16,7 @@ mast-web is a sibling project of [`mast`](https://github.com/go-steer/mast) (doc
 | Doc | Location |
 |---|---|
 | **mast-web** design (here) | `mast-web/docs/web-design.md` |
+| **mast-web** shell architecture (here) | `mast-web/docs/shells-design.md` |
 | **mast-web** bootstrap (here) | `mast-web/docs/web-bootstrap.md` |
 | mast positioning | [`core-agent/docs/mast/positioning.md`](https://github.com/go-steer/mast/blob/main/docs/positioning.md) → eventually `mast/docs/` |
 | mast fork mechanics | [`core-agent/docs/mast/fork-design.md`](https://github.com/go-steer/mast/blob/main/docs/fork-design.md) → eventually `mast/docs/` |

@@ -26,17 +26,29 @@
 // (activeTurn, lastUserPrompt, usage totals, pending tool calls) lives
 // in the instance closure instead of module scope.
 //
-// It is deliberately a subset. Dropped, because they're workspace-level
-// concerns or don't fit in a 400px panel: the batch runner, all five
-// modals (setup / perms / shortcuts / palette / picker), client-side
-// slash commands, citation pills, the model picker, subagent and
-// guardrail drill-downs, session export, and the sidebar. Kept, because
-// they're what a terminal *is*: streaming markdown, tool-call rows with
+// What's here today: streaming markdown, tool-call rows with
 // click-to-expand results, turn footers, the thinking indicator,
 // interrupt, and observer-mode rendering of externally-driven turns.
 //
+// What isn't here yet, and should be: client-side slash commands,
+// citation pills, the model picker, subagent and guardrail drill-downs,
+// session export, the batch runner, and — the one that actually costs
+// you something — permission prompts. Nothing in the spatial shell
+// subscribes to /perms/stream, so an agent that asks for permission in
+// the room waits forever with no way to answer. These are unported, not
+// excluded. Parity with app.js is the target; a terminal in a panel
+// should not be a lesser terminal than one in a tab, and where a
+// feature needs a different presentation to fit the panel, that's a
+// design problem to solve rather than a reason to drop it.
+//
+// Genuinely not this file's job, because they belong to the shell
+// around the terminals rather than to any one of them: the sidebar and
+// the setup / shortcuts / palette / picker modals. spatial.js owns
+// those, the same way app.js does for the classic shell.
+//
 // Requires (load order): marked + marked-highlight + highlight.js from
-// CDN, then attach-core/{errors,protocol,replay,client}.js.
+// web/vendor/ — the CSP on spatial.html has no CDN in script-src — then
+// attach-core/{errors,protocol,replay,client}.js.
 //
 //   const term = MastTerminal.create({ endpoint: '/', sessionId: 'abc' });
 //   panelBody.appendChild(term.el);

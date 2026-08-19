@@ -50,8 +50,7 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-stage
 WORKDIR /src
 
 # Module deps first for layer caching.
-COPY go.mod ./
-# No go.sum yet — stdlib-only module. Add COPY go.sum ./ when external deps land.
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY cmd/ ./cmd/

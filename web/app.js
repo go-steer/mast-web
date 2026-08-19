@@ -932,10 +932,23 @@
           },
         };
         connectionStore.setActiveTurn(turn);
-        // Send the operator prompt and wake the agent.
+        // /inject alone. It reads like half the operation, but
+        // InjectAs already ends in RequestWake — operator input has to
+        // pierce an active sleep (core-agent pkg/agent/inbox.go) — so
+        // any *second* wake asks for a second turn. The wake channel
+        // is buffered(1) and coalescing, but the loop drains the first
+        // fire immediately, so the second lands in an empty buffer and
+        // runs a turn with nothing new in the inbox.
+        //
+        // Measured against a live core-agent, one prompt each:
+        //   POST /inject + POST /wake  → 2 turn-complete
+        //   POST /wake {prompt}        → 2 turn-complete
+        //   POST /inject               → 1 turn-complete
+        // The middle one is core-agent's own paired form (doWake calls
+        // InjectAs then RequestWake), so it carries the same double —
+        // switching endpoints doesn't help, only dropping the wake.
         Promise.resolve()
           .then(() => this.client.inject(text))
-          .then(() => this.client.wake())
           .catch((e) => activeTurn && activeTurn.finish(null, e));
       });
     },

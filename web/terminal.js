@@ -618,9 +618,10 @@ window.MastTerminal = (function () {
           },
         };
         activeTurn = turn;
+        // /inject only, no wake — see app.js's copy of this for the
+        // measurement showing any second wake runs a second turn.
         Promise.resolve()
           .then(() => client.inject(text))
-          .then(() => client.wake())
           .catch((e) => turn.finish(null, e));
       });
     }

@@ -154,6 +154,7 @@ window.MastTerminal = (function () {
     const pendingToolCallsByID = new Map();
     let activeTurn = null;
     let elapsedTimer = null;
+    let prompter = null;
 
     // ── DOM ──────────────────────────────────────────────────────────
 
@@ -265,6 +266,121 @@ window.MastTerminal = (function () {
 
     function addSystemMessage(text) {
       return addMessage('system', text, '');
+    }
+
+    // Slash output arrives as HTML from SlashRender, which escapes every
+    // interpolated value itself — see slash-render.js's escapeHTML.
+    function addSystemMessageHTML(html) {
+      const div = mk('div', 'message system cmd-output');
+      div.dataset.ts = nowStamp();
+      div.innerHTML = html;
+      out.appendChild(div);
+      scroll();
+      return div;
+    }
+
+    // ── Permission prompts ───────────────────────────────────────────
+    //
+    // app.js answers these in a global modal. A workspace can't reuse
+    // that: four panels can be prompted at once, and one modal has no
+    // way to say which session it speaks for — nor to hold the second
+    // request while the first is open. So the request renders inline,
+    // in the transcript of the terminal that raised it. The panel is
+    // already the thing that identifies the session, and scrollback
+    // gives a free record of what was asked and what was answered.
+    //
+    // Three buttons rather than app.js's two-plus-a-scope-checkbox.
+    // There the checkbox upgrades allow-once → allow-session-tool on
+    // submit; spelling both out is the same two decisions with one
+    // less piece of hidden state, which matters more on a card this
+    // small.
+
+    function addPermsRequest(frame) {
+      const div = mk('div', 'message perms-request');
+      div.dataset.promptId = frame.id;
+
+      const head = mk('div', 'msg-head');
+      head.appendChild(mk('span', 'msg-role', 'permission:'));
+      head.appendChild(mk('span', 'msg-time', '[' + nowStamp() + ']'));
+      div.appendChild(head);
+
+      div.appendChild(mk('div', 'perms-tool', frame.tool || frame.kind || 'tool'));
+      if (frame.detail) div.appendChild(mk('div', 'perms-detail', frame.detail));
+
+      const meta = [];
+      if (frame.verb) meta.push('verb ' + frame.verb);
+      if (frame.access) meta.push('access ' + frame.access);
+      if (frame.source) meta.push('source ' + frame.source);
+      if (meta.length) div.appendChild(mk('div', 'perms-meta', meta.join('  ·  ')));
+
+      // Wire-stable decision strings from core-agent/pkg/attach/
+      // prompter.go's DecisionFromWire mapping.
+      const actions = mk('div', 'perms-actions');
+      [
+        ['DENY', 'deny'],
+        ['ALLOW ONCE', 'allow-once'],
+        ['ALLOW SESSION', 'allow-session-tool'],
+      ].forEach(([label, decision]) => {
+        const b = mk('button', 'term-btn', label);
+        b.type = 'button';
+        b.addEventListener('click', () => resolvePermsRequest(div, frame, decision));
+        actions.appendChild(b);
+      });
+      div.appendChild(actions);
+
+      out.appendChild(div);
+      scroll();
+      return div;
+    }
+
+    // Records the decision in the card before the POST, not after: the
+    // operator gets immediate feedback, and a double-click can't send
+    // two responses for one frame.
+    async function resolvePermsRequest(div, frame, decision) {
+      if (div.dataset.resolved) return;
+      div.dataset.resolved = decision;
+      const actions = div.querySelector('.perms-actions');
+      if (actions) actions.replaceChildren(mk('span', 'perms-outcome', decision));
+      if (!prompter) return;
+      try {
+        await prompter.respond(frame.id, decision);
+      } catch (e) {
+        addSystemMessage(describeError(e, 'perms respond failed: '));
+      }
+    }
+
+    // The perms stream is a SECOND EventSource, opened alongside the
+    // main one and torn down with the terminal.
+    function openPromptStream() {
+      closePromptStream();
+      const Prompter = window.AttachCorePrompter && window.AttachCorePrompter.Prompter;
+      if (!Prompter) return;
+      prompter = new Prompter({
+        endpoint: endpoint,
+        token: token,
+        sessionId: st.sessionId,
+        onPrompt: (frame) => {
+          if (st.destroyed || !frame || !frame.id) return;
+          addPermsRequest(frame);
+        },
+        onTerminal: () => {
+          if (st.destroyed) return;
+          addSystemMessage(
+            'Perms stream unavailable — this agent does not support interactive prompts, or the stream permanently failed.'
+          );
+        },
+      });
+      prompter.connect();
+    }
+
+    function closePromptStream() {
+      if (!prompter) return;
+      try {
+        prompter.disconnect();
+      } catch {
+        /* best effort */
+      }
+      prompter = null;
     }
 
     function addTurnFooter(result) {
@@ -638,6 +754,61 @@ window.MastTerminal = (function () {
       });
     }
 
+    // ── Slash commands ───────────────────────────────────────────────
+    //
+    // Only the generic path: whatever the agent advertises in its
+    // capabilities frame is POSTed to /sessions/{sid}/slash/<name> and
+    // rendered through SlashRender. app.js additionally carries bespoke
+    // client-side handlers (/attach, /sessions, /model, …); those are
+    // still to port, and the workspace-scoped ones among them belong to
+    // the HUD rather than to any one panel.
+    //
+    // What this replaces is worse than a missing feature: a leading "/"
+    // used to fall through to client.inject(), so typing /tools sent the
+    // literal string to the model as chat.
+
+    async function runServerSlash(name, args) {
+      const body = args.length > 0 ? { args: args.join(' ') } : {};
+      const path =
+        '/sessions/' + encodeURIComponent(st.sessionId) + '/slash/' + encodeURIComponent(name);
+      try {
+        const res = await client._post(path, body);
+        if (window.SlashRender && typeof window.SlashRender.renderSlashResponse === 'function') {
+          addSystemMessageHTML(window.SlashRender.renderSlashResponse(res));
+        } else {
+          addSystemMessage(JSON.stringify(res, null, 2));
+        }
+      } catch (e) {
+        addSystemMessage(describeError(e, '/' + name + ' failed: '));
+      }
+    }
+
+    // Returns true when the input was a command and has been handled.
+    async function handleSlash(trimmed) {
+      const parts = trimmed.slice(1).split(/\s+/);
+      const name = parts[0];
+      const args = parts.slice(1);
+      const advertised = (st.capabilities && st.capabilities.slash_commands) || [];
+
+      if (name === 'help') {
+        const lines = ['/clear             — Clear this panel', '/help              — This list'];
+        if (advertised.length) {
+          lines.push('', 'Advertised by this agent:');
+          advertised.forEach((n) => lines.push('/' + n));
+        } else {
+          lines.push('', 'This agent advertises no slash commands.');
+        }
+        addSystemMessage(lines.join('\n'));
+        return true;
+      }
+      if (advertised.includes(name)) {
+        await runServerSlash(name, args);
+        return true;
+      }
+      addSystemMessage('Unknown command: /' + name + '. Type /help for available commands.');
+      return true;
+    }
+
     async function submit(text) {
       const trimmed = (text || '').trim();
       if (!trimmed || st.running) return;
@@ -651,6 +822,12 @@ window.MastTerminal = (function () {
       }
       if (st.connState !== 'connected') {
         addSystemMessage('Not connected.');
+        return;
+      }
+      if (trimmed.startsWith('/')) {
+        input.value = '';
+        syncInput();
+        await handleSlash(trimmed);
         return;
       }
 
@@ -766,6 +943,7 @@ window.MastTerminal = (function () {
             setPrefix();
           }
           await client.connect();
+          openPromptStream();
           addMessage(
             'system',
             'attached · ' + endpoint + ' · session ' + st.sessionId,
@@ -800,6 +978,7 @@ window.MastTerminal = (function () {
         if (st.destroyed) return;
         st.destroyed = true;
         stopElapsed();
+        closePromptStream();
         try {
           client.disconnect();
         } catch {

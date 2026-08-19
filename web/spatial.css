@@ -1001,6 +1001,50 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   overflow: auto;
 }
 
+/* Permission request card. app.js puts this in a modal; a workspace
+   answers it inline, in the panel that raised it — see terminal.js.
+   Bordered in the panel's own hue so a request reads as belonging to
+   one terminal even when the room is full of them. */
+.term .perms-request {
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--hue);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--hue) 8%, transparent);
+}
+
+.term .perms-tool {
+  font-weight: 600;
+  color: var(--hue);
+  word-break: break-all;
+}
+
+.term .perms-detail {
+  margin-top: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.term .perms-meta {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.term .perms-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.term .perms-outcome {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .term-input {
   flex: none;
   display: flex;

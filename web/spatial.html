@@ -140,6 +140,11 @@
     <script src="attach-core/client.js"></script>
     <script src="slash-render.js"></script>
     <script src="terminal.js"></script>
+    <!-- Shared with solo.html: the daemon registry + sidebar, and the
+         theme list. index.html is frozen and keeps its own copy of the
+         theme list in app.js. -->
+    <script src="theme.js"></script>
+    <script src="agents.js"></script>
     <!-- Spatial-only, and optional: spatial.js calls it through a guard,
          so a browser without Web Audio just gets a silent room. -->
     <script src="spatial-audio.js"></script>

@@ -3,3 +3,6 @@ node_modules/
 docs/site/public/
 docs/site/resources/
 web/wasm_exec.js
+# Third-party bundles, shipped byte-for-byte as published (see
+# web/vendor/README.md). Reformatting them would void the provenance check.
+web/vendor/

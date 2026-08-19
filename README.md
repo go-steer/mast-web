@@ -80,6 +80,21 @@ The container image bundles a tiny Go static-file server with the SPA and option
 | `API_PREFIX` | `/attach` | URL prefix routed to the backend proxy |
 | `BACKEND_TOKEN` | — | If set, the server injects `Authorization: Bearer <token>` into proxied requests; SPA carries no auth |
 
+For a **hosted, multi-user** install, proxy mode can also authenticate the human at its own edge and forward that identity to the agent as `X-Asserted-Caller`, so the browser holds no agent credential at all:
+
+| Env | Default | Purpose |
+|---|---|---|
+| `AUTH_MODE` | `none` | `none` \| `proxy-header` \| `iap-jwt`. Anything but `none` requires proxy mode |
+| `AUTH_HEADER` | — | Identity header for `proxy-header` mode; no default on purpose |
+| `IAP_AUDIENCE` | — | Expected `aud` for `iap-jwt` mode |
+| `BACKEND_AUTH` | `bearer` | `bearer` \| `google-oauth` \| `google-id-token` |
+| `BACKEND_AUDIENCE` | `$BACKEND_URL` | Audience for `google-id-token` |
+| `EXTERNAL_URL` | — | Canonical public origin; used by the CSRF check |
+| `SSE_MAX_LIFETIME` | `30m` | Cap on any proxied request, SSE included |
+| `ALLOW_UNAUTHENTICATED` | `false` | Acknowledge an open, non-loopback proxy |
+
+Note that a **remote cross-origin backend is not a supported shape**: neither `core-agent` nor `mast` emits CORS headers, so the browser blocks every response. Use a loopback backend or serve the SPA same-origin behind proxy mode. See [the deployment guide](./docs/site/content/docs/deployment.md) for IAP setup, header-trust caveats, and the backend-side configuration.
+
 ---
 
 ## Project layout

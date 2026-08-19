@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -49,7 +50,7 @@ func newMockServer(t *testing.T) *httptest.Server {
 		frameDelayMs: 0,
 		apiPrefix:    "/attach",
 	}
-	handler, err := buildMux(cfg)
+	handler, err := buildMux(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}

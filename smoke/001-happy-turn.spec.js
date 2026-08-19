@@ -37,4 +37,36 @@ test.describe('smoke: 001-happy-turn', () => {
     await expect(page.locator('#status-model')).toContainText('gemini-2.5-flash');
     await expect(page.locator('#status-turns')).toContainText('1');
   });
+
+  // Guard for the vendored browser bundles (web/vendor/). Two ways this
+  // has silently broken before and would again without an assertion:
+  // app.js:1666 gates highlighting behind `typeof hljs !== 'undefined'`,
+  // so a bundle that fails to evaluate disables syntax highlighting with
+  // no error anywhere; and the CSP added to index.html would block the
+  // scripts outright if a future edit reintroduced a cross-origin src.
+  test('vendored markdown + highlight bundles evaluate under the CSP', async ({ page }) => {
+    const violations = [];
+    page.on('console', (msg) => {
+      if (/Content Security Policy/i.test(msg.text())) violations.push(msg.text());
+    });
+
+    await connectToMock(page, '001-happy-turn');
+
+    const globals = await page.evaluate(() => ({
+      marked: typeof globalThis.marked,
+      markedHighlight: typeof globalThis.markedHighlight,
+      hljs: typeof globalThis.hljs,
+      // The real proof the bundle is a browser build and not the
+      // CommonJS entry point: it can actually highlight something.
+      highlighted: globalThis.hljs
+        ? globalThis.hljs.highlight('const x = 1;', { language: 'javascript' }).value
+        : '',
+    }));
+
+    expect(globals.marked).toBe('object');
+    expect(globals.markedHighlight).toBe('object');
+    expect(globals.hljs).toBe('object');
+    expect(globals.highlighted).toContain('hljs-keyword');
+    expect(violations).toEqual([]);
+  });
 });

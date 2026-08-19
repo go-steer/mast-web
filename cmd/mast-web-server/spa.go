@@ -30,10 +30,22 @@ import (
 // --web-dir sees reloads pick up edits without a hard-reload dance.
 // Production containers ship a versioned tag so cache-busting isn't
 // needed at the CDN layer either.
+//
+// Security headers: web/index.html carries a <meta> CSP so the policy
+// travels with the tarball / static-host deployment shapes too, but
+// browsers ignore frame-ancestors (and sandbox / report-uri) in meta.
+// Those only bind as real headers, so anti-framing is set here.
 func spaHandler(staticFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(staticFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		// Clickjacking: an operator console that can drive an agent
+		// must never be framable. X-Frame-Options is the legacy
+		// spelling kept for older browsers; CSP is authoritative.
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 
 		clean := path.Clean(r.URL.Path)
 		if clean == "/" {

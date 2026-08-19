@@ -228,11 +228,18 @@ window.AttachClient = (function () {
     // success; 403 on the bootstrap `default` session; SessionAdmin
     // required. All SSE subscribers see channel-close EOF.
     // See core-agent pkg/attach/handlers_delete_session.go.
+    //
+    // Content-Type is required even though DELETE carries no body:
+    // core-agent's browserWriteGuard (pkg/attach/csrf.go) rejects EVERY
+    // write method without `application/json` with a 415, and its error
+    // text calls out the body-less case explicitly. Omitting it here
+    // (while every other write site set it) made deleteSession 415
+    // against any real backend.
     async deleteSession(app, sid) {
       const path = '/sessions/' + encodeURIComponent(app) + '/' + encodeURIComponent(sid);
       const r = await fetch(this.endpoint + path, {
         method: 'DELETE',
-        headers: this._headers(),
+        headers: { ...this._headers(), 'Content-Type': 'application/json' },
       });
       if (!r.ok && r.status !== 204) {
         const text = await r.text();
@@ -256,10 +263,49 @@ window.AttachClient = (function () {
       }
     }
 
+    // Pick a session to attach to, creating one if the caller owns
+    // none yet.
+    //
+    // An empty list used to be treated as fatal, on the reading that
+    // it meant a daemon with no session store. That diagnosis is
+    // wrong for a hosted deployment: the agent scopes GET /sessions
+    // to the calling identity, so every user's FIRST visit lists zero
+    // sessions while the daemon is perfectly healthy. Dead-ending
+    // there means a new user can never get in.
+    //
+    // A daemon that genuinely can't make sessions answers 501 to the
+    // create (no SessionFactory configured), so the old advice
+    // survives as the fallback — now attached to the request that
+    // actually establishes it.
     async autoSelectSession() {
-      const sessions = await this.listSessions();
+      let sessions = await this.listSessions();
       if (sessions.length === 0) {
-        throw new Error('no sessions available on backend (start with --session-db)');
+        let created;
+        try {
+          created = await this.createSession();
+        } catch (e) {
+          throw new Error(
+            `no sessions available and none could be created: ${e.message} ` +
+              '(a daemon with no session store answers 501 — start it with --session-db)'
+          );
+        }
+        // Re-list so the returned object has the same shape every
+        // other consumer sees; fall back to the create response if
+        // the backend hasn't caught up.
+        sessions = await this.listSessions();
+        if (sessions.length === 0) {
+          sessions = [
+            {
+              id: created.id,
+              app: created.app,
+              user: created.user,
+              hasEventLog: false,
+              status: 'active',
+              lastTouchedAt: null,
+              label: created.id,
+            },
+          ];
+        }
       }
       this.sessionId = sessions[0].id;
       return sessions[0];
@@ -282,20 +328,28 @@ window.AttachClient = (function () {
       // and consumers suppress them from the transcript view.
       this._replayFilter = new ReplayFilter({});
       this.onConnectionState('connecting');
-      // EventSource doesn't support custom headers, so when auth is
-      // needed we tunnel the token as a URL query param. The server
-      // accepts ?access_token=… for SSE per the attach-mode auth
-      // contract (auth.go). Falls back to no-token for unauthenticated
-      // dev backends.
+      // NOTE: EventSource cannot set custom headers, so this stream
+      // carries NO bearer token. An earlier version tunnelled it as
+      // ?access_token=… and claimed auth.go accepted that — it does
+      // not. checkAttachToken (core-agent pkg/attach/auth.go) reads
+      // only X-Attach-Token and Authorization, never the query string,
+      // and `access_token` appears nowhere in core-agent or mast. The
+      // param authenticated nothing and only leaked the token into
+      // proxy access logs and Referer headers, so it's gone.
       //
-      // Also forward any ?fixture=<name> present on the SPA's own
+      // Consequence: against a token-protected backend reached
+      // cross-origin, this stream 401s. The supported answer is to run
+      // same-origin behind mast-web-server's proxy, where the browser
+      // sends cookies (or an upstream identity proxy asserts the
+      // caller) and no token needs to reach the browser at all.
+      //
+      // Still forwards any ?fixture=<name> present on the SPA's own
       // URL. The smoke-test mock backend switches fixtures on this
       // query — letting an operator reload with
       // https://.../?fixture=002-cost-ceiling-mid-turn hits the mock's
       // scenario switch without restarting `make smoke`. Real backends
       // ignore unknown query params, so this is safe as a pass-through.
       const params = new URLSearchParams();
-      if (this.token) params.set('access_token', this.token);
       try {
         if (typeof window !== 'undefined' && window.location && window.location.search) {
           const spaQuery = new URLSearchParams(window.location.search);

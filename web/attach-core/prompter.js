@@ -58,14 +58,15 @@ window.AttachCorePrompter = (function () {
       this._attempts = 0;
     }
 
-    // Build the /perms/stream URL. EventSource can't set custom
-    // headers, so the auth token rides as a query param (same pattern
-    // as the main /events stream). The path uses the sid shortcut
-    // form (no {app}) since that's what the main client uses.
+    // Build the /perms/stream URL. The path uses the sid shortcut form
+    // (no {app}) since that's what the main client uses.
+    //
+    // Carries no token: EventSource can't set headers, and the
+    // ?access_token= param this used to append authenticated nothing —
+    // core-agent's checkAttachToken reads only X-Attach-Token and
+    // Authorization. See the matching note in client.js connect().
     _streamURL() {
-      const base =
-        this.endpoint + '/sessions/' + encodeURIComponent(this.sessionId) + '/perms/stream';
-      return this.token ? base + '?access_token=' + encodeURIComponent(this.token) : base;
+      return this.endpoint + '/sessions/' + encodeURIComponent(this.sessionId) + '/perms/stream';
     }
 
     _headers() {

@@ -15,7 +15,7 @@
 # Convenience entrypoints. Real logic lives in dev/tools/.
 # Same scripts run locally and in CI — "green local = green remote."
 
-.PHONY: dev smoke build test lint format ci clean docs-serve
+.PHONY: dev smoke e2e build test lint format ci clean docs-serve
 
 # Local development server (serves web/ on :8000).
 dev:
@@ -28,6 +28,13 @@ dev:
 # See dev/tools/smoke for fixture selection + env overrides.
 smoke:
 	./dev/tools/smoke
+
+# Hosted multi-user end-to-end check against a REAL core-agent. Not
+# part of `make ci` — it needs an agent binary CI doesn't have. Point
+# it at one with CORE_AGENT_BIN=/path/to/core-agent, and add
+# KEEP_RUNNING=1 to leave a browsable two-user rig up afterwards.
+e2e:
+	./dev/tools/e2e-real-backend
 
 # Build the distributable static bundle into ./dist/.
 build:

@@ -122,6 +122,151 @@ describe('AttachClient', () => {
     });
   });
 
+  describe('discoverConfig — GET /config deployment descriptor', () => {
+    // The one shape the SPA is allowed to act on: proxy mode names the
+    // path the operator would otherwise have to type.
+    const proxyBody = {
+      mode: 'proxy',
+      api_prefix: '/attach',
+      multi_daemon: false,
+      backends: [],
+      auth: { mode: 'iap-jwt', authenticated: true, identity: 'alice@example.com' },
+    };
+    const ok = (body, status) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: status || 200,
+        json: () => Promise.resolve(body),
+      });
+
+    it('reads the proxy descriptor and hands back the API prefix', async () => {
+      globalThis.fetch = ok(proxyBody);
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(true);
+      expect(cfg.mode).toBe('proxy');
+      expect(cfg.endpoint).toBe('/attach');
+      expect(cfg.authMode).toBe('iap-jwt');
+      expect(cfg.authenticated).toBe(true);
+      expect(cfg.identity).toBe('alice@example.com');
+      expect(cfg.unauthenticated).toBe(false);
+    });
+
+    it('fetches the origin root, uncached, asking for JSON', async () => {
+      globalThis.fetch = ok(proxyBody);
+      await AttachClient.discoverConfig();
+      const [url, opts] = globalThis.fetch.mock.calls[0];
+      expect(url).toBe('/config');
+      expect(opts.cache).toBe('no-store');
+      expect(opts.headers).toEqual({ Accept: 'application/json' });
+    });
+
+    it('offers no endpoint in mock mode — same-origin is already the guess', async () => {
+      globalThis.fetch = ok({
+        mode: 'mock',
+        api_prefix: '',
+        auth: { mode: 'none', authenticated: true },
+      });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(true);
+      expect(cfg.mode).toBe('mock');
+      expect(cfg.endpoint).toBe('');
+    });
+
+    it('offers no endpoint in static mode — the operator picks the backend there', async () => {
+      globalThis.fetch = ok({
+        mode: 'static',
+        api_prefix: '/attach',
+        auth: { mode: 'none', authenticated: true },
+      });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.endpoint).toBe('');
+    });
+
+    it('offers no endpoint when proxy mode reports an empty prefix', async () => {
+      globalThis.fetch = ok({ mode: 'proxy', api_prefix: '', auth: { mode: 'none' } });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.endpoint).toBe('');
+    });
+
+    it('reports a 401 as an expired session, not as a missing endpoint', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: 'unauthenticated' }),
+      });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(false);
+      expect(cfg.status).toBe(401);
+      expect(cfg.unauthenticated).toBe(true);
+      expect(cfg.endpoint).toBe('');
+    });
+
+    it('treats a 404 as "nobody is describing this deployment"', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({}),
+      });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(false);
+      expect(cfg.unauthenticated).toBe(false);
+      expect(cfg.endpoint).toBe('');
+    });
+
+    it('survives a login page served with a 200', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+      });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(false);
+      expect(cfg.endpoint).toBe('');
+    });
+
+    it('survives a transport failure without rejecting', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(false);
+      expect(cfg.status).toBe(0);
+    });
+
+    it('gives up on a stalled /config rather than holding the boot', async () => {
+      globalThis.fetch = vi.fn().mockImplementation(
+        (_url, opts) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          })
+      );
+      const cfg = await AttachClient.discoverConfig({ timeoutMs: 5 });
+      expect(cfg.ok).toBe(false);
+      expect(cfg.status).toBe(0);
+    });
+
+    it('carries multi_daemon / backends through as the future seam', async () => {
+      globalThis.fetch = ok({
+        mode: 'proxy',
+        api_prefix: '/attach',
+        multi_daemon: true,
+        backends: [{ alias: 'prod', label: 'Production' }],
+        auth: { mode: 'proxy-header', authenticated: true, identity: 'bob@example.com' },
+      });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.multiDaemon).toBe(true);
+      expect(cfg.backends).toEqual([{ alias: 'prod', label: 'Production' }]);
+    });
+
+    it('tolerates a descriptor with no auth object at all', async () => {
+      globalThis.fetch = ok({ mode: 'proxy', api_prefix: '/attach' });
+      const cfg = await AttachClient.discoverConfig();
+      expect(cfg.ok).toBe(true);
+      expect(cfg.endpoint).toBe('/attach');
+      expect(cfg.authMode).toBe('');
+      expect(cfg.identity).toBe('');
+      expect(cfg.backends).toEqual([]);
+    });
+  });
+
   describe('session lifecycle', () => {
     it('createSession POSTs to /sessions and normalizes the response', async () => {
       const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });

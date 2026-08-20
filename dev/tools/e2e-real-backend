@@ -221,10 +221,13 @@ section "starting $AGENT_BIN on $AGENT_URL (model: $MODEL_PROVIDER/$MODEL_NAME)"
 ) >"$SCRATCH/agent.log" 2>&1 </dev/null &
 AGENT_PID=$!
 
-if [[ ! -f "$ROOT/internal/webui/dist/index.html" ]]; then
-  echo "▸ building SPA assets for go:embed…"
-  "$ROOT/dev/tools/build" >/dev/null
-fi
+# Unconditionally, not "if dist/ is missing". dev/tools/build is a
+# recursive copy of web/, so rebuilding costs nothing — while skipping
+# it costs an afternoon: the rig then serves whatever the SPA looked
+# like the first time anyone ran this, and every browser assertion is
+# about that build rather than the working tree.
+echo "▸ building SPA assets for go:embed…"
+"$ROOT/dev/tools/build" >/dev/null
 go build -o "$SCRATCH/mast-web-server" "$ROOT/cmd/mast-web-server"
 
 section "starting mast-web-server on $WEB_URL"
@@ -268,6 +271,11 @@ check_not_contains "leaks no auth mode"    'proxy-header' "$body"
 body="$(as_user alice@example.com "$WEB_URL/config")"
 check "reports the auth mode to a verified caller" "proxy-header" "$(printf '%s' "$body" | json mode | tail -1)"
 check_contains "reports the caller once identified" '"identity":"alice@example.com"' "$body"
+# The pair the SPA boots on: it attaches to api_prefix, but only
+# because mode says proxy. Asserted together — '"mode":"proxy"' alone
+# also matches the auth block's "proxy-header" — and if either is wrong
+# the hosted install has a first-run step again.
+check_contains "names the prefix the SPA boots on" '{"mode":"proxy","api_prefix":"/attach"' "$body"
 check "health probes stay open" "200" "$(status_of "$WEB_URL/healthz")"
 
 # ── 2. identity reaches the agent ────────────────────────────────────
@@ -484,7 +492,7 @@ cat <<EOF
 
 $(printf '%s\n' "${FRONT_URLS[@]}")
 
- In the setup modal: endpoint  /attach   token  (leave blank)
+ No setup step: the SPA reads /attach off GET /config and attaches.
 
  The browser holds no agent credential. mast-web-server injects the
  service token and asserts your identity; core-agent's ACLs do the

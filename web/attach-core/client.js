@@ -48,6 +48,11 @@
 //   GET  /sessions/{sid}/guardrails             → watchdog / cost-ceiling state
 //   POST /sessions/{sid}/guardrails/reset       → operator reset
 //
+// One endpoint is NOT under <endpoint>: GET /config, on the origin
+// root, served by mast-web-server rather than by the agent. It is what
+// tells the SPA where <endpoint> is in the first place, so it is a
+// static on the class — see discoverConfig.
+//
 // SSE event types (per spec v1.4.0 §2):
 //   capabilities    — first frame; protocol_version + event_types +
 //                     server + (since 1.4.0) features / slash_commands
@@ -96,6 +101,68 @@ window.AttachClient = (function () {
     );
   }
 
+  // ─── Deployment discovery (GET /config) ─────────────────────────────
+  //
+  // mast-web-server registers /config at the origin root in every mode.
+  // A SPA served by anything else — the static tarball shape — gets a
+  // 404 here, which is a fine answer: it means "nobody is describing
+  // this deployment", and every caller already has a fallback for that.
+  const CONFIG_PATH = '/config';
+  // A /config that never answers must not hold the whole boot. The
+  // fallback costs nothing, so give up early rather than late.
+  const CONFIG_TIMEOUT_MS = 4000;
+
+  // The descriptor for "the deployment did not describe itself". Every
+  // field is present and inert, so callers can read cfg.endpoint or
+  // cfg.identity without first checking cfg.ok.
+  function noConfig(status) {
+    return {
+      ok: false,
+      status: status || 0,
+      // A 401 is the one failure that means something specific: the
+      // deployment does authenticate, and this browser's session has
+      // expired. Reloading the document is the recovery — the SPA
+      // could not have loaded at all without clearing auth once.
+      unauthenticated: status === 401,
+      mode: '',
+      endpoint: '',
+      multiDaemon: false,
+      backends: [],
+      authMode: '',
+      authenticated: false,
+      identity: '',
+      loginUrl: '',
+      logoutUrl: '',
+    };
+  }
+
+  function readConfig(body, status) {
+    const auth = body.auth && typeof body.auth === 'object' ? body.auth : {};
+    const str = (v) => (typeof v === 'string' ? v : '');
+    const mode = str(body.mode);
+    const prefix = str(body.api_prefix);
+    return {
+      ok: true,
+      status: status,
+      unauthenticated: false,
+      mode: mode,
+      // Only proxy mode knows where the API is, and only proxy mode is
+      // asked. mock serves it at the origin root, which is already the
+      // registry's first guess; static reports no prefix on purpose,
+      // because there the operator picks the backend — overriding that
+      // from here would be this file inventing a policy the server
+      // deliberately declined to state.
+      endpoint: mode === 'proxy' && prefix ? prefix : '',
+      multiDaemon: !!body.multi_daemon,
+      backends: Array.isArray(body.backends) ? body.backends : [],
+      authMode: str(auth.mode),
+      authenticated: !!auth.authenticated,
+      identity: str(auth.identity),
+      loginUrl: str(auth.login_url),
+      logoutUrl: str(auth.logout_url),
+    };
+  }
+
   // Builds a BackendDrainingError from a 503 response, extracting the
   // Retry-After header (seconds) when present. Shared by every write
   // call that can hit routeSessionDrainGated server-side.
@@ -125,6 +192,54 @@ window.AttachClient = (function () {
       // events after a switch. Ported concept from core-tui's
       // agentcmd.go:229 (sessionGen uint64 drop-on-mismatch pattern).
       this.sessionGen = 0;
+    }
+
+    // ─── Deployment discovery ────────────────────────────────────────
+
+    // GET /config — how the SPA learns what kind of deployment is
+    // serving it, before it has a backend to ask. Static because there
+    // is nothing to construct yet: the whole point is to find out what
+    // endpoint an AttachClient should be pointed at.
+    //
+    // Never rejects. Every way this can fail — no such endpoint, a
+    // login page where JSON was expected, a stalled fetch, an expired
+    // session — resolves to a descriptor with ok:false, because the
+    // caller's answer in all of those cases is the same one: keep
+    // today's behavior and let the operator say where the backend is.
+    // A bootstrap step that can throw would turn "this deployment
+    // doesn't describe itself" into "this SPA doesn't start".
+    static async discoverConfig(opts) {
+      const o = opts || {};
+      const url = o.url || CONFIG_PATH;
+      const ms = typeof o.timeoutMs === 'number' ? o.timeoutMs : CONFIG_TIMEOUT_MS;
+      const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = ctl ? setTimeout(() => ctl.abort(), ms) : 0;
+      try {
+        const r = await fetch(url, {
+          headers: { Accept: 'application/json' },
+          // The body carries this caller's identity; a cached copy is
+          // either stale or someone else's. The server says no-store
+          // too — this is the half of that the browser controls.
+          cache: 'no-store',
+          signal: ctl ? ctl.signal : undefined,
+        });
+        if (!r.ok) return noConfig(r.status);
+        let body = null;
+        try {
+          body = await r.json();
+        } catch {
+          // An HTML login page with a 200 is the classic
+          // misconfiguration, and parsing it is where a naive
+          // bootstrap dies.
+          return noConfig(r.status);
+        }
+        if (!body || typeof body !== 'object') return noConfig(r.status);
+        return readConfig(body, r.status);
+      } catch {
+        return noConfig(0);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
 
     // ─── HTTP helpers ────────────────────────────────────────────────

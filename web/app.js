@@ -429,15 +429,25 @@
     }
   }
 
+  // Endpoints this boot learned from GET /config rather than from the
+  // operator. They are re-derived on every boot, so writing one back
+  // would freeze a deployment detail the deployment is the authority
+  // on — in a storage key the 3D shells read too, where a stale row
+  // outranks discovery and there is no setup modal to repair it.
+  const derivedEndpoints = new Set();
+
   function persistDaemons() {
     // Snapshot from the store (drop live refs; they don't round-trip
     // through JSON anyway). Preserves add order via listDaemons().
-    const rows = daemonsStore.listDaemons().map((d) => ({
-      endpoint: d.endpoint,
-      token: d.token || '',
-      alias: d.alias || '',
-      addedAt: d.addedAt || '',
-    }));
+    const rows = daemonsStore
+      .listDaemons()
+      .filter((d) => !derivedEndpoints.has(d.endpoint))
+      .map((d) => ({
+        endpoint: d.endpoint,
+        token: d.token || '',
+        alias: d.alias || '',
+        addedAt: d.addedAt || '',
+      }));
     try {
       localStorage.setItem('mast-web:daemons', JSON.stringify(rows));
     } catch (e) {
@@ -473,13 +483,20 @@
     // Sidebar aggregation (updateSessionList) walks the registry and
     // renders every daemon's sessions grouped by daemon alias.
 
-    async addDaemon({ endpoint, token, alias, makeActive }) {
+    async addDaemon({ endpoint, token, alias, makeActive, derived }) {
       if (typeof window.AttachClient !== 'function') {
         throw new Error(
           'AttachClient global missing — check that attach-client.js loaded before app.js'
         );
       }
       if (!endpoint) throw new Error('addDaemon: endpoint required');
+      // Every add says whether the operator chose this endpoint or the
+      // deployment described it; persistDaemons writes back only the
+      // former. Setting it on both branches matters — typing the
+      // discovered path into the setup modal is how a derived row
+      // becomes a chosen one.
+      if (derived) derivedEndpoints.add(endpoint);
+      else derivedEndpoints.delete(endpoint);
 
       // Register optimistically so the sidebar shows a "connecting"
       // row immediately. Overwritten with live refs post-connect.
@@ -1447,6 +1464,57 @@
       return true;
     }
     return false;
+  }
+
+  // Everything GET /config changes about the shell short of which
+  // daemon to attach — that decision stays in boot(), because it has
+  // to lose to a stored one and this doesn't.
+  //
+  // index.html is not editable, so this only ever toggles and fills
+  // markup that is already there.
+  function applySiteConfig(site) {
+    if (!site) return;
+
+    // The BFF knows who this is before any backend does, and says so
+    // on the first request the SPA makes. Anything richer — proxy_by,
+    // admin — still arrives later from capabilities / whoami and
+    // overwrites this; a name on screen at boot beats the "identity
+    // pending" placeholder that used to sit there until then.
+    if (site.identity) {
+      const el = document.getElementById('identity-info');
+      if (el) el.textContent = site.identity;
+    }
+
+    // A 401 from /config in a deployment whose document request must
+    // already have cleared auth means one thing: the session expired
+    // while this tab was open. Nothing the SPA can do about it, and
+    // exactly one thing the operator can.
+    if (site.unauthenticated) {
+      addSystemMessage(
+        'Your session with this server has expired. Reload the page to sign in again.'
+      );
+    }
+
+    if (site.endpoint) {
+      const ep = document.getElementById('setup-endpoint');
+      if (ep) ep.value = site.endpoint;
+    }
+
+    // Behind an authenticating proxy the token box is worse than
+    // useless: the proxy strips Authorization / X-Attach-Token off
+    // every request it forwards, so anything typed here is scrubbed
+    // in flight and the failure reads as a bad token.
+    if (site.authMode && site.authMode !== 'none') {
+      ['setup-token', 'setup-token-source'].forEach((id) => {
+        const label = document.querySelector('label[for="' + id + '"]');
+        if (label) label.hidden = true;
+      });
+      const tok = document.getElementById('setup-token');
+      if (tok) {
+        tok.hidden = true;
+        tok.value = '';
+      }
+    }
   }
 
   // ─── Message rendering ─────────────────────────────────────────────
@@ -2559,11 +2627,14 @@
     renderHUD();
   }
 
-  function updateBackendInfo() {
+  // `fallback` is for the endpoint nobody stored because nobody typed
+  // it — a discovered one. Without it the sidebar reads "Not
+  // configured" next to a live connection.
+  function updateBackendInfo(fallback) {
     const cfg = getStoredConfig();
     const el = document.getElementById('backend-info');
     if (!el) return;
-    el.textContent = cfg && cfg.endpoint ? cfg.endpoint : 'Not configured';
+    el.textContent = (cfg && cfg.endpoint) || fallback || 'Not configured';
   }
 
   function updateStatusBar() {
@@ -4196,6 +4267,14 @@
     updateBackendInfo();
     setConnectionState('disconnected');
 
+    // Ask the deployment to describe itself before doing anything that
+    // depends on knowing what it is. This is the only way the SPA can
+    // tell "a backend I have to be pointed at" from "a BFF that has
+    // already authenticated me and holds the agent credential itself",
+    // and the two want visibly different first runs.
+    const site = await window.AttachClient.discoverConfig();
+    applySiteConfig(site);
+
     // v0.3.0: hydrate the full daemon registry from localStorage.
     // On upgrade from a v0.2.x SPA the daemons array may be empty
     // but the legacy single-daemon config is present; seed the
@@ -4213,6 +4292,25 @@
           },
         ];
       }
+    }
+
+    // Nothing stored, but the deployment named its API prefix — so
+    // there is nothing to ask the operator. The setup modal exists to
+    // learn an address; behind a BFF the address is not the operator's
+    // to know, and making them guess `/attach` was the last manual
+    // step in an otherwise hands-off hosted install.
+    let derived = false;
+    if (daemonsList.length === 0 && site.endpoint) {
+      derived = true;
+      daemonsList = [
+        {
+          endpoint: site.endpoint,
+          token: '',
+          alias: aliasFor(site.endpoint),
+          addedAt: nowISO(),
+        },
+      ];
+      updateBackendInfo(site.endpoint);
     }
 
     if (daemonsList.length === 0) {
@@ -4234,6 +4332,7 @@
             token: row.token || '',
             alias: row.alias || aliasFor(row.endpoint),
             makeActive: idx === 0,
+            derived: derived,
           })
           .then(
             () => ({ ok: true, endpoint: row.endpoint }),

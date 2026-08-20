@@ -1019,6 +1019,34 @@ describe('AttachClient', () => {
       });
     });
 
+    it('carries the frame timestamp through, for rows drawn as history', () => {
+      const events = [];
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        onEvent: (e) => events.push(e),
+      });
+      client._fanoutAgentFrame(
+        { event: { Author: 'assistant', Content: { parts: [{ text: 'hi' }] } } },
+        0,
+        true,
+        '2026-07-20T12:00:00Z'
+      );
+      expect(events[0].replay).toBe(true);
+      expect(events[0].ts).toBe('2026-07-20T12:00:00Z');
+    });
+
+    it('omits ts entirely on an unstamped frame (live event shape is unchanged)', () => {
+      const events = [];
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        onEvent: (e) => events.push(e),
+      });
+      client._fanoutAgentFrame({
+        event: { Author: 'assistant', Content: { parts: [{ text: 'hi' }] } },
+      });
+      expect('ts' in events[0]).toBe(false);
+    });
+
     it('silently ignores frames with no Content/parts', () => {
       const events = [];
       const client = new AttachClient({

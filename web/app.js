@@ -918,8 +918,10 @@
       // activeTurn — its finish() clears the slot, and clearing it
       // after this one has claimed it would strand the new turn. The
       // batch runner reaches runPrompt without going through
-      // submitPrompt, so the guard belongs here too.
+      // submitPrompt, so the guard belongs here too — and so does
+      // settling the replayed history above it.
       flushTurnClose();
+      drawHistory();
       // Set up the per-turn dispatch hooks. The SSE router calls these
       // as events arrive; the Promise resolves on turn-complete (or
       // rejects on turn-error). startedAt is used to compute totalMs.
@@ -1285,9 +1287,16 @@
       }
 
       case 'stream-chunk': {
-        // Suppress replay-flood tokens from the transcript. Aggregate
-        // state (usage etc.) isn't affected by stream-chunk anyway.
-        if (ev.replay) return;
+        // History, not the live stream: buffered and drawn above it,
+        // rather than flooding the transcript. Aggregate state (usage
+        // etc.) isn't affected by stream-chunk anyway.
+        if (ev.replay) {
+          bufferReplay(ev);
+          return;
+        }
+        // …and the first live frame is what says the history ends
+        // here, whatever the settle timer thinks.
+        drawHistory();
         // Suppress the prompt echo. A real backend replays the prompt
         // the model received as a user-authored agent frame ahead of
         // the reply — [Inbox] wrapper and all — so rendering it puts
@@ -1337,7 +1346,11 @@
       }
 
       case 'tool-call': {
-        if (ev.replay) return; // historical tool call, not for this session's view
+        if (ev.replay) {
+          bufferReplay(ev);
+          return;
+        }
+        drawHistory();
         let turn = activeTurn;
         if (!turn) turn = beginObserverTurn();
         if (!turn || !turn.callbacks.onToolCall) return;
@@ -1353,7 +1366,11 @@
       }
 
       case 'tool-result': {
-        if (ev.replay) return; // historical tool result, not for this session's view
+        if (ev.replay) {
+          bufferReplay(ev);
+          return;
+        }
+        drawHistory();
         if (!activeTurn || !activeTurn.callbacks.onToolResult) return;
         const { id, name, response, latencyMs } = ev.data;
         const idx = (name || '').indexOf('_');
@@ -1436,13 +1453,55 @@
 
   const outputArea = document.getElementById('output-area');
 
+  // Rows land at the bottom of the live transcript. The replayed
+  // history block is the one exception: it draws with these same
+  // helpers, into its own container, stamped with the wire's clock
+  // instead of this one's. Redirecting the two things every helper
+  // does — where it puts the row, what time it claims — keeps that
+  // from becoming a second copy of the renderer.
+  let sink = outputArea;
+  let sinkStamp = null;
+
+  function place(el) {
+    sink.appendChild(el);
+  }
+
+  function scrollOut() {
+    // Drawing off to one side; the live view hasn't moved.
+    if (sink !== outputArea) return;
+    outputArea.scrollTop = outputArea.scrollHeight;
+  }
+
+  function withSink(target, fn) {
+    const prev = sink;
+    sink = target;
+    try {
+      fn();
+    } finally {
+      sink = prev;
+      sinkStamp = null;
+    }
+  }
+
   // Wall-clock stamp for transcript rows: `14:02:15`. Local time —
   // the operator correlates these against their own logs and their
   // own clock, not against the daemon's.
-  function nowStamp() {
-    const d = new Date();
+  function clockStamp(d) {
     const p = (n) => String(n).padStart(2, '0');
     return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function nowStamp() {
+    return sinkStamp || clockStamp(new Date());
+  }
+
+  // A replayed row is drawn now but happened then, so it wears the
+  // wire's clock. Null for a frame the server left unstamped — the
+  // caller falls back to the wall clock rather than showing nothing.
+  function wireStamp(ts) {
+    if (!ts) return null;
+    const d = new Date(ts);
+    return Number.isNaN(Number(d)) ? null : clockStamp(d);
   }
 
   // `ROLE: [hh:mm:ss]` header shared by user + assistant rows.
@@ -1480,15 +1539,18 @@
       div.dataset.ts = nowStamp();
       div.textContent = content;
     }
-    outputArea.appendChild(div);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(div);
+    scrollOut();
     return div;
   }
 
   // Bracketed [COPY] [RETRY] chips under an assistant row. `getText`
   // is a thunk because a streaming row's final text isn't known when
-  // the chips are attached.
-  function addMessageActions(el, textOrGetter) {
+  // the chips are attached. `allowRetry` is false for a replayed row:
+  // RETRY re-sends lastUserPrompt, which is this view's last prompt
+  // and has nothing to do with a reply the log remembers from before
+  // we attached.
+  function addMessageActions(el, textOrGetter, allowRetry) {
     const text = () => (typeof textOrGetter === 'function' ? textOrGetter() : textOrGetter);
     const row = document.createElement('div');
     row.className = 'msg-actions';
@@ -1513,17 +1575,20 @@
       }
     });
 
-    const retry = document.createElement('button');
-    retry.className = 'msg-action';
-    retry.textContent = 'RETRY';
-    retry.title = 'Re-send the prompt that produced this response';
-    retry.addEventListener('click', () => {
-      if (!lastUserPrompt || isRunning) return;
-      submitPrompt(lastUserPrompt);
-    });
-
     row.appendChild(copy);
-    row.appendChild(retry);
+
+    if (allowRetry !== false) {
+      const retry = document.createElement('button');
+      retry.className = 'msg-action';
+      retry.textContent = 'RETRY';
+      retry.title = 'Re-send the prompt that produced this response';
+      retry.addEventListener('click', () => {
+        if (!lastUserPrompt || isRunning) return;
+        submitPrompt(lastUserPrompt);
+      });
+      row.appendChild(retry);
+    }
+
     el.appendChild(row);
   }
 
@@ -1548,8 +1613,8 @@
     div.className = 'message system cmd-output';
     div.dataset.ts = nowStamp();
     div.innerHTML = html;
-    outputArea.appendChild(div);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(div);
+    scrollOut();
   }
 
   // The most recent usage-update.last_turn, held until a turn-complete
@@ -1585,8 +1650,8 @@
     div.dataset.tokensOut = String(tokensOut);
     div.dataset.costUsd = String(cost);
     renderTurnFooter(div);
-    outputArea.appendChild(div);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(div);
+    scrollOut();
     return div;
   }
 
@@ -1666,8 +1731,8 @@
     div.appendChild(ts);
     div.appendChild(labelSpan);
     div.appendChild(code);
-    outputArea.appendChild(div);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(div);
+    scrollOut();
     return div;
   }
 
@@ -1675,7 +1740,7 @@
     if (!el) return;
     const code = el.querySelector('code');
     code.textContent = code.textContent ? code.textContent + '  ·  ' + query : query;
-    outputArea.scrollTop = outputArea.scrollHeight;
+    scrollOut();
   }
 
   function addSourcesStrip() {
@@ -1685,8 +1750,8 @@
     label.className = 'citation-sources-label';
     label.textContent = 'Sources:';
     div.appendChild(label);
-    outputArea.appendChild(div);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(div);
+    scrollOut();
     return div;
   }
 
@@ -1711,7 +1776,7 @@
     }
     a.textContent = '[' + (el.querySelectorAll('a').length + 1) + '] ' + label;
     el.appendChild(a);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    scrollOut();
   }
 
   function addToolPendingMessage(server, tool) {
@@ -1732,8 +1797,8 @@
       '</code>' +
       '<span class="tool-latency"></span>';
     div.appendChild(headerRow);
-    outputArea.appendChild(div);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(div);
+    scrollOut();
     return div;
   }
 
@@ -1782,18 +1847,18 @@
     });
   }
 
-  function createStreamingMessage() {
+  function createStreamingMessage(allowRetry) {
     const div = document.createElement('div');
     div.className = 'message assistant';
     div.appendChild(makeMsgHead('AGENT'));
     const md = document.createElement('div');
     md.className = 'md-content';
     div.appendChild(md);
-    outputArea.appendChild(div);
+    place(div);
     const ref = { el: div, md: md, text: '' };
     // Chips read the accumulated text at click time — the row is
     // still streaming when they're attached.
-    addMessageActions(div, () => ref.text);
+    addMessageActions(div, () => ref.text, allowRetry);
     return ref;
   }
 
@@ -1809,8 +1874,8 @@
     el.className = 'thinking';
     const pick = () => thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
     el.textContent = pick();
-    outputArea.appendChild(el);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    place(el);
+    scrollOut();
     const interval = setInterval(() => {
       el.textContent = pick();
     }, 5000);
@@ -1825,7 +1890,254 @@
   function updateStreamingMessage(msg, token) {
     msg.text += token;
     msg.md.innerHTML = renderMarkdown(msg.text);
-    outputArea.scrollTop = outputArea.scrollHeight;
+    scrollOut();
+  }
+
+  // ─── Replayed history ──────────────────────────────────────────────
+  //
+  // Attaching to a session that has already been running re-streams its
+  // whole eventlog at us. Those frames arrive tagged replay:true and
+  // used to be dropped on the floor, which is why a reload showed an
+  // empty transcript over a session mid-conversation (#51).
+  //
+  // They are drawn instead, above the live stream, dimmed and closed by
+  // a rule: this happened before you got here. Only the newest few
+  // turns to begin with — the rest sits in the buffer until asked for,
+  // and there is nothing to re-fetch because the server already sent
+  // all of it (see AttachCoreReplay.ReplayHistory). No footers, because
+  // the log carries no turn-complete to measure and an invented
+  // duration is worse than none.
+  //
+  // terminal.js carries the same ~120 lines: index.html is frozen and
+  // cannot gain a script tag, so the two shells share what fits in
+  // attach-core (the buffer, the [Inbox] unwrapping) and duplicate the
+  // rendering, the same way they already duplicate the theme list.
+
+  const HISTORY_TURNS_INITIAL = 3;
+  const HISTORY_TURNS_MORE = 5;
+
+  // Scrolling to within this much of the top asks for more, the way a
+  // chat app does. The button says the same thing out loud, for anyone
+  // arriving by keyboard or not thinking to try.
+  const HISTORY_SCROLL_TRIGGER_PX = 24;
+
+  // The replay burst is over when the first live frame arrives, or when
+  // it has been quiet this long — whichever comes first. Generous,
+  // because firing mid-burst cuts history off early; the cost of being
+  // wrong the other way is a beat of delay on a session that has
+  // nothing else to say.
+  const HISTORY_SETTLE_MS = 600;
+
+  const replayView = {
+    buf: new window.AttachCoreReplay.ReplayHistory({}),
+    el: null,
+    body: null,
+    more: null,
+    timer: null,
+    // Transcript geometry as of the last scroll event — see
+    // onHistoryScroll.
+    geom: '',
+    // Set once the block has been drawn (or given up on). After that
+    // replay frames go back to being dropped: EventSource reconnects on
+    // its own and re-streams the same log, and a second copy of the
+    // conversation is worse than a missing tail.
+    sealed: false,
+  };
+
+  function bufferReplay(ev) {
+    if (replayView.sealed) return;
+    replayView.buf.push(ev);
+    clearTimeout(replayView.timer);
+    replayView.timer = setTimeout(drawHistory, HISTORY_SETTLE_MS);
+  }
+
+  function drawHistory() {
+    if (replayView.sealed) return;
+    replayView.sealed = true;
+    clearTimeout(replayView.timer);
+    replayView.timer = null;
+    const turns = replayView.buf.newest(HISTORY_TURNS_INITIAL);
+    if (!turns.length) return;
+
+    const block = document.createElement('div');
+    block.className = 'replay-history';
+    const more = document.createElement('button');
+    more.className = 'history-more';
+    more.type = 'button';
+    more.addEventListener('click', showEarlierHistory);
+    const body = document.createElement('div');
+    body.className = 'history-body';
+    const rule = document.createElement('div');
+    rule.className = 'history-rule';
+    const label = document.createElement('span');
+    label.className = 'history-rule-label';
+    label.textContent = 'earlier in this session';
+    rule.appendChild(label);
+    block.appendChild(more);
+    block.appendChild(body);
+    block.appendChild(rule);
+    // Above everything the live stream has drawn — including the
+    // connection notices, which is the moment this history stops. Below
+    // the boot banner, though: that is the view's own furniture rather
+    // than anything the session said, and a transcript that opens with
+    // old conversation and *then* shows its logo reads backwards.
+    const banner = outputArea.querySelector('.boot-banner');
+    outputArea.insertBefore(block, banner ? banner.nextSibling : outputArea.firstChild);
+    replayView.el = block;
+    replayView.body = body;
+    replayView.more = more;
+
+    turns.forEach((t) => body.appendChild(renderHistoryTurn(t)));
+    updateHistoryMore();
+    outputArea.addEventListener('scroll', onHistoryScroll);
+    scrollOut();
+  }
+
+  function updateHistoryMore() {
+    const older = replayView.buf.olderCount;
+    if (older > 0) {
+      const n = Math.min(HISTORY_TURNS_MORE, older);
+      replayView.more.disabled = false;
+      replayView.more.textContent =
+        '▲ show ' + n + (n === 1 ? ' earlier turn' : ' earlier turns') + ' · ' + older + ' left';
+      return;
+    }
+    // Nothing older left to hand back. Which kind of nothing matters:
+    // the buffer is capped, and a session long enough to hit the cap
+    // should not be told its history begins where our memory does.
+    replayView.more.disabled = true;
+    replayView.more.textContent = replayView.buf.truncated
+      ? '· earlier history not kept ·'
+      : '· start of this session ·';
+  }
+
+  function showEarlierHistory() {
+    const turns = replayView.buf.earlier(HISTORY_TURNS_MORE);
+    if (!turns.length) {
+      updateHistoryMore();
+      return;
+    }
+    // Grow upward without moving what the operator is reading: the
+    // transcript keeps its scroll position by taking on exactly the
+    // height that appeared above it.
+    const wasHeight = outputArea.scrollHeight;
+    const wasTop = outputArea.scrollTop;
+    const frag = document.createDocumentFragment();
+    turns.forEach((t) => frag.appendChild(renderHistoryTurn(t)));
+    replayView.body.insertBefore(frag, replayView.body.firstChild);
+    outputArea.scrollTop = wasTop + (outputArea.scrollHeight - wasHeight);
+    updateHistoryMore();
+  }
+
+  function onHistoryScroll() {
+    // Only a deliberate trip to the top counts, and most trips there are
+    // not deliberate. Two ways the transcript arrives at its own top
+    // without anyone asking:
+    //
+    //   - it fits on screen, so scrollTop is 0 and stays 0;
+    //   - the viewport grew. When the browser clamps scrollTop to the
+    //     new maximum, a transcript parked at the bottom can land at the
+    //     top and fire a scroll event nobody caused.
+    //
+    // So: ignore an unscrollable transcript, and ignore the first scroll
+    // after the geometry moved — that one is the layout settling, not a
+    // gesture.
+    const geom = outputArea.scrollHeight + 'x' + outputArea.clientHeight;
+    const settled = geom === replayView.geom;
+    replayView.geom = geom;
+    if (!replayView.more || replayView.more.disabled) return;
+    if (!settled || outputArea.scrollHeight <= outputArea.clientHeight) return;
+    if (outputArea.scrollTop > HISTORY_SCROLL_TRIGGER_PX) return;
+    showEarlierHistory();
+  }
+
+  // One turn of replayed log, rendered with the live helpers into a
+  // detached container — see withSink. Deliberately not routed through
+  // beginObserverTurn: an observer turn owns activeTurn and ends in a
+  // footer, and this is neither active nor timed.
+  function renderHistoryTurn(turn) {
+    const el = document.createElement('div');
+    el.className = 'history-turn';
+    let streaming = null;
+    const pendingToolEls = [];
+    let searchEl = null;
+    let sourcesEl = null;
+    const seenSources = new Set();
+
+    withSink(el, () => {
+      turn.events.forEach((ev) => {
+        sinkStamp = wireStamp(ev.ts);
+        const d = ev.data || {};
+        switch (ev.type) {
+          case 'stream-chunk': {
+            if (d.author === 'user') {
+              // Live, this echo is suppressed — submitPrompt has
+              // already drawn the operator's own copy. Replayed, it is
+              // the only record of the prompt there is, so it is drawn,
+              // minus the delivery wrapper.
+              streaming = null;
+              addMessage('user', window.AttachCoreReplay.stripInboxWrapper(d.text));
+              return;
+            }
+            if (d.author === GROUNDING_AUTHOR) {
+              const line = parseGroundingLine(d.text);
+              if (line) {
+                streaming = null;
+                if (line.query !== undefined) {
+                  if (!searchEl) searchEl = addSearchQueryRow();
+                  appendSearchQuery(searchEl, line.query);
+                } else if (!seenSources.has(line.uri)) {
+                  seenSources.add(line.uri);
+                  if (!sourcesEl) sourcesEl = addSourcesStrip();
+                  appendSource(sourcesEl, line.title, line.uri);
+                }
+                return;
+              }
+            }
+            if (!streaming) streaming = createStreamingMessage(false);
+            updateStreamingMessage(streaming, d.text || '');
+            return;
+          }
+          case 'tool-call': {
+            streaming = null;
+            const name = d.name || '';
+            const idx = name.indexOf('_');
+            pendingToolEls.push(
+              addToolPendingMessage(
+                idx > 0 ? name.substring(0, idx) : '',
+                idx > 0 ? name.substring(idx + 1) : name
+              )
+            );
+            return;
+          }
+          case 'tool-result': {
+            completeToolMessage(
+              pendingToolEls.shift(),
+              typeof d.latencyMs === 'number' ? d.latencyMs : 0,
+              null,
+              JSON.stringify(d.response || {}, null, 2)
+            );
+            return;
+          }
+          default:
+            return;
+        }
+      });
+      // A tool call whose result is off the end of the log — the
+      // session was interrupted, or the cap cut between the two.
+      pendingToolEls.forEach((toolEl) => completeToolMessage(toolEl, 0, 'no result in log', ''));
+    });
+    return el;
+  }
+
+  // The transcript was replaced (session switch, /clear); the block
+  // went with it. Forget the handles so a stray scroll doesn't hand
+  // turns to a detached container.
+  function forgetHistoryBlock() {
+    replayView.el = null;
+    replayView.body = null;
+    replayView.more = null;
+    outputArea.removeEventListener('scroll', onHistoryScroll);
   }
 
   // ─── Markdown rendering (marked + highlight.js, configured once) ───
@@ -2342,8 +2654,11 @@
 
     // A turn still inside its grace window (an observer one — an
     // operator turn holds isRunning until it closes) gets its footer
-    // now, above this prompt rather than under it.
+    // now, above this prompt rather than under it. Replayed history
+    // settles for the same reason: it happened before this prompt, and
+    // it is about to have live content underneath it.
     flushTurnClose();
+    drawHistory();
     connectionStore.setIsRunning(true);
     lastUserPrompt = text;
     setTurnActive(true);
@@ -3597,6 +3912,7 @@
     // terminal rather than a blank void. bootBannerHTML is captured
     // from the served markup at boot (see below).
     output.innerHTML = bootBannerHTML;
+    forgetHistoryBlock();
   }
 
   // ─── Keyboard shortcuts (v0.3.0 PR 7, mast-web#27) ────────────────

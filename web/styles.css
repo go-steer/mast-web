@@ -1870,6 +1870,95 @@ body[data-layout='chat'] .message.user {
   opacity: 0.55;
 }
 
+/* ─── Replayed history ───────────────────────────────────────────────
+   What the session said before this view attached. It sits above the
+   live stream, dimmed, because it is context rather than conversation:
+   the eye should land on what is happening now and read upward from
+   there. Only the newest few turns are drawn — the control at the top
+   asks for more, and so does scrolling to it. */
+.replay-history {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: stretch;
+}
+
+/* Dim the history itself, not the rule that closes it: opacity on the
+   block would take the boundary marker down with it, and that marker
+   is the one part of this that speaks for the live stream. */
+.replay-history > .history-more,
+.replay-history > .history-body {
+  opacity: 0.62;
+  transition: opacity 140ms ease;
+}
+
+/* Reading it is a deliberate act, so it comes up to full strength
+   under the pointer rather than staying permanently half-lit. */
+.replay-history:hover > .history-more,
+.replay-history:hover > .history-body,
+.replay-history:focus-within > .history-more,
+.replay-history:focus-within > .history-body {
+  opacity: 1;
+}
+
+.history-body,
+.history-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-more {
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 6px 0 10px;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-align: center;
+}
+
+.history-more:hover:not(:disabled),
+.history-more:focus-visible:not(:disabled) {
+  color: var(--accent);
+}
+
+/* Disabled is not a dead button here — it is the end-of-log marker,
+   wearing the same row so the transcript doesn't shift when the last
+   turn is handed over. */
+.history-more:disabled {
+  cursor: default;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+/* Built like .turn-footer: solid hairlines either side of a label,
+   because a fade-to-transparent reads as two rules of unequal length
+   rather than one centered caption. */
+.history-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 4px 0 12px;
+}
+
+.history-rule::before,
+.history-rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+  opacity: 0.55;
+}
+
 /* Per-message action chips — the bracketed [COPY] [RETRY] row. Hidden
    until the row is hovered or focused so a long transcript stays
    quiet; :focus-within keeps them reachable by keyboard. */

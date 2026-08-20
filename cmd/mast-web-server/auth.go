@@ -249,9 +249,16 @@ func requestInfoFrom(ctx context.Context) *requestInfo {
 //     gating them is how you end up serving an IdP's HTML with a
 //     Content-Type of application/javascript.
 //
-// Health probes and /config are exempt: kubelet does not carry an
-// identity header, and the SPA has to be able to read /config in order
-// to discover that it is unauthenticated.
+// /config is gated with the API paths rather than with the assets,
+// because it does hold something: the API prefix, the deployment mode
+// and the auth mode name. To a stranger that is a map of where the
+// credentialed proxy lives, and it earns nothing — an unauthenticated
+// SPA cannot be running to read it, since the document request is what
+// gets 401'd. A 401 here is a session that expired, and reloading the
+// document is the recovery.
+//
+// Only the health probes are exempt: kubelet does not carry an identity
+// header.
 func withAuth(authn authenticator, apiPrefix string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAuthExempt(r.URL.Path) {
@@ -267,7 +274,10 @@ func withAuth(authn authenticator, apiPrefix string, next http.Handler) http.Han
 			return
 		}
 		switch {
-		case isAPIPath(r.URL.Path, apiPrefix):
+		// /config is fetched, not navigated to, so it takes the API
+		// shape: a JSON 401 the SPA can read, never a redirect into an
+		// IdP's HTML.
+		case r.URL.Path == configPath || isAPIPath(r.URL.Path, apiPrefix):
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated",
 				"no verified caller identity on this request")
 		case isDocumentRequest(r):
@@ -282,7 +292,7 @@ func withAuth(authn authenticator, apiPrefix string, next http.Handler) http.Han
 
 func isAuthExempt(p string) bool {
 	switch p {
-	case "/healthz", "/readyz", configPath:
+	case "/healthz", "/readyz":
 		return true
 	}
 	return false

@@ -473,11 +473,18 @@
   window.MastTheme.mount(document.getElementById('hud-theme'));
   paintFrame();
 
-  const registered = new Set(agents.boot());
-  // Rows for a daemon that is no longer attached have nothing left to
-  // wait for; disarm them so they stop being carried forward.
-  pending.forEach(function (endpoint) {
-    if (!registered.has(endpoint)) pending.delete(endpoint);
+  agents.boot().then(function (endpoints) {
+    const registered = new Set(endpoints);
+    // Rows for a daemon that is no longer attached have nothing left to
+    // wait for; disarm them so they stop being carried forward.
+    pending.forEach(function (endpoint) {
+      if (!registered.has(endpoint)) pending.delete(endpoint);
+    });
+    // Offer the attach form the path this deployment actually serves,
+    // rather than the same-origin default in the markup — behind a BFF
+    // that default is the one address that is certainly wrong.
+    const found = agents.site();
+    if (found && found.endpoint) document.getElementById('add-endpoint').value = found.endpoint;
   });
 
   // ─── Public seam ───────────────────────────────────────────────────

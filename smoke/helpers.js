@@ -63,7 +63,7 @@ export async function connectToMock(page, fixture) {
 
   // Wait for the SPA to actually connect — status bar goes green,
   // sidebar populates with the mock's smoke-session.
-  await expect(page.locator('#status-connection')).toHaveClass(/connected/);
+  await expect(page.locator('#status-connection')).toHaveClass(/\bconnected\b/);
 }
 
 /**
@@ -71,11 +71,13 @@ export async function connectToMock(page, fixture) {
  * open the mock's session into a 3D terminal, and hand back a locator
  * for that terminal's transcript.
  *
- * There is no setup modal here — spatial.js defaults an unconfigured
- * registry to same-origin `/` (loadDaemons), which is what the mock
- * serves on. So the whole dance is: clear storage, load, click the one
- * session row. Storage is cleared before first paint rather than after,
- * because a saved workspace would restore panels we didn't ask for.
+ * There is no setup modal here — with nothing stored, MastAgents.boot()
+ * asks GET /config where the API is, and the mock answers `mock` mode
+ * with no prefix, so the registry falls back to the same-origin `/` the
+ * mock serves on. So the whole dance is: clear storage, load, click the
+ * one session row. Storage is cleared before first paint rather than
+ * after, because a saved workspace would restore panels we didn't ask
+ * for.
  *
  * Returns the `.term-screen` locator, not the panel: asserting on the
  * panel would also match the title bar and status line, and a stray
@@ -106,10 +108,11 @@ export async function openSpatialSession(page, fixture) {
  * open the mock's first session into a tab, and hand back a locator for
  * that tab's transcript.
  *
- * Same registry defaulting as the spatial shell (MastAgents.loadDaemons
- * falls back to same-origin `/`), so there is no setup modal here
- * either. Storage is cleared before first paint because a saved tab
- * layout would restore sessions we didn't ask for.
+ * Same registry defaulting as the spatial shell (discovery finds no
+ * prefix in mock mode, so boot() falls back to same-origin `/`), so
+ * there is no setup modal here either. Storage is cleared before first
+ * paint because a saved tab layout would restore sessions we didn't ask
+ * for.
  *
  * Returns the *visible* .term-screen rather than a panel-scoped one:
  * this shell keeps every open session mounted, so a panel-scoped

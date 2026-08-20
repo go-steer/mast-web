@@ -31,8 +31,14 @@
 // Requires: attach-core/{errors,client}.js, and .side-* styles from
 // spatial.css.
 //
+// With an empty registry, boot() asks the server where its attach API
+// is (GET /config) before falling back to the same-origin guess — which
+// is what spares a hosted deployment's users from having to type
+// --api-prefix into the sidebar's attach form. It resolves rather than
+// returns for that reason.
+//
 //   const agents = MastAgents.create({ listEl, onOpen });
-//   agents.boot();
+//   agents.boot().then(function (endpoints) { … });
 window.MastAgents = (function () {
   'use strict';
 
@@ -46,11 +52,10 @@ window.MastAgents = (function () {
     }
   }
 
-  // The stored rows, newest contract first. Shells call this through
-  // boot(); it is exported because a shell that wants to know what is
-  // configured before building any UI (solo.html picks a first session)
-  // shouldn't have to reach into storage itself.
-  function loadDaemons() {
+  // Rows somebody chose, newest contract first. Empty means nobody has
+  // said where the backend is — which is the case boot() asks the
+  // server about.
+  function storedDaemons() {
     let rows = [];
     try {
       const raw = localStorage.getItem('mast-web:daemons');
@@ -68,11 +73,15 @@ window.MastAgents = (function () {
         /* blocked storage — fall through */
       }
     }
-    // Nothing stored: the SPA is being served by a backend often enough
-    // that same-origin is the right first guess.
-    if (rows.length === 0) rows = [{ endpoint: '/', token: '' }];
-    return rows;
+    return rows.filter(function (r) {
+      return r && r.endpoint;
+    });
   }
+
+  // What GET /config said this boot, or null before boot() has asked /
+  // when it had no reason to. Shells read it to prefill the attach
+  // form with the path the deployment actually serves.
+  let site = null;
 
   // opts:
   //   listEl        — container the sidebar rows are rendered into
@@ -97,9 +106,16 @@ window.MastAgents = (function () {
 
     const daemons = new Map();
 
+    // Only rows somebody chose are written back. A derived row — the
+    // same-origin guess, or whatever GET /config named — is re-derived
+    // on every boot, so persisting it would freeze a deployment detail
+    // that the deployment is the authority on, in a key three shells
+    // read. It would also outlive the deployment change that made it
+    // wrong, in the two shells whose only repair is the attach form.
     function persist() {
       const rows = [];
       daemons.forEach(function (d) {
+        if (d.derived) return;
         rows.push({
           endpoint: d.endpoint,
           token: d.token || '',
@@ -114,7 +130,7 @@ window.MastAgents = (function () {
       }
     }
 
-    function add(endpoint, token) {
+    function add(endpoint, token, opts) {
       const ep = (endpoint || '').trim().replace(/\/+$/, '') || '/';
       const existing = daemons.get(ep);
       if (existing) return existing;
@@ -126,6 +142,7 @@ window.MastAgents = (function () {
         state: 'connecting',
         sessions: [],
         error: '',
+        derived: !!(opts && opts.derived),
         client: new window.AttachClient({ endpoint: ep, token: token || '' }),
       };
       daemons.set(ep, d);
@@ -273,15 +290,34 @@ window.MastAgents = (function () {
       });
     }
 
-    // Registers every stored daemon and lists each one. Returns the
+    // Registers every daemon and lists each one. Resolves with the
     // endpoints it registered, which is what a shell restoring saved
     // terminals needs to tell "this row's daemon is gone" from "this
     // row's daemon hasn't answered yet".
-    function boot() {
+    //
+    // Async for the one case where storage can't answer. With nothing
+    // stored the guess has always been same-origin `/`, and that is
+    // wrong in exactly the deployment that most needs it right: a
+    // hosted BFF serves the attach API under --api-prefix, so the
+    // operator had to know to type `/attach` into a form these two
+    // shells put in a sidebar. The server already knows; ask it once,
+    // before guessing.
+    //
+    // Only when nothing is stored. A row somebody chose outranks
+    // anything discovered — the operator pointing this shell at a
+    // second daemon is not a thing the origin gets a vote on.
+    async function boot() {
+      let rows = storedDaemons();
+      let derived = false;
+      if (rows.length === 0) {
+        derived = true;
+        site = await window.AttachClient.discoverConfig();
+        rows = [{ endpoint: site.endpoint || '/', token: '' }];
+      }
       const registered = [];
-      loadDaemons().forEach(function (row) {
+      rows.forEach(function (row) {
         registered.push(row.endpoint);
-        refresh(add(row.endpoint, row.token));
+        refresh(add(row.endpoint, row.token, { derived: derived }));
       });
       return registered;
     }
@@ -295,8 +331,11 @@ window.MastAgents = (function () {
       newSession: newSession,
       render: render,
       boot: boot,
+      site: function () {
+        return site;
+      },
     };
   }
 
-  return { create: create, loadDaemons: loadDaemons, aliasFor: aliasFor };
+  return { create: create, aliasFor: aliasFor };
 })();

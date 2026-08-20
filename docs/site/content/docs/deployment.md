@@ -174,8 +174,7 @@ will make it a hard refusal.
 
 ### `GET /config`
 
-Served in every mode, exempt from auth (an unauthenticated SPA still has to be able to
-discover that it is unauthenticated), and `no-store`:
+Served in every mode, `no-store`, and — where auth is enabled — behind it:
 
 ```json
 {
@@ -189,6 +188,39 @@ discover that it is unauthenticated), and `no-store`:
 
 `multi_daemon` / `backends` are reserved for a later backend-alias map; they are always
 `false` / `[]` today.
+
+An anonymous caller gets a JSON `401`, in the same shape as any API path — never a
+redirect, since the SPA reads this with `fetch()`. Only `/healthz` and `/readyz` are
+open. The endpoint describes the deployment (API prefix, mode, auth mode), which is a
+map of where the credentialed proxy lives, and no legitimate reader is anonymous: the
+SPA can only be running if its document request already cleared auth. A `401` here means
+the session expired, and reloading the document is the recovery.
+
+The `identity` field is always the caller's own, from that request's own credential —
+there is no way to ask about anyone else. `Vary` names the header the identity came
+from, but `no-store` is what actually prevents an intermediate reusing one user's
+response for another.
+
+#### What the SPA does with it
+
+Every shell asks once at boot, before anything else. In **proxy mode** it attaches to
+`api_prefix` — so a hosted install has no first-run step at all: no setup modal in the
+classic shell, no `/attach` to type into the 3D shells' sidebar form, and the caller's
+name is on screen from the first request rather than after the first backend frame.
+The token box is hidden when `auth.mode` is anything but `none`, because the proxy
+strips `Authorization` and `X-Attach-Token` off everything it forwards and a token
+typed there would be scrubbed in flight.
+
+In **mock** and **static** mode nothing is discovered and nothing changes: mock already
+defaults to the origin root, and static reports no prefix on purpose — there the
+backend is the operator's choice and the descriptor doesn't overrule it.
+
+A daemon somebody added outranks discovery, which only runs against an empty registry.
+The reverse also holds: a discovered endpoint is never written to `localStorage`, so it
+is re-derived on every boot and a redeployment under a different prefix takes effect on
+reload rather than becoming a stale row with no way to edit it. A `404`, a login page,
+or a stalled request all fall back to today's behaviour — the SPA asks the operator.
+A `401` is the one answer with its own message: the session expired, reload to sign in.
 
 ---
 
@@ -251,8 +283,8 @@ MODEL_PROVIDER=vertex MODEL_NAME=gemini-3.7-flash \
 Add `KEEP_RUNNING=1` to leave a browsable rig up. It starts one header-injecting proxy per
 identity — the local stand-in for IAP — on consecutive ports. Different ports are different
 origins, so two ordinary tabs get separate `localStorage` and behave as two different users
-against one agent. In the setup modal use `/attach` as the endpoint and leave the token
-blank.
+against one agent. Open a port and you are attached: the rig runs in proxy mode, so the SPA
+reads `/attach` off `GET /config` and there is no setup step.
 
 Two things the rig gets right that a hand-rolled one usually doesn't. It uses a
 **non-loopback** external URL (`https://mast.example.com`): core-agent's `originAllowed`

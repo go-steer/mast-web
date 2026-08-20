@@ -104,8 +104,11 @@ func TestConfigEndpoint_ProxyModeReportsPrefixAndIdentity(t *testing.T) {
 }
 
 func TestConfigEndpoint_ReportsUnauthenticatedWithout200Failing(t *testing.T) {
-	// /config is exempt from withAuth on purpose: an unauthenticated
-	// SPA still has to be able to discover that it is unauthenticated.
+	// withAuth is what keeps anonymous callers away from this handler
+	// (TestWithAuth_ConfigIsNotAnonymous); the handler itself is still
+	// held to telling the truth about who is asking. Reached without an
+	// identity — mock and static do exactly that, with auth.mode "none"
+	// — it must say so rather than name someone.
 	cfg := config{mode: modeProxy, apiPrefix: "/attach", authMode: authModeProxyHeader}
 	code, _, got := getConfig(t, cfg, headerAuth{header: "X-Test-User"}, nil)
 	if code != http.StatusOK {

@@ -403,9 +403,9 @@ func TestWithAuth_SubresourcesAreServedUnauthenticated(t *testing.T) {
 }
 
 func TestWithAuth_ExemptPaths(t *testing.T) {
-	// kubelet does not carry an identity header, and the SPA must be
-	// able to read /config to discover that it is unauthenticated.
-	for _, p := range []string{"/healthz", "/readyz", configPath} {
+	// kubelet does not carry an identity header. This list is the whole
+	// anonymous surface of the server, which is why it is short.
+	for _, p := range []string{"/healthz", "/readyz"} {
 		t.Run(p, func(t *testing.T) {
 			r := httptest.NewRequest("GET", p, nil)
 			r.Header.Set("Sec-Fetch-Dest", "document")
@@ -414,6 +414,48 @@ func TestWithAuth_ExemptPaths(t *testing.T) {
 				t.Fatalf("want 200 for exempt path %s, got %d", p, w.Code)
 			}
 		})
+	}
+}
+
+func TestWithAuth_ConfigIsNotAnonymous(t *testing.T) {
+	// /config describes the deployment — API prefix, mode, auth mode —
+	// and a stranger has no business reading it. The subresource branch
+	// makes this worth a test of its own: /config is neither a document
+	// nor under the API prefix, so without naming it explicitly it would
+	// fall through to the anonymous passthrough that serves app.js.
+	//
+	// Fetched, not navigated: the failure has to be JSON, since the SPA
+	// reads it with fetch() and would otherwise JSON.parse a login page.
+	for _, dest := range []string{"empty", "document"} {
+		t.Run(dest, func(t *testing.T) {
+			r := httptest.NewRequest("GET", configPath, nil)
+			r.Header.Set("Sec-Fetch-Dest", dest)
+			w := serveWithAuth(headerAuth{header: "X-Test-User"}, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("want 401, got %d (%q)", w.Code, w.Body.String())
+			}
+			if loc := w.Header().Get("Location"); loc != "" {
+				t.Fatalf("want no redirect, got Location %q", loc)
+			}
+			var body map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %v (%q)", err, w.Body.String())
+			}
+			if body["error"] != "unauthenticated" {
+				t.Fatalf("want error=unauthenticated, got %v", body)
+			}
+		})
+	}
+}
+
+func TestWithAuth_ConfigIsServedToAVerifiedCaller(t *testing.T) {
+	// The gate is on anonymity, not on /config: the SPA that has already
+	// cleared auth for its document must still be able to bootstrap.
+	r := httptest.NewRequest("GET", configPath, nil)
+	r.Header.Set("X-Test-User", "alice@example.com")
+	w := serveWithAuth(headerAuth{header: "X-Test-User"}, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%q)", w.Code, w.Body.String())
 	}
 }
 

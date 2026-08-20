@@ -67,9 +67,10 @@
 //
 // Routes (present in every mode):
 //
-//	GET /healthz       — liveness probe (always 200)
-//	GET /readyz        — readiness probe (always 200)
-//	GET /config        — deployment + auth descriptor for the SPA
+//	GET /healthz       — liveness probe (always 200, anonymous)
+//	GET /readyz        — readiness probe (always 200, anonymous)
+//	GET /config        — deployment + auth descriptor for the SPA;
+//	                     gated with the API paths where auth is enabled
 //	GET /*             — SPA static assets (from embed or --web-dir)
 //
 // Mode-specific routes are documented in proxy.go / mock.go.

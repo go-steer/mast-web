@@ -426,7 +426,7 @@ window.AttachClient = (function () {
         }
         const ts = ReplayFilter.extractAgentFrameTimestamp(frame);
         const isReplay = replayFilter ? replayFilter.isReplay(ts) : false;
-        this._fanoutAgentFrame(frame, streamGen, isReplay);
+        this._fanoutAgentFrame(frame, streamGen, isReplay, ts);
       });
 
       // The default `message` event fires when the server sends a frame
@@ -452,7 +452,7 @@ window.AttachClient = (function () {
       this.onConnectionState('disconnected');
     }
 
-    _fanoutAgentFrame(frame, gen, replay) {
+    _fanoutAgentFrame(frame, gen, replay, ts) {
       // Delegate to the pure helper in attach-core/protocol.js so the
       // conformance harness can exercise the same code without wiring
       // up a client. this.onEvent is the emit callback.
@@ -463,12 +463,20 @@ window.AttachClient = (function () {
       //            event bleed after a switch.
       //   replay — true when the source frame's server timestamp puts
       //            it before the connection cutoff (broadcaster
-      //            replay-flood). Consumers suppress replay events
-      //            from the transcript view but still update
-      //            aggregate state (usage totals, etc.).
+      //            replay-flood). Consumers keep replay events out of
+      //            the live transcript — they draw them as history
+      //            instead — but still update aggregate state (usage
+      //            totals, etc.) from them.
+      //   ts     — the frame's server timestamp, when it carried one.
+      //            Only a replayed row has any use for it: it is drawn
+      //            long after the fact and must not stamp itself with
+      //            the clock as it reads now. Omitted rather than
+      //            spelled as null when the frame is unstamped, so a
+      //            live event's shape is unchanged.
       const g = typeof gen === 'number' ? gen : this.sessionGen;
       const r = replay === true;
-      fanoutAgentFrame(frame, (e) => this.onEvent({ ...e, gen: g, replay: r }));
+      const stamped = ts ? { ts } : null;
+      fanoutAgentFrame(frame, (e) => this.onEvent({ ...e, gen: g, replay: r, ...stamped }));
     }
 
     // ─── Operator input ─────────────────────────────────────────────

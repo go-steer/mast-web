@@ -1,0 +1,19 @@
+{"event": "capabilities", "data": {"protocol_version": "1.4.0", "event_types": ["capabilities", "status-update", "usage-update", "inbox", "turn-complete", "turn-error", "agent"], "server": "core-agent"}}
+{"event": "inbox", "data": {"state": "queued", "prompt_id": "p1", "queued_at": "2026-08-19T22:31:24Z"}}
+{"event": "inbox", "data": {"state": "dequeued", "prompt_id": "p1", "queued_at": "2026-08-19T22:31:24Z"}}
+{"event": "status-update", "data": {"model": "gemini-3.7-flash", "turn_state": "streaming"}}
+{"event": "agent", "data": {"seq": 87, "event": {"Author": "user", "Content": {"role": "user", "parts": [{"text": "[Inbox]\n- In exactly one short sentence: what is the capital of Portugal?\n\n---\n\n"}]}}}}
+{"event": "agent", "data": {"seq": 88, "event": {"Author": "core_agent", "Content": {"role": "model", "parts": [{"text": "The capital of Portugal is "}]}}}}
+{"event": "usage-update", "data": {"tokens_in_total": 5009, "tokens_out_total": 7, "cost_usd_total": 0.000409, "turns_total": 1, "last_turn": {"tokens_in": 5009, "tokens_in_cached": 4999, "tokens_out": 7, "cost_usd": 0.000409, "model": "gemini-3.7-flash"}}}
+{"event": "turn-complete", "data": {"prompt_id": "p1", "model": "gemini-3.7-flash", "tokens_in": 5009, "tokens_out": 7, "latency_ms": 4583}}
+{"event": "agent", "data": {"seq": 89, "event": {"Author": "core_agent", "TurnComplete": true, "Content": {"role": "model", "parts": [{"text": "Lisbon."}]}}}}
+{"event": "status-update", "data": {"turn_state": "idle"}}
+{"event": "inbox", "data": {"state": "queued", "prompt_id": "p2", "queued_at": "2026-08-19T22:31:31Z"}}
+{"event": "inbox", "data": {"state": "dequeued", "prompt_id": "p2", "queued_at": "2026-08-19T22:31:31Z"}}
+{"event": "status-update", "data": {"model": "gemini-3.7-flash", "turn_state": "streaming"}}
+{"event": "agent", "data": {"seq": 90, "event": {"Author": "user", "Content": {"role": "user", "parts": [{"text": "[Inbox]\n- And Spain?\n\n---\n\n"}]}}}}
+{"event": "agent", "data": {"seq": 91, "event": {"Author": "core_agent", "Content": {"role": "model", "parts": [{"text": "The capital of Spain is "}]}}}}
+{"event": "usage-update", "data": {"tokens_in_total": 10102, "tokens_out_total": 14, "cost_usd_total": 0.000833, "turns_total": 2, "last_turn": {"tokens_in": 5093, "tokens_in_cached": 5009, "tokens_out": 7, "cost_usd": 0.000424, "model": "gemini-3.7-flash"}}}
+{"event": "turn-complete", "data": {"prompt_id": "p2", "model": "gemini-3.7-flash", "tokens_in": 5093, "tokens_out": 7, "latency_ms": 3901}}
+{"event": "agent", "data": {"seq": 92, "event": {"Author": "core_agent", "TurnComplete": true, "Content": {"role": "model", "parts": [{"text": "Madrid."}]}}}}
+{"event": "status-update", "data": {"turn_state": "idle"}}

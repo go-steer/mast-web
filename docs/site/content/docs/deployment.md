@@ -174,8 +174,7 @@ will make it a hard refusal.
 
 ### `GET /config`
 
-Served in every mode, exempt from auth (an unauthenticated SPA still has to be able to
-discover that it is unauthenticated), and `no-store`:
+Served in every mode, `no-store`, and — where auth is enabled — behind it:
 
 ```json
 {
@@ -189,6 +188,18 @@ discover that it is unauthenticated), and `no-store`:
 
 `multi_daemon` / `backends` are reserved for a later backend-alias map; they are always
 `false` / `[]` today.
+
+An anonymous caller gets a JSON `401`, in the same shape as any API path — never a
+redirect, since the SPA reads this with `fetch()`. Only `/healthz` and `/readyz` are
+open. The endpoint describes the deployment (API prefix, mode, auth mode), which is a
+map of where the credentialed proxy lives, and no legitimate reader is anonymous: the
+SPA can only be running if its document request already cleared auth. A `401` here means
+the session expired, and reloading the document is the recovery.
+
+The `identity` field is always the caller's own, from that request's own credential —
+there is no way to ask about anyone else. `Vary` names the header the identity came
+from, but `no-store` is what actually prevents an intermediate reusing one user's
+response for another.
 
 ---
 

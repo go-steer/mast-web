@@ -255,12 +255,18 @@ status_of() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
 
 section "1. GET /config"
 
+# Anonymous first. /config describes the deployment — API prefix, mode,
+# auth mode — so a stranger gets a JSON 401 and nothing else. It is not
+# under the API prefix, so this is also the check that it hasn't fallen
+# back into the anonymous passthrough that serves the SPA's assets.
 body="$(curl -sS "$WEB_URL/config")"
-check "reports the auth mode"              "proxy-header" "$(printf '%s' "$body" | json mode | tail -1)"
-check_contains "reports unauthenticated"   '"authenticated":false' "$body"
-check_not_contains "leaks no identity"     '"identity"' "$body"
+check "unauthenticated is 401"             "401" "$(status_of "$WEB_URL/config")"
+check_contains "…as JSON, not a login page" '"error":"unauthenticated"' "$body"
+check_not_contains "leaks no api prefix"   'api_prefix' "$body"
+check_not_contains "leaks no auth mode"    'proxy-header' "$body"
 
 body="$(as_user alice@example.com "$WEB_URL/config")"
+check "reports the auth mode to a verified caller" "proxy-header" "$(printf '%s' "$body" | json mode | tail -1)"
 check_contains "reports the caller once identified" '"identity":"alice@example.com"' "$body"
 check "health probes stay open" "200" "$(status_of "$WEB_URL/healthz")"
 

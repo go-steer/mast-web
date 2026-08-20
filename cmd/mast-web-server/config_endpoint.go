@@ -22,6 +22,12 @@ package main
 // keep today's behavior: show the setup modal, collect an endpoint and
 // a token, talk to the backend directly.
 //
+// Behind auth, with the API paths, not open with the health probes.
+// What it hands out — the API prefix, the mode, the auth mode name — is
+// a map of the deployment for anyone who asks, and nobody who needs it
+// is anonymous: the SPA can only be running if its document request
+// already cleared auth. See withAuth.
+//
 // Preferred over injecting a window.__CONFIG__ into index.html: that
 // would make spaHandler stateful and fight its no-store header, and it
 // would break the tarball / static-host deployment shape, where the SPA
@@ -76,9 +82,12 @@ type backendInfo struct {
 	Label string `json:"label,omitempty"`
 }
 
-// configHandler answers GET /config. It is exempt from withAuth (see
-// isAuthExempt) because an unauthenticated SPA still needs to be able
-// to discover *that* it is unauthenticated, and where to go about it.
+// configHandler answers GET /config. withAuth gates it like an API
+// path, so in an authenticating deployment this only ever runs for a
+// verified caller. It still reports honestly when it doesn't have one —
+// mock and static reach it with auth.mode "none", and a handler that
+// lies about identity when reached by an unexpected route is a worse
+// failure than one that says "not you".
 func configHandler(cfg config, authn authenticator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

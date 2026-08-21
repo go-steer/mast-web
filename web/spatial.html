@@ -136,20 +136,27 @@
     <script src="vendor/marked-highlight-2.2.4.umd.js"></script>
     <script src="vendor/highlight-11.12.0.min.js"></script>
     <!-- attach-core: the same wire layer index.html loads, in the same
-         order. No state/ stores and no app.js — the spatial shell keeps
-         its state per terminal instead of in a set of singletons. -->
+         order. -->
     <script src="attach-core/errors.js"></script>
     <script src="attach-core/protocol.js"></script>
     <script src="attach-core/replay.js"></script>
     <script src="attach-core/prompter.js"></script>
     <script src="attach-core/client.js"></script>
+    <!-- state/: the same stores index.html loads. They were singletons
+         through v0.3.0, which is why this shell went without them and
+         grew its own copies instead; they are factories now, and every
+         terminal in the room holds its own pair. -->
+    <script src="state/subscriptions.js"></script>
+    <script src="state/session.js"></script>
+    <script src="state/connection.js"></script>
+    <script src="state/daemons.js"></script>
     <script src="slash-render.js"></script>
     <script src="terminal.js"></script>
-    <!-- Shared with solo.html: the daemon registry + sidebar, and the
-         theme list. index.html is frozen and keeps its own copy of the
-         theme list in app.js. -->
+    <!-- Shared with solo.html: the daemon sidebar and the theme list.
+         index.html is frozen and keeps its own copy of the theme list
+         in app.js. -->
     <script src="theme.js"></script>
-    <script src="agents.js"></script>
+    <script src="daemon-sidebar.js"></script>
     <!-- Spatial-only, and optional: spatial.js calls it through a guard,
          so a browser without Web Audio just gets a silent room. -->
     <script src="spatial-audio.js"></script>

@@ -23,9 +23,10 @@
 // be open without any of them being small.
 //
 // It is not a fork of the room: the panel chrome is spatial.css, the
-// terminal is terminal.js, the daemon registry and sidebar are
-// agents.js, the theme list is theme.js. What lives here is the tab
-// model and the wiring, which is the only part that differs.
+// terminal is terminal.js, the daemon registry is state/daemons.js and
+// the sidebar over it is daemon-sidebar.js, the theme list is theme.js.
+// What lives here is the tab model and the wiring, which is the only
+// part that differs.
 //
 // index.html (the classic shell) is untouched and stays the
 // feature-complete one — app.js still carries the client-side slash
@@ -377,7 +378,7 @@
 
   // ─── Daemons ───────────────────────────────────────────────────────
 
-  const agents = window.MastAgents.create({
+  const agents = window.MastDaemonSidebar.create({
     listEl: daemonList,
     onOpen: open,
     onOpenAll: openAll,
@@ -490,7 +491,13 @@
   // ─── Public seam ───────────────────────────────────────────────────
   window.MastSolo = {
     tabs: tabs,
-    daemons: agents.daemons,
+    // A getter, for the same reason spatial.js uses one: registry
+    // records are immutable, so a Map captured at load goes stale the
+    // first time a daemon finishes listing.
+    get daemons() {
+      return agents.daemons;
+    },
+    registry: agents.registry,
     open: open,
     openAll: openAll,
     select: select,

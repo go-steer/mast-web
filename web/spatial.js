@@ -1063,7 +1063,9 @@
       // "open all" is a once-a-session command that can afford to move.
       case 'o':
       case 'O':
-        daemons.forEach(openAll);
+        agents.list().forEach(function (d) {
+          openAll(d);
+        });
         break;
       default:
         return;
@@ -1230,14 +1232,15 @@
   }
 
   // ─── Daemons + sessions ───────────────────────────────────────────
-  // The registry, its persistence and the sidebar that lists it live in
-  // agents.js, shared with solo.html: which daemons are attached and
-  // what sessions they hold is the same question in any shell, and only
-  // the answer to "what happens when you click one" differs. This shell
-  // opens a floating panel in the room and paints rows from the panel
-  // map; the module knows neither.
+  // Which daemons are attached and what sessions they hold is the same
+  // question in any shell, so it lives outside this one, split at the
+  // DOM line: state/daemons.js is the registry and its persistence,
+  // daemon-sidebar.js is the list that renders it. Both are shared with
+  // solo.html. Only the answer to "what happens when you click a row"
+  // differs — this shell opens a floating panel in the room and paints
+  // rows from the panel map, and neither module knows that.
 
-  const agents = window.MastAgents.create({
+  const agents = window.MastDaemonSidebar.create({
     listEl: daemonList,
     onOpen: openTerminal,
     onOpenAll: openAll,
@@ -1253,8 +1256,6 @@
       return { open: !!p, active: !!p && p === active };
     },
   });
-
-  const daemons = agents.daemons;
 
   function updateSidebar() {
     agents.render();
@@ -1397,7 +1398,12 @@
   // ─── Public seam ──────────────────────────────────────────────────
   window.MastSpatial = {
     panels: panels,
-    daemons: daemons,
+    // A getter: registry records are immutable, so a Map captured at
+    // load would still be describing a room where nothing had listed.
+    get daemons() {
+      return agents.daemons;
+    },
+    registry: agents.registry,
     open: openTerminal,
     openAll: openAll,
     activate: activate,

@@ -173,3 +173,63 @@ describe('state/session', () => {
     expect(session.store.get().serverSlashCommands).toEqual([]);
   });
 });
+
+// v0.4: the module exports a factory, and MastState.session is just the
+// classic shell's instance of it. A room full of terminals needs each
+// one to hold its own.
+describe('state/session — factory', () => {
+  let createSession;
+  beforeEach(() => {
+    delete globalThis.MastState;
+    loadSessionStore();
+    createSession = globalThis.MastState.createSession;
+  });
+
+  it('instances do not share state', () => {
+    const a = createSession();
+    const b = createSession();
+    a.setCurrentSession('s-a');
+    a.setCurrentModel('opus');
+    expect(b.get().currentSession).toBe('');
+    expect(b.get().currentModel).toBe('');
+  });
+
+  it('opts seed the initial state, and reset() returns to that seed', () => {
+    const s = createSession({ endpoint: 'https://a', label: 'alpha', currentSession: 's1' });
+    expect(s.get().endpoint).toBe('https://a');
+    expect(s.get().label).toBe('alpha');
+    s.setLabel('renamed');
+    s.store.reset();
+    expect(s.get().label).toBe('alpha');
+    expect(s.get().currentSession).toBe('s1');
+  });
+
+  it('turn counting is per instance', () => {
+    const a = createSession();
+    const b = createSession();
+    a.incrementTurnCount();
+    a.incrementTurnCount();
+    b.setTurnCount(9);
+    expect(a.get().turnCount).toBe(2);
+    expect(b.get().turnCount).toBe(9);
+  });
+
+  it('subscribe fires only for its own instance', () => {
+    const a = createSession();
+    const b = createSession();
+    let hitsA = 0;
+    let hitsB = 0;
+    a.subscribe(() => hitsA++);
+    b.subscribe(() => hitsB++);
+    a.setEndpoint('https://a');
+    expect(hitsA).toBe(1);
+    expect(hitsB).toBe(0);
+  });
+
+  it('MastState.session is a live instance of the factory', () => {
+    const shared = globalThis.MastState.session;
+    shared.setCurrentModel('sonnet');
+    expect(shared.get().currentModel).toBe('sonnet');
+    expect(createSession().get().currentModel).toBe('');
+  });
+});

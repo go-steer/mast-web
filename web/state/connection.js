@@ -25,10 +25,19 @@
 // nothing shipped uses the string 'terminal' yet, but wiring it
 // through the store now lets future PRs surface it in the UI without
 // re-touching this file.
+//
+// One instance per connection, not one per page: a room with four
+// terminals has four of these. `createConnection()` is the factory;
+// `MastState.connection` is the classic shell's single instance.
+//
+// This shape is already exactly what terminal.js had grown informally
+// in its own closure — connState / running / prompter / activeTurn —
+// which is the clearest evidence that the seam was right and only its
+// singleton-ness was wrong.
 
 window.MastState = window.MastState || {};
 
-window.MastState.connection = (function () {
+window.MastState.createConnection = (function () {
   'use strict';
 
   if (!window.MastState.subscriptions) {
@@ -36,7 +45,7 @@ window.MastState.connection = (function () {
   }
   const { createStore } = window.MastState.subscriptions;
 
-  const initialConnectionState = {
+  const baseConnectionState = {
     state: 'disconnected', // 'disconnected' | 'connecting' | 'connected' | 'terminal'
     // Live client refs. Stored on the store rather than as
     // module-scope vars so the observer wiring in future PRs can
@@ -53,64 +62,84 @@ window.MastState.connection = (function () {
     activeTurn: null,
   };
 
-  const store = createStore(initialConnectionState);
+  function createConnection(opts) {
+    const initialConnectionState = { ...baseConnectionState, ...(opts || {}) };
 
-  // ─── Named actions ────────────────────────────────────────────────
+    const store = createStore(initialConnectionState);
 
-  function setState(state) {
-    store.set({ state });
+    // ─── Named actions ────────────────────────────────────────────────
+
+    function setState(state) {
+      store.set({ state });
+    }
+
+    function setClient(client) {
+      store.set({ client });
+    }
+
+    function setPrompter(prompter) {
+      store.set({ prompter });
+    }
+
+    function setIsRunning(v) {
+      store.set({ isRunning: !!v });
+    }
+
+    function setActiveTurn(t) {
+      store.set({ activeTurn: t });
+    }
+
+    // Convenience getters used by dispatchers that need to make routing
+    // decisions without opening the whole state.
+    function isConnected() {
+      return store.get().state === 'connected';
+    }
+
+    function isRunning() {
+      return store.get().isRunning;
+    }
+
+    function getClient() {
+      return store.get().client;
+    }
+
+    function getPrompter() {
+      return store.get().prompter;
+    }
+
+    function getActiveTurn() {
+      return store.get().activeTurn;
+    }
+
+    return {
+      store,
+      get() {
+        return store.get();
+      },
+      subscribe(fn) {
+        return store.subscribe(fn);
+      },
+      getState() {
+        return store.get().state;
+      },
+      setState,
+      setClient,
+      setPrompter,
+      setIsRunning,
+      setActiveTurn,
+      isConnected,
+      isRunning,
+      getClient,
+      getPrompter,
+      getActiveTurn,
+      initialConnectionState,
+    };
   }
 
-  function setClient(client) {
-    store.set({ client });
-  }
+  createConnection.baseConnectionState = baseConnectionState;
 
-  function setPrompter(prompter) {
-    store.set({ prompter });
-  }
-
-  function setIsRunning(v) {
-    store.set({ isRunning: !!v });
-  }
-
-  function setActiveTurn(t) {
-    store.set({ activeTurn: t });
-  }
-
-  // Convenience getters used by dispatchers that need to make routing
-  // decisions without opening the whole state.
-  function isConnected() {
-    return store.get().state === 'connected';
-  }
-
-  function isRunning() {
-    return store.get().isRunning;
-  }
-
-  function getClient() {
-    return store.get().client;
-  }
-
-  function getPrompter() {
-    return store.get().prompter;
-  }
-
-  function getActiveTurn() {
-    return store.get().activeTurn;
-  }
-
-  return {
-    store,
-    setState,
-    setClient,
-    setPrompter,
-    setIsRunning,
-    setActiveTurn,
-    isConnected,
-    isRunning,
-    getClient,
-    getPrompter,
-    getActiveTurn,
-    initialConnectionState,
-  };
+  return createConnection;
 })();
+
+// The classic shell's instance — see the note in state/session.js.
+window.MastState.connection = window.MastState.createConnection();

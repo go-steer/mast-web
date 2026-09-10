@@ -84,3 +84,46 @@ describe('state/connection', () => {
     expect(conn.getActiveTurn()).toBeNull();
   });
 });
+
+// v0.4: four terminals in a room are four connections. The singleton
+// that shipped through v0.3.0 could only ever describe one of them.
+describe('state/connection — factory', () => {
+  let createConnection;
+  beforeEach(() => {
+    delete globalThis.MastState;
+    loadConnectionStore();
+    createConnection = globalThis.MastState.createConnection;
+  });
+
+  it('one instance running does not make another one running', () => {
+    const a = createConnection();
+    const b = createConnection();
+    a.setState('connected');
+    a.setIsRunning(true);
+    a.setActiveTurn({ id: 't1' });
+    expect(b.getState()).toBe('disconnected');
+    expect(b.isRunning()).toBe(false);
+    expect(b.getActiveTurn()).toBeNull();
+  });
+
+  it('client and prompter refs are per instance', () => {
+    const a = createConnection();
+    const b = createConnection();
+    const clientA = { id: 'a' };
+    a.setClient(clientA);
+    expect(a.getClient()).toBe(clientA);
+    expect(b.getClient()).toBeNull();
+  });
+
+  it('subscribe fires only for its own instance', () => {
+    const a = createConnection();
+    const b = createConnection();
+    let hitsA = 0;
+    let hitsB = 0;
+    a.subscribe(() => hitsA++);
+    b.subscribe(() => hitsB++);
+    b.setState('connecting');
+    expect(hitsA).toBe(0);
+    expect(hitsB).toBe(1);
+  });
+});

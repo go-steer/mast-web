@@ -116,18 +116,22 @@
     <script src="vendor/marked-highlight-2.2.4.umd.js"></script>
     <script src="vendor/highlight-11.12.0.min.js"></script>
     <!-- attach-core: the same wire layer every shell loads, in the same
-         order. No state/ stores and no app.js — like the spatial shell,
-         this one keeps its state per terminal instead of in a set of
-         singletons. -->
+         order. -->
     <script src="attach-core/errors.js"></script>
     <script src="attach-core/protocol.js"></script>
     <script src="attach-core/replay.js"></script>
     <script src="attach-core/prompter.js"></script>
     <script src="attach-core/client.js"></script>
+    <!-- state/: per-terminal store instances, same files index.html
+         loads. See the note in spatial.html. -->
+    <script src="state/subscriptions.js"></script>
+    <script src="state/session.js"></script>
+    <script src="state/connection.js"></script>
+    <script src="state/daemons.js"></script>
     <script src="slash-render.js"></script>
     <script src="terminal.js"></script>
     <script src="theme.js"></script>
-    <script src="agents.js"></script>
+    <script src="daemon-sidebar.js"></script>
     <script src="solo.js"></script>
   </body>
 </html>

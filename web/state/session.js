@@ -27,17 +27,25 @@
 //   - current session id + model
 //   - server-advertised slash commands
 //
-// Reducers live in state/session-reducers.js (small pure functions
-// that take the current state + an event and return the next state).
-// Splitting keeps this file the "data shape" contract and moves the
-// "how to update" logic where it can be unit-tested cleanly.
-//
 // Initial value matches what app.js used to hold in `latest` + a few
-// other module-scope vars — this refactor is behavior-preserving.
+// other module-scope vars.
+//
+// ─── One store per session, not one store ──────────────────────────
+//
+// This was a singleton through v0.3.0, which was the right shape for a
+// shell with one session on screen and the wrong shape for a room with
+// four. `createSession()` is the factory; `MastState.session` is one
+// instance of it, the one the classic shell holds. Each terminal in
+// spatial.html / solo.html holds its own.
+//
+// That is what makes per-terminal state observable from outside the
+// terminal — the thing a real status bar, cross-session unread, and a
+// fleet view all need and none of them could have while this state
+// lived in a closure.
 
 window.MastState = window.MastState || {};
 
-window.MastState.session = (function () {
+window.MastState.createSession = (function () {
   'use strict';
 
   if (!window.MastState.subscriptions) {
@@ -45,7 +53,13 @@ window.MastState.session = (function () {
   }
   const { createStore } = window.MastState.subscriptions;
 
-  const initialSessionState = {
+  const baseSessionState = {
+    // Which backend this session lives on, and what to call it in a
+    // tab strip or a panel title. Per-instance identity: a singleton
+    // never needed them, a room of terminals does.
+    endpoint: '/',
+    label: '',
+
     // capabilities first-frame (spec v1.4.0). Null until the server
     // sends it; consumers should treat null as "backend hasn't
     // advertised yet" and fall through to defaults.
@@ -114,107 +128,152 @@ window.MastState.session = (function () {
     serverSlashCommands: [],
   };
 
-  const store = createStore(initialSessionState);
+  // opts seeds the per-instance fields at construction — endpoint,
+  // label and currentSession are known before the first frame arrives,
+  // and a terminal that had to set them after the fact would render one
+  // frame of the wrong prefix.
+  function createSession(opts) {
+    const cfg = opts || {};
+    const initialSessionState = { ...baseSessionState, ...cfg };
 
-  // ─── Public shape helpers (thin sugar over store.get / set) ────────
-  //
-  // These wrap the raw store with named actions so callers read like
-  // domain code rather than store plumbing. Each returns nothing —
-  // subscribers observe via store.subscribe.
+    const store = createStore(initialSessionState);
 
-  function setCapabilities(caps) {
-    store.set({ capabilities: caps });
-  }
+    // ─── Public shape helpers (thin sugar over store.get / set) ────────
+    //
+    // These wrap the raw store with named actions so callers read like
+    // domain code rather than store plumbing. Each returns nothing —
+    // subscribers observe via store.subscribe.
 
-  function mergeCapabilities(patch) {
-    // Deep-merge on `features` so a status-update hot-flag flip
-    // doesn't clobber the rest of the map (spec v1.4.0 §status-update
-    // merge semantics). Other fields replace.
-    const s = store.get();
-    const base = s.capabilities || {};
-    const merged = { ...base, ...patch };
-    if (base.features || patch.features) {
-      merged.features = { ...base.features, ...patch.features };
+    function setCapabilities(caps) {
+      store.set({ capabilities: caps });
     }
-    store.set({ capabilities: merged });
+
+    function mergeCapabilities(patch) {
+      // Deep-merge on `features` so a status-update hot-flag flip
+      // doesn't clobber the rest of the map (spec v1.4.0 §status-update
+      // merge semantics). Other fields replace.
+      const s = store.get();
+      const base = s.capabilities || {};
+      const merged = { ...base, ...patch };
+      if (base.features || patch.features) {
+        merged.features = { ...base.features, ...patch.features };
+      }
+      store.set({ capabilities: merged });
+    }
+
+    function patchStatus(patch) {
+      const s = store.get();
+      store.set({ status: { ...s.status, ...patch } });
+    }
+
+    function patchUsage(patch) {
+      const s = store.get();
+      store.set({ usage: { ...s.usage, ...patch } });
+    }
+
+    function setSessions(sessions) {
+      store.set({ sessions });
+    }
+
+    function setCurrentSession(id) {
+      store.set({ currentSession: id });
+    }
+
+    function setCurrentModel(model) {
+      store.set({ currentModel: model });
+    }
+
+    function setCostCeilingHit(hit) {
+      store.set({ costCeilingHit: hit });
+    }
+
+    function recordInbox(promptID, state) {
+      if (!promptID) return;
+      const s = store.get();
+      store.set({ inboxState: { ...s.inboxState, [promptID]: state } });
+    }
+
+    function incrementTurnCount() {
+      const s = store.get();
+      store.set({ turnCount: s.turnCount + 1 });
+    }
+
+    function setTotalCostUSD(v) {
+      store.set({ totalCostUSD: v });
+    }
+
+    // The server's own turn count, when a usage-update carries one. It
+    // outranks the local increment rather than adding to it — see the
+    // usage-update case in terminal.js for why.
+    function setTurnCount(n) {
+      store.set({ turnCount: n });
+    }
+
+    function setEndpoint(endpoint) {
+      store.set({ endpoint: endpoint || '/' });
+    }
+
+    function setLabel(label) {
+      store.set({ label: label || '' });
+    }
+
+    function markInterruptUnsupported(sessionID) {
+      if (!sessionID) return;
+      const s = store.get();
+      if (s.interruptUnsupportedForSession.includes(sessionID)) return;
+      store.set({
+        interruptUnsupportedForSession: [...s.interruptUnsupportedForSession, sessionID],
+      });
+    }
+
+    function interruptUnsupportedFor(sessionID) {
+      return store.get().interruptUnsupportedForSession.includes(sessionID);
+    }
+
+    function setServerSlashCommands(names) {
+      store.set({ serverSlashCommands: Array.isArray(names) ? names.slice() : [] });
+    }
+
+    return {
+      store,
+      // Sugar for the common read — every consumer wants the value, not
+      // the store handle.
+      get() {
+        return store.get();
+      },
+      subscribe(fn) {
+        return store.subscribe(fn);
+      },
+      // Named actions
+      setCapabilities,
+      mergeCapabilities,
+      patchStatus,
+      patchUsage,
+      setSessions,
+      setCurrentSession,
+      setCurrentModel,
+      setCostCeilingHit,
+      recordInbox,
+      incrementTurnCount,
+      setTotalCostUSD,
+      setTurnCount,
+      setEndpoint,
+      setLabel,
+      markInterruptUnsupported,
+      interruptUnsupportedFor,
+      setServerSlashCommands,
+      // For tests + reset-on-switch flows.
+      initialSessionState,
+    };
   }
 
-  function patchStatus(patch) {
-    const s = store.get();
-    store.set({ status: { ...s.status, ...patch } });
-  }
+  // The shape every instance starts from, for tests that assert on it
+  // without building one.
+  createSession.baseSessionState = baseSessionState;
 
-  function patchUsage(patch) {
-    const s = store.get();
-    store.set({ usage: { ...s.usage, ...patch } });
-  }
-
-  function setSessions(sessions) {
-    store.set({ sessions });
-  }
-
-  function setCurrentSession(id) {
-    store.set({ currentSession: id });
-  }
-
-  function setCurrentModel(model) {
-    store.set({ currentModel: model });
-  }
-
-  function setCostCeilingHit(hit) {
-    store.set({ costCeilingHit: hit });
-  }
-
-  function recordInbox(promptID, state) {
-    if (!promptID) return;
-    const s = store.get();
-    store.set({ inboxState: { ...s.inboxState, [promptID]: state } });
-  }
-
-  function incrementTurnCount() {
-    const s = store.get();
-    store.set({ turnCount: s.turnCount + 1 });
-  }
-
-  function setTotalCostUSD(v) {
-    store.set({ totalCostUSD: v });
-  }
-
-  function markInterruptUnsupported(sessionID) {
-    if (!sessionID) return;
-    const s = store.get();
-    if (s.interruptUnsupportedForSession.includes(sessionID)) return;
-    store.set({
-      interruptUnsupportedForSession: [...s.interruptUnsupportedForSession, sessionID],
-    });
-  }
-
-  function interruptUnsupportedFor(sessionID) {
-    return store.get().interruptUnsupportedForSession.includes(sessionID);
-  }
-
-  function setServerSlashCommands(names) {
-    store.set({ serverSlashCommands: Array.isArray(names) ? names.slice() : [] });
-  }
-
-  return {
-    store,
-    // Named actions
-    setCapabilities,
-    mergeCapabilities,
-    patchStatus,
-    patchUsage,
-    setSessions,
-    setCurrentSession,
-    setCurrentModel,
-    setCostCeilingHit,
-    recordInbox,
-    incrementTurnCount,
-    setTotalCostUSD,
-    markInterruptUnsupported,
-    interruptUnsupportedFor,
-    setServerSlashCommands,
-    // For tests + reset-on-switch flows.
-    initialSessionState,
-  };
+  return createSession;
 })();
+
+// The classic shell's instance. app.js reaches for MastState.session
+// directly and predates the factory; it goes away with index.html.
+window.MastState.session = window.MastState.createSession();

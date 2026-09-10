@@ -71,7 +71,7 @@ export async function connectToMock(page, fixture) {
  * open the mock's session into a 3D terminal, and hand back a locator
  * for that terminal's transcript.
  *
- * There is no setup modal here — with nothing stored, MastAgents.boot()
+ * There is no setup modal here — with nothing stored, the sidebar's boot()
  * asks GET /config where the API is, and the mock answers `mock` mode
  * with no prefix, so the registry falls back to the same-origin `/` the
  * mock serves on. So the whole dance is: clear storage, load, click the

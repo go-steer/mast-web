@@ -23,8 +23,19 @@
 // This is the same terminal with the singleton assumption removed.
 // Every renderer that app.js resolves against `outputArea` resolves
 // here against a per-instance element, and every piece of turn state
-// (activeTurn, lastUserPrompt, usage totals, pending tool calls) lives
-// in the instance closure instead of module scope.
+// lives with the instance instead of at module scope.
+//
+// Where that state lives, as of v0.4: session identity and per-session
+// totals go in a state/session.js instance, connection and turn state
+// in a state/connection.js one. Both used to be singletons and both
+// are factories now, so a terminal holds a private pair rather than a
+// hand-rolled `st` literal. What stays in the closure is only what
+// nothing outside the transcript could use — DOM handles, half-drawn
+// rows, the pending tool-call map.
+//
+// The payoff is api.subscribe(): a status bar, a tab strip or a radar
+// blip can watch a terminal it doesn't own, instead of the shell
+// polling term.state on a timer.
 //
 // What's here today: streaming markdown, tool-call rows with
 // click-to-expand results, turn footers, the thinking indicator,
@@ -237,18 +248,25 @@ window.MastTerminal = (function () {
     const token = cfg.token || '';
     const onChange = typeof cfg.onChange === 'function' ? cfg.onChange : function () {};
 
-    // Everything app.js keeps in module scope lives here instead, one
-    // copy per terminal.
-    const st = {
+    // Everything app.js keeps in module scope lives here instead — but
+    // in the shared stores rather than in this closure, one instance of
+    // each per terminal. Through v0.3.0 both stores were singletons,
+    // which is why this file grew its own informal copy of them; they
+    // are factories now, so the copy is gone and the state a shell
+    // wants to read (who is connected, what is running, what it cost)
+    // is observable from outside without asking the terminal.
+    const session = window.MastState.createSession({
       endpoint: endpoint,
-      sessionId: cfg.sessionId || '',
+      currentSession: cfg.sessionId || '',
       label: cfg.label || cfg.sessionId || endpoint,
-      connState: 'disconnected',
-      running: false,
+    });
+    const connection = window.MastState.createConnection();
+
+    // Renderer-only state, which stays in the closure because nothing
+    // outside the transcript can do anything with it: a DOM handle, a
+    // half-priced turn, and two flags about how to draw the next row.
+    const ui = {
       lastUserPrompt: '',
-      model: '',
-      turns: 0,
-      costUSD: 0,
       lastFooter: null,
       // Most recent usage-update.last_turn, held until a footer claims
       // it: core-agent emits usage-update *before* turn-complete, so
@@ -261,13 +279,17 @@ window.MastTerminal = (function () {
       destroyed: false,
     };
 
+    // Reading the two stores. Named because `session.get().turnCount`
+    // at forty call sites reads worse than the field it replaced.
+    function sess() {
+      return session.get();
+    }
+
     const pendingToolCallsByID = new Map();
-    let activeTurn = null;
     // The turn that has seen turn-complete but is still accepting
     // trailing frames: { turn, result, timer }. See TURN_CLOSE_GRACE_MS.
     let closingTurn = null;
     let elapsedTimer = null;
-    let prompter = null;
 
     // ── DOM ──────────────────────────────────────────────────────────
 
@@ -276,7 +298,7 @@ window.MastTerminal = (function () {
     // is here because a shell that keeps several terminals mounted at
     // once (solo.html) otherwise has no way to say *which* one it means
     // from outside — including from a smoke test.
-    root.dataset.session = st.sessionId;
+    root.dataset.session = sess().currentSession;
 
     const screen = mk('div', 'term-screen');
     const out = mk('div', 'term-out');
@@ -377,7 +399,7 @@ window.MastTerminal = (function () {
 
     // `getText` is a thunk because a streaming row's final text isn't
     // known when the chips are attached. `allowRetry` is false for a
-    // replayed row: RETRY re-sends st.lastUserPrompt, which is this
+    // replayed row: RETRY re-sends ui.lastUserPrompt, which is this
     // view's last prompt and has nothing to do with a reply the log
     // remembers from before we attached.
     function addMessageActions(el, textOrGetter, allowRetry) {
@@ -410,8 +432,8 @@ window.MastTerminal = (function () {
         retry.type = 'button';
         retry.title = 'Re-send the prompt that produced this response';
         retry.addEventListener('click', () => {
-          if (!st.lastUserPrompt || st.running) return;
-          submit(st.lastUserPrompt);
+          if (!ui.lastUserPrompt || connection.isRunning()) return;
+          submit(ui.lastUserPrompt);
         });
         row.appendChild(retry);
       }
@@ -496,9 +518,10 @@ window.MastTerminal = (function () {
       div.dataset.resolved = decision;
       const actions = div.querySelector('.perms-actions');
       if (actions) actions.replaceChildren(mk('span', 'perms-outcome', decision));
-      if (!prompter) return;
+      const pr = connection.getPrompter();
+      if (!pr) return;
       try {
-        await prompter.respond(frame.id, decision);
+        await pr.respond(frame.id, decision);
       } catch (e) {
         addSystemMessage(describeError(e, 'perms respond failed: '));
       }
@@ -510,32 +533,34 @@ window.MastTerminal = (function () {
       closePromptStream();
       const Prompter = window.AttachCorePrompter && window.AttachCorePrompter.Prompter;
       if (!Prompter) return;
-      prompter = new Prompter({
+      const pr = new Prompter({
         endpoint: endpoint,
         token: token,
-        sessionId: st.sessionId,
+        sessionId: sess().currentSession,
         onPrompt: (frame) => {
-          if (st.destroyed || !frame || !frame.id) return;
+          if (ui.destroyed || !frame || !frame.id) return;
           addPermsRequest(frame);
         },
         onTerminal: () => {
-          if (st.destroyed) return;
+          if (ui.destroyed) return;
           addSystemMessage(
             'Perms stream unavailable — this agent does not support interactive prompts, or the stream permanently failed.'
           );
         },
       });
-      prompter.connect();
+      connection.setPrompter(pr);
+      pr.connect();
     }
 
     function closePromptStream() {
-      if (!prompter) return;
+      const pr = connection.getPrompter();
+      if (!pr) return;
       try {
-        prompter.disconnect();
+        pr.disconnect();
       } catch {
         /* best effort */
       }
-      prompter = null;
+      connection.setPrompter(null);
     }
 
     function addTurnFooter(result) {
@@ -545,10 +570,10 @@ window.MastTerminal = (function () {
       let cost = result.costUSD || 0;
       // turn-complete.cost_usd is optional and core-agent omits it, so
       // the number usually arrives on usage-update.last_turn — ahead of
-      // this footer existing. See st.pendingLastTurn.
-      if (cost <= 0 && lastTurnMatches(st.pendingLastTurn, tokensIn, tokensOut)) {
-        cost = st.pendingLastTurn.costUSD;
-        st.pendingLastTurn = null;
+      // this footer existing. See ui.pendingLastTurn.
+      if (cost <= 0 && lastTurnMatches(ui.pendingLastTurn, tokensIn, tokensOut)) {
+        cost = ui.pendingLastTurn.costUSD;
+        ui.pendingLastTurn = null;
       }
       div.dataset.totalMs = String(result.totalMs || 0);
       div.dataset.tokensIn = String(tokensIn);
@@ -723,12 +748,12 @@ window.MastTerminal = (function () {
     // ── Chrome ───────────────────────────────────────────────────────
 
     function setPrefix() {
-      const sid = st.sessionId || 'mast';
+      const sid = sess().currentSession || 'mast';
       prefix.textContent = '[' + sid.slice(0, 12) + '] ~>';
     }
 
     function setConnState(state) {
-      st.connState = state;
+      connection.setState(state);
       const glyph = state === 'connected' ? '⬤' : state === 'connecting' ? '◐' : '○';
       sConn.textContent = glyph + ' ' + state;
       sConn.dataset.state = state;
@@ -737,7 +762,7 @@ window.MastTerminal = (function () {
     }
 
     function setRunning(running) {
-      st.running = running;
+      connection.setIsRunning(running);
       sendBtn.disabled = running;
       stopBtn.hidden = !running;
       root.classList.toggle('term-busy', running);
@@ -745,9 +770,10 @@ window.MastTerminal = (function () {
     }
 
     function updateStatus() {
-      sModel.textContent = st.model || '—';
-      sTurns.textContent = 'T' + st.turns;
-      sCost.textContent = '$' + st.costUSD.toFixed(st.costUSD < 1 ? 4 : 2);
+      const s = sess();
+      sModel.textContent = s.currentModel || '—';
+      sTurns.textContent = 'T' + s.turnCount;
+      sCost.textContent = '$' + s.totalCostUSD.toFixed(s.totalCostUSD < 1 ? 4 : 2);
     }
 
     function startElapsed() {
@@ -839,17 +865,17 @@ window.MastTerminal = (function () {
         finish(result) {
           if (this.done) return;
           this.done = true;
-          activeTurn = null;
+          connection.setActiveTurn(null);
           root.classList.remove('term-observing');
           if (result) {
-            st.lastFooter = addTurnFooter(result);
-            if (!st.serverCountsTurns) st.turns += 1;
+            ui.lastFooter = addTurnFooter(result);
+            if (!ui.serverCountsTurns) session.incrementTurnCount();
             updateStatus();
           }
           pendingToolEls.forEach((el) => completeToolMessage(el, 0, 'turn ended', ''));
         },
       };
-      activeTurn = turn;
+      connection.setActiveTurn(turn);
       return turn;
     }
 
@@ -1063,7 +1089,7 @@ window.MastTerminal = (function () {
 
       switch (ev.type) {
         case 'capabilities':
-          st.capabilities = ev.data;
+          session.setCapabilities(ev.data);
           return;
 
         case 'status-update': {
@@ -1072,7 +1098,7 @@ window.MastTerminal = (function () {
           // belongs to the next turn, so close the last one first.
           if (s.turn_state === 'streaming') flushTurnClose();
           if (s.model) {
-            st.model = s.model;
+            session.setCurrentModel(s.model);
             updateStatus();
           }
           return;
@@ -1080,7 +1106,7 @@ window.MastTerminal = (function () {
 
         case 'usage-update': {
           const u = ev.data || {};
-          if (typeof u.cost_usd_total === 'number') st.costUSD = u.cost_usd_total;
+          if (typeof u.cost_usd_total === 'number') session.setTotalCostUSD(u.cost_usd_total);
           // turns_total is the server's own count, so the local
           // increment on turn close is only a fallback for servers that
           // don't send one. It used to be harmless either way — it
@@ -1088,8 +1114,8 @@ window.MastTerminal = (function () {
           // — but a turn now closes after the usage-update that reports
           // it, so an unconditional increment would count it twice.
           if (typeof u.turns_total === 'number') {
-            st.turns = u.turns_total;
-            st.serverCountsTurns = true;
+            session.setTurnCount(u.turns_total);
+            ui.serverCountsTurns = true;
           }
           if (u.last_turn && typeof u.last_turn === 'object') {
             const lt = {
@@ -1100,8 +1126,8 @@ window.MastTerminal = (function () {
             // Either ordering is legal on the wire: back-fill the
             // footer if it already exists, otherwise hold the payload
             // for addTurnFooter to claim.
-            st.pendingLastTurn = lt;
-            backfillTurnFooter(st.lastFooter, lt);
+            ui.pendingLastTurn = lt;
+            backfillTurnFooter(ui.lastFooter, lt);
           }
           updateStatus();
           onChange(api, 'usage');
@@ -1119,12 +1145,13 @@ window.MastTerminal = (function () {
 
         case 'turn-complete': {
           const tc = ev.data || {};
-          if (activeTurn) {
+          const open = connection.getActiveTurn();
+          if (open) {
             // Measured to *now* rather than to close time — the grace
             // window is the renderer's, not the agent's, and a real
             // backend supplies latency_ms anyway.
-            closeTurnSoon(activeTurn, {
-              totalMs: tc.latency_ms || performance.now() - activeTurn.startedAt,
+            closeTurnSoon(open, {
+              totalMs: tc.latency_ms || performance.now() - open.startedAt,
               tokens: { in: tc.tokens_in || 0, out: tc.tokens_out || 0 },
               costUSD: typeof tc.cost_usd === 'number' ? tc.cost_usd : 0,
               toolCalls: [],
@@ -1143,7 +1170,8 @@ window.MastTerminal = (function () {
           if (te.kind === 'cost_ceiling') {
             addSystemMessage('Cost ceiling reached — session paused until /guardrails reset.');
           }
-          if (activeTurn) activeTurn.finish(null, new Error(msg));
+          const failing = connection.getActiveTurn();
+          if (failing) failing.finish(null, new Error(msg));
           else addSystemMessage('Turn error: ' + msg);
           return;
         }
@@ -1176,7 +1204,7 @@ window.MastTerminal = (function () {
           if (ev.data.author === GROUNDING_AUTHOR) {
             const line = parseGroundingLine(ev.data.text);
             if (line) {
-              const gTurn = activeTurn || beginObserverTurn();
+              const gTurn = connection.getActiveTurn() || beginObserverTurn();
               if (line.query !== undefined) {
                 if (gTurn.callbacks.onGroundingQuery) gTurn.callbacks.onGroundingQuery(line.query);
               } else if (gTurn.callbacks.onGroundingSource) {
@@ -1186,7 +1214,7 @@ window.MastTerminal = (function () {
             }
             // Unrecognized shape — fall through and render it as text.
           }
-          const turn = activeTurn || beginObserverTurn();
+          const turn = connection.getActiveTurn() || beginObserverTurn();
           if (turn.callbacks.onToken) turn.callbacks.onToken(ev.data.text);
           return;
         }
@@ -1197,7 +1225,7 @@ window.MastTerminal = (function () {
             return;
           }
           drawHistory();
-          const turn = activeTurn || beginObserverTurn();
+          const turn = connection.getActiveTurn() || beginObserverTurn();
           const { id, name } = ev.data;
           const idx = name.indexOf('_');
           const server = idx > 0 ? name.substring(0, idx) : '';
@@ -1213,12 +1241,13 @@ window.MastTerminal = (function () {
             return;
           }
           drawHistory();
-          if (!activeTurn || !activeTurn.callbacks.onToolResult) return;
+          const running = connection.getActiveTurn();
+          if (!running || !running.callbacks.onToolResult) return;
           const { id, name, response, latencyMs } = ev.data;
           const idx = (name || '').indexOf('_');
           const server = idx > 0 ? name.substring(0, idx) : '';
           const tool = idx > 0 ? name.substring(idx + 1) : name;
-          activeTurn.callbacks.onToolResult(
+          running.callbacks.onToolResult(
             server,
             tool,
             typeof latencyMs === 'number' ? latencyMs : 0,
@@ -1238,10 +1267,11 @@ window.MastTerminal = (function () {
     const client = new window.AttachClient({
       endpoint: endpoint,
       token: token,
-      sessionId: st.sessionId,
+      sessionId: sess().currentSession,
       onConnectionState: setConnState,
       onEvent: dispatch,
     });
+    connection.setClient(client);
 
     function runPrompt(text, callbacks) {
       const startedAt = performance.now();
@@ -1253,12 +1283,12 @@ window.MastTerminal = (function () {
           finish(result, err) {
             if (this.done) return;
             this.done = true;
-            activeTurn = null;
+            connection.setActiveTurn(null);
             if (err) reject(err);
             else resolve(result);
           },
         };
-        activeTurn = turn;
+        connection.setActiveTurn(turn);
         // /inject only, no wake — see app.js's copy of this for the
         // measurement showing any second wake runs a second turn.
         Promise.resolve()
@@ -1283,7 +1313,10 @@ window.MastTerminal = (function () {
     async function runServerSlash(name, args) {
       const body = args.length > 0 ? { args: args.join(' ') } : {};
       const path =
-        '/sessions/' + encodeURIComponent(st.sessionId) + '/slash/' + encodeURIComponent(name);
+        '/sessions/' +
+        encodeURIComponent(sess().currentSession) +
+        '/slash/' +
+        encodeURIComponent(name);
       try {
         const res = await client._post(path, body);
         if (window.SlashRender && typeof window.SlashRender.renderSlashResponse === 'function') {
@@ -1301,7 +1334,8 @@ window.MastTerminal = (function () {
       const parts = trimmed.slice(1).split(/\s+/);
       const name = parts[0];
       const args = parts.slice(1);
-      const advertised = (st.capabilities && st.capabilities.slash_commands) || [];
+      const caps = sess().capabilities;
+      const advertised = (caps && caps.slash_commands) || [];
 
       if (name === 'help') {
         const lines = ['/clear             — Clear this panel', '/help              — This list'];
@@ -1324,7 +1358,7 @@ window.MastTerminal = (function () {
 
     async function submit(text) {
       const trimmed = (text || '').trim();
-      if (!trimmed || st.running) return;
+      if (!trimmed || connection.isRunning()) return;
       // The only client-side command that survives the minification:
       // clearing a panel is a display action, not a backend one.
       if (trimmed === '/clear') {
@@ -1339,7 +1373,7 @@ window.MastTerminal = (function () {
         syncInput();
         return;
       }
-      if (st.connState !== 'connected') {
+      if (connection.getState() !== 'connected') {
         addSystemMessage('Not connected.');
         return;
       }
@@ -1351,14 +1385,14 @@ window.MastTerminal = (function () {
       }
 
       // A turn still inside its grace window (an observer one — an
-      // operator turn holds st.running until it closes) gets its footer
+      // operator turn holds the running flag until it closes) gets its footer
       // now, above this prompt rather than under it. Replayed history
       // settles for the same reason: it happened before this prompt,
       // and it is about to have live content underneath it.
       flushTurnClose();
       drawHistory();
       setRunning(true);
-      st.lastUserPrompt = trimmed;
+      ui.lastUserPrompt = trimmed;
       addMessage('user', trimmed);
       startElapsed();
       const thinking = startThinking();
@@ -1399,8 +1433,8 @@ window.MastTerminal = (function () {
             appendSource(sourcesEl, title, uri);
           },
         });
-        st.lastFooter = addTurnFooter(result);
-        if (!st.serverCountsTurns) st.turns += 1;
+        ui.lastFooter = addTurnFooter(result);
+        if (!ui.serverCountsTurns) session.incrementTurnCount();
         updateStatus();
       } catch (e) {
         addSystemMessage(describeError(e));
@@ -1413,7 +1447,7 @@ window.MastTerminal = (function () {
     }
 
     async function stop() {
-      if (!st.running) return;
+      if (!connection.isRunning()) return;
       stopBtn.disabled = true;
       try {
         const r = await client.interrupt();
@@ -1473,22 +1507,55 @@ window.MastTerminal = (function () {
     const api = {
       el: root,
       out: out,
-      state: st,
       client: client,
+      // The two stores, for a shell that wants to observe rather than
+      // poll. This is the whole point of the seam: a status bar can
+      // subscribe to a terminal it does not own.
+      session: session,
+      connection: connection,
+
+      // A flat snapshot in the field names the shells already use.
+      // Reading it is a point-in-time copy — subscribe() is how you
+      // find out that it changed.
+      get state() {
+        const s = sess();
+        const c = connection.get();
+        return {
+          endpoint: s.endpoint,
+          sessionId: s.currentSession,
+          label: s.label,
+          connState: c.state,
+          running: c.isRunning,
+          model: s.currentModel,
+          turns: s.turnCount,
+          costUSD: s.totalCostUSD,
+          capabilities: s.capabilities,
+        };
+      },
+
+      // Fires on any change to either store. Returns an unsubscribe.
+      subscribe(fn) {
+        const offS = session.subscribe(() => fn(api));
+        const offC = connection.subscribe(() => fn(api));
+        return function () {
+          offS();
+          offC();
+        };
+      },
 
       async connect() {
         try {
-          if (!st.sessionId) {
+          if (!sess().currentSession) {
             const s = await client.autoSelectSession();
-            st.sessionId = s.id;
-            st.label = st.label || s.id;
+            session.setCurrentSession(s.id);
+            if (!sess().label) session.setLabel(s.id);
             setPrefix();
           }
           await client.connect();
           openPromptStream();
           addMessage(
             'system',
-            'attached · ' + endpoint + ' · session ' + st.sessionId,
+            'attached · ' + endpoint + ' · session ' + sess().currentSession,
             'cmd-output'
           );
         } catch (e) {
@@ -1517,8 +1584,8 @@ window.MastTerminal = (function () {
       },
 
       destroy() {
-        if (st.destroyed) return;
-        st.destroyed = true;
+        if (ui.destroyed) return;
+        ui.destroyed = true;
         // Nothing else is coming; settle the turn and abandon any
         // undrawn history rather than leaving timers pointed at a
         // detached transcript.

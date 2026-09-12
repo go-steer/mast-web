@@ -1,0 +1,105 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.7.0",
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "inbox",
+        "turn-complete",
+        "turn-error",
+        "agent",
+        "pause",
+        "wake"
+      ],
+      "server": "core-agent",
+      "features": {
+        "interrupt": true,
+        "pause": true,
+        "guardrails": true
+      }
+    }
+  },
+  {
+    "type": "status-update",
+    "data": {
+      "model": "gemini-2.5-flash",
+      "provider": "vertex",
+      "turn_state": "streaming",
+      "context_pct": 14,
+      "perm_mode": "prompt"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Rewriting every call site",
+      "partial": true,
+      "author": "assistant"
+    }
+  },
+  {
+    "type": "pause",
+    "data": {
+      "state": "paused",
+      "reason": "operator paused",
+      "interrupted": true,
+      "at": "2026-08-19T14:31:02.004Z"
+    }
+  },
+  {
+    "type": "status-update",
+    "data": {
+      "model": "gemini-2.5-flash",
+      "provider": "vertex",
+      "turn_state": "paused",
+      "context_pct": 14,
+      "perm_mode": "prompt"
+    }
+  },
+  {
+    "type": "pause",
+    "data": {
+      "state": "resumed",
+      "mode": "steer",
+      "at": "2026-08-19T14:32:05.061Z"
+    }
+  },
+  {
+    "type": "wake",
+    "data": {
+      "at": "2026-08-19T14:32:05.117Z"
+    }
+  },
+  {
+    "type": "status-update",
+    "data": {
+      "model": "gemini-2.5-flash",
+      "provider": "vertex",
+      "turn_state": "streaming",
+      "context_pct": 15,
+      "perm_mode": "prompt"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Only the two in the handler, then.",
+      "partial": false,
+      "author": "assistant"
+    }
+  },
+  {
+    "type": "turn-complete",
+    "data": {
+      "prompt_id": "p1",
+      "model": "gemini-2.5-flash",
+      "tokens_in": 310,
+      "tokens_out": 24,
+      "cost_usd": 0.00081,
+      "latency_ms": 1180
+    }
+  }
+]

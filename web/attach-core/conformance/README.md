@@ -20,13 +20,38 @@ Each fixture is two files:
 - `<name>.jsonl` — one SSE frame per line, shaped as
   `{"event": "<event-name>", "data": <payload>}`. `event` is the SSE
   event name (`capabilities`, `status-update`, `usage-update`, `inbox`,
-  `turn-complete`, `turn-error`, or `agent`). `data` is the already-
-  parsed JSON payload (not a string).
+  `turn-complete`, `turn-error`, `agent`, and since v1.5.0/v1.7.0
+  `pause` and `wake`). `data` is the already-parsed JSON payload (not a
+  string).
 - `<name>.expected.json` — an ordered array of typed events the
   client should have emitted after processing the fixture. Shape is
   `[{"type": "<typed-event>", "data": <observed-data>}, ...]`. Typed
   events include the raw SSE typed events and the sub-events fanned
   out from `agent` frames (`stream-chunk`, `tool-call`, `tool-result`).
+
+## These fixtures are also the mock's backend
+
+`cmd/mast-web-server` in `--mode=mock` replays this directory verbatim,
+so a fixture is not only a test input — it's the world every smoke spec
+and every `npm run dev` session sees. Two consequences worth knowing
+before editing one:
+
+- **`001-happy-turn` is the default.** It's the mock's baseline picture
+  of a current backend, so its `capabilities` frame tracks the protocol
+  version we claim to model (`wireProtocolVersion` in
+  `cmd/mast-web-server/mock.go`). `TestMock_DefaultFixtureMatchesSpec`
+  fails if the two drift apart. Other fixtures are free to pin older
+  versions — back-compat coverage is the point of some of them.
+- **A fixture must declare the events it emits.** Its `event_types`
+  can list more than the stream contains (that field is the backend's
+  repertoire, not an inventory), but never fewer: a consumer gating on
+  `event_types` would be right to drop an undeclared frame.
+  `TestMock_FixturesDeclareTheEventsTheyEmit` checks every fixture.
+
+`001`'s `features` map is deliberately minimal — only the flags the
+gates actually read. `web/app.js` treats an absent key as on, so
+spelling out every flag would silently change smoke-suite behaviour
+(`observer_mode` above all) in exchange for nothing.
 
 ## Running
 

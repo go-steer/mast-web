@@ -167,6 +167,8 @@ One ask. It goes to core-agent / mast, it is additive and forward-compatible, an
 
 1. **Per-turn caller attribution** — the human identity that drove a turn, carried on the event stream the way `X-Asserted-Caller` carries it inbound. Without it, any multi-participant surface renders unlabeled speakers. This is the blocker for the chat shell's headline feature and the only thing here on the critical path.
 
+**Partly overtaken, 2026-09-12.** core-agent#830 attributes permission *approvals* with an optional `by` field, and core-tui#277 renders it — the first time a human identity flows back out on the event stream at all. It is not the ask: an approval is a decision, not a turn, and a conversation still has unlabeled speakers. But the shape of the answer now exists upstream, which makes ask 1 an extension of something shipped rather than a new mechanism to argue for. Cite it when re-raising.
+
 An earlier draft listed a second ask — an explicit prompt event, on the theory that the injected prompt text never reaches observers and a turn has to be inferred from its first chunk. That was wrong. The prompt does arrive, as a user-authored `agent` frame ahead of the reply; §2b has the fixture. Nothing upstream is needed for §5.1, which unblocks S0 from the protocol entirely. What the existing frame lacks is the *caller*, which is ask 1 — so the two questions were never really separable.
 
 ## 10. Phasing

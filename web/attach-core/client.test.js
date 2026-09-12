@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Unit tests for web/attach-core/client.js — spec v1.2.0 alignment.
+// Unit tests for web/attach-core/client.js — spec v1.7.0 alignment.
 //
 // Covers:
 //   1. PermanentStreamError classification on HTTP 404/401/403
-//   2. capabilities frame caching
+//   2. capabilities frame caching + the two-question capability gating
 //   3. tool-result latency_ms sidecar extraction (via protocol.js)
 //   4. Legacy `agent` frame demux into stream-chunk / tool-call / tool-result
 //   5. Both float64 (browser) and int64-shaped latency values
+//   6. /interrupt's hold flag and the v1.5.0 response body
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -391,6 +392,30 @@ describe('AttachClient', () => {
       expect(sessions[0].status).toBe('active');
       expect(sessions[0].lastTouchedAt).toBe('2026-07-20T12:00:00Z');
       expect(sessions[1].status).toBe('idle');
+    });
+
+    it('listSessions surfaces the optional v1.6.0 title, per row', async () => {
+      // `title` is optional per ROW, not per server: the same response
+      // carries titled and untitled rows, because a session whose first
+      // turn hasn't landed has nothing to be titled from. So a caller
+      // can't decide once for the whole list — hence the '' default,
+      // which makes `title || id` the whole fallback.
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            sessions: [
+              { app: 'core-agent', user: 'alice', sessionID: 's1', title: 'triage the pager' },
+              { app: 'core-agent', user: 'alice', sessionID: 's2' },
+            ],
+          }),
+      });
+      const sessions = await client.listSessions();
+      expect(sessions[0].title).toBe('triage the pager');
+      expect(sessions[1].title).toBe('');
+      expect(sessions[1].title || sessions[1].id).toBe('s2');
     });
 
     // autoSelectSession used to throw on an empty list, on the reading
@@ -1116,6 +1141,64 @@ describe('AttachClient', () => {
 
       expect(client.capabilities).toEqual(capsData);
       expect(events[0]).toEqual({ type: 'capabilities', data: capsData });
+    });
+  });
+
+  describe('capability gating (v1.5.0 §2.8 two-question split)', () => {
+    function withCaps(caps) {
+      const client = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      client.capabilities = caps;
+      return client;
+    }
+
+    it('reads pause rendering off event_types and pause controls off features', () => {
+      const c = withCaps({
+        protocol_version: '1.7.0',
+        event_types: ['capabilities', 'status-update', 'pause', 'wake'],
+        features: { interrupt: true, pause: true, guardrails: true },
+      });
+      expect(c.emitsPauseEvents()).toBe(true);
+      expect(c.supportsPause()).toBe(true);
+      expect(c.supportsGuardrails()).toBe(true);
+    });
+
+    it('renders a pause it cannot cause', () => {
+      // A server that speaks the frame in front of an agent that cannot
+      // hold. The banner still has to work — someone else's park is
+      // still real — while the Pause button must not be offered.
+      const c = withCaps({
+        event_types: ['capabilities', 'pause'],
+        features: { pause: false },
+      });
+      expect(c.emitsPauseEvents()).toBe(true);
+      expect(c.supportsPause()).toBe(false);
+    });
+
+    it('reads a pre-v1.5.0 backend as no pause at all', () => {
+      const c = withCaps({
+        protocol_version: '1.4.0',
+        event_types: ['capabilities', 'status-update', 'agent'],
+        features: { interrupt: true },
+      });
+      expect(c.emitsPauseEvents()).toBe(false);
+      // features.pause is absent, and absent means on by the additive
+      // rule — which is why nothing may be offered on that alone. The
+      // event_types answer is the one that stops us here.
+      expect(c.supportsPause()).toBe(true);
+    });
+
+    it('reads guardrails as on when the producer predates the flag', () => {
+      // core-agent advertised guardrails from #670, before v1.5.0
+      // backfilled the key. Reading silence as "off" would have hidden
+      // /reset-ceiling on every backend built in between.
+      const c = withCaps({ protocol_version: '1.4.0', features: { interrupt: true } });
+      expect(c.supportsGuardrails()).toBe(true);
+    });
+
+    it('answers before the first capabilities frame without throwing', () => {
+      const c = withCaps(null);
+      expect(c.emitsPauseEvents()).toBe(false);
+      expect(c.supportsPause()).toBe(true);
     });
   });
 

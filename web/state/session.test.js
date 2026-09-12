@@ -19,7 +19,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcSubs = readFileSync(join(here, 'subscriptions.js'), 'utf8');
@@ -171,6 +171,142 @@ describe('state/session', () => {
   it('setServerSlashCommands with non-array normalizes to empty', () => {
     session.setServerSlashCommands(null);
     expect(session.store.get().serverSlashCommands).toEqual([]);
+  });
+
+  // ─── The pause gate (spec v1.5.0 §2.8 / v1.7.0 §2.9) ────────────────
+  describe('pause gate', () => {
+    const paused = {
+      state: 'paused',
+      reason: 'operator interrupt',
+      interrupted: true,
+      at: '2026-08-19T14:31:02.881Z',
+    };
+
+    it('applyPauseEvent records a park with its reason and interrupted flag', () => {
+      session.applyPauseEvent(paused);
+      expect(session.get().pause).toEqual({
+        paused: true,
+        since: '2026-08-19T14:31:02.881Z',
+        reason: 'operator interrupt',
+        interrupted: true,
+        resumeMode: '',
+      });
+    });
+
+    it('a plain /pause is not an interrupt', () => {
+      // Absent `interrupted` means the gate closed without killing
+      // anything — the difference between "your work was stopped" and
+      // "the loop just will not start".
+      session.applyPauseEvent({ state: 'paused', at: '2026-08-19T14:31:02Z' });
+      expect(session.get().pause.interrupted).toBe(false);
+      expect(session.get().pause.reason).toBe('');
+    });
+
+    it('applyPauseEvent clears the hold on resume and keeps the disposition', () => {
+      session.applyPauseEvent(paused);
+      session.applyPauseEvent({ state: 'resumed', mode: 'steer', at: '2026-08-19T14:32:44Z' });
+      const p = session.get().pause;
+      expect(p.paused).toBe(false);
+      expect(p.since).toBe(null);
+      expect(p.reason).toBe('');
+      expect(p.interrupted).toBe(false);
+      expect(p.resumeMode).toBe('steer');
+    });
+
+    it('ignores an unknown state rather than guessing', () => {
+      // §2.8 reserves the right to add states and requires clients to
+      // treat unknown ones as no-ops. Guessing is how a client breaks
+      // on a minor bump it was supposed to survive.
+      session.applyPauseEvent(paused);
+      session.applyPauseEvent({ state: 'draining', at: '2026-08-19T14:33:00Z' });
+      expect(session.get().pause.paused).toBe(true);
+      expect(session.get().pause.reason).toBe('operator interrupt');
+    });
+
+    it('applyPauseStatus renders a hold that started before we attached', () => {
+      // The whole reason the poll exists: a client attaching to an
+      // already-paused session never sees the transition frame.
+      session.applyPauseStatus({
+        paused: true,
+        paused_since: '2026-08-19T14:31:02Z',
+        pause_reason: 'cost ceiling reached',
+        interrupted: true,
+      });
+      expect(session.get().pause.paused).toBe(true);
+      expect(session.get().pause.reason).toBe('cost ceiling reached');
+    });
+
+    it('a poll in flight across a resume does not flip the banner back on', () => {
+      vi.useFakeTimers();
+      try {
+        session.applyPauseEvent(paused);
+        session.applyPauseEvent({ state: 'resumed', mode: 'abandon', at: '2026-08-19T14:32:44Z' });
+        // The server answered this poll before it processed the resume.
+        session.applyPauseStatus({ paused: true, paused_since: '2026-08-19T14:31:02Z' });
+        expect(session.get().pause.paused).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('but the server wins again once the settle window closes', () => {
+      vi.useFakeTimers();
+      try {
+        session.applyPauseEvent({ state: 'resumed', mode: 'abandon', at: '2026-08-19T14:32:44Z' });
+        vi.advanceTimersByTime(2500);
+        // Not a stale poll any more — we missed an event, and a client
+        // that keeps ignoring the server stays wrong forever.
+        session.applyPauseStatus({ paused: true, paused_since: '2026-08-19T14:33:00Z' });
+        expect(session.get().pause.paused).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('an agreeing poll applies immediately, window or not', () => {
+      vi.useFakeTimers();
+      try {
+        session.applyPauseEvent({ state: 'paused', at: '2026-08-19T14:31:02Z' });
+        session.applyPauseStatus({
+          paused: true,
+          paused_since: '2026-08-19T14:31:02Z',
+          pause_reason: 'operator paused',
+        });
+        expect(session.get().pause.reason).toBe('operator paused');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a pre-v1.5.0 status says nothing about pausing, which is not "running"', () => {
+      // Absent is no answer. Overwriting observed state with it would
+      // clear a banner the server never retracted.
+      session.applyPauseEvent(paused);
+      session.applyPauseStatus({ model: 'gemini-2.5-flash', provider: 'vertex' });
+      expect(session.get().pause.paused).toBe(true);
+    });
+
+    it('falls back to turn_state when a status omits the explicit flag', () => {
+      session.applyPauseStatus({ turn_state: 'paused' });
+      expect(session.get().pause.paused).toBe(true);
+      session.applyPauseStatus({ turn_state: 'idle' });
+      expect(session.get().pause.paused).toBe(false);
+    });
+
+    it('recordWake stores the timestamp and asserts nothing about the inbox', () => {
+      // §2.9: a wake does NOT mean an alert is waiting. Whatever did
+      // the waking announces itself through its own frames, so the
+      // store must not synthesize inbox state from one.
+      session.recordWake('2026-08-19T14:32:05.117Z');
+      expect(session.get().lastWakeAt).toBe('2026-08-19T14:32:05.117Z');
+      expect(session.get().inboxState).toEqual({});
+    });
+
+    it('a wake is an edge, not a state — it does not touch the gate', () => {
+      session.applyPauseEvent(paused);
+      session.recordWake('2026-08-19T14:32:05.117Z');
+      expect(session.get().pause.paused).toBe(true);
+    });
   });
 });
 

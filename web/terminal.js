@@ -1097,12 +1097,35 @@ window.MastTerminal = (function () {
           // The agent is generating again: whatever it produces now
           // belongs to the next turn, so close the last one first.
           if (s.turn_state === 'streaming') flushTurnClose();
+          // turn_state carries the gate too (v1.5.0). Routed through
+          // applyPauseStatus rather than set directly so it loses to a
+          // `pause` frame applied moments ago — the two can disagree
+          // for about a second across a resume.
+          session.applyPauseStatus(s);
           if (s.model) {
             session.setCurrentModel(s.model);
             updateStatus();
           }
           return;
         }
+
+        // v1.5.0 §2.8. Anyone can park this session — another tab, an
+        // embedded TUI, a cost ceiling — so this frame arrives
+        // unsolicited, not only in reply to something we sent. Recorded
+        // into the store now; the banner and the resume controls are
+        // #70. No capability gate on the receiving side: a frame the
+        // server actually sent is a frame worth believing.
+        case 'pause':
+          session.applyPauseEvent(ev.data);
+          onChange(api, 'pause');
+          return;
+
+        // v1.7.0 §2.9. An edge, not a state, and explicitly NOT a
+        // notification that an alert is waiting — whatever did the
+        // waking announces itself through its own frames.
+        case 'wake':
+          session.recordWake((ev.data || {}).at);
+          return;
 
         case 'usage-update': {
           const u = ev.data || {};

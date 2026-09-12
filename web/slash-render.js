@@ -19,7 +19,8 @@
 // tree) and a small hand-rolled `_schema` validator.
 //
 // Response conventions the SPA consumes (reserved in core-tui/docs/
-// sse-event-stream-protocol.md §6 as of v1.4.0):
+// sse-event-stream-protocol.md §6, reserved in v1.4.0 and unchanged
+// through v1.7.0):
 //
 //   _render   — chooses the renderer. Built-ins: "text" | "markdown"
 //               | "json" | "table" | "tree". Absent defaults to

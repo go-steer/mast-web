@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // attach-core/client — JavaScript consumer of mast / core-agent's
-// attach protocol (HTTP/SSE per spec v1.4.0). Replaces the phase-A
+// attach protocol (HTTP/SSE per spec v1.7.0). Replaces the phase-A
 // mock `mast` object in app.js with a real backend connection.
 //
 // Version note: v1.3.0 was consumed 2026-07-17 by the digest-`savings`
@@ -28,6 +28,16 @@
 // the configured-subagent catalog (core-agent#627/#634), the subagent
 // turn drill-down (core-agent#638/#687), and BackendDrainingError for
 // 503 + Retry-After on shutdown drain (core-agent#564/#567).
+//
+// 2026-09-12 sync (docs/upstream-drift-2026-09-12.md): the protocol had
+// moved 1.4.0 → 1.7.0 in three bumps while this file stayed at 1.4.0.
+//   1.5.0 — the `pause` event and `features.pause`; /interrupt parks by
+//           default, which was a live bug here until #68.
+//   1.6.0 — no frame changed; optional `title` on session rows.
+//   1.7.0 — the `wake` event.
+// `features.guardrails` was backfilled in the same pass; producers have
+// advertised it since core-agent#670 without a bump, which the §2.1
+// additive rule permits.
 //
 // Depends on sibling modules (loaded ahead of this file in index.html):
 //   attach-core/errors.js    — PermanentStreamError, BackendDrainingError
@@ -53,7 +63,7 @@
 // tells the SPA where <endpoint> is in the first place, so it is a
 // static on the class — see discoverConfig.
 //
-// SSE event types (per spec v1.4.0 §2):
+// SSE event types (per spec v1.7.0 §2):
 //   capabilities    — first frame; protocol_version + event_types +
 //                     server + (since 1.4.0) features / slash_commands
 //                     / agent / caller_id. Consumers cache the whole
@@ -73,6 +83,14 @@
 //                     all multiplexed onto this one event type). Since
 //                     1.2.0, tool-result responses carry a latency_ms
 //                     sidecar key inside the response map.
+//   pause           — 1.5.0 §2.8; the agent entered or left a hold.
+//                     state + reason + resume mode + whether a turn was
+//                     interrupted to get there. Anyone can cause one, so
+//                     it arrives unsolicited, not only in reply to us.
+//   wake            — 1.7.0 §2.9; payload is `at` and nothing else. The
+//                     agent came back from a sleep. It does NOT mean an
+//                     alert is waiting — §2.9 is explicit about that, and
+//                     treating it as one is the obvious wrong read.
 //
 // Reserved response-body conventions (spec §6, v1.4.0):
 //   _render — "text" | "markdown" | "json" (default) — chosen renderer
@@ -94,8 +112,17 @@ window.AttachClient = (function () {
     (window.AttachCoreErrors && window.AttachCoreErrors.BackendDrainingError) || null;
   const fanoutAgentFrame =
     (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
+  const emitsEvent = (window.AttachCoreProtocol && window.AttachCoreProtocol.emitsEvent) || null;
+  const hasFeature = (window.AttachCoreProtocol && window.AttachCoreProtocol.hasFeature) || null;
   const ReplayFilter = (window.AttachCoreReplay && window.AttachCoreReplay.ReplayFilter) || null;
-  if (!PermanentStreamError || !BackendDrainingError || !fanoutAgentFrame || !ReplayFilter) {
+  if (
+    !PermanentStreamError ||
+    !BackendDrainingError ||
+    !fanoutAgentFrame ||
+    !emitsEvent ||
+    !hasFeature ||
+    !ReplayFilter
+  ) {
     throw new Error(
       'attach-core/client.js: missing dependencies — errors.js, protocol.js, and replay.js must load first'
     );
@@ -307,6 +334,12 @@ window.AttachClient = (function () {
       // per attach-mode-design.md; the bundled mock historically used
       // snake_case. Accept both, canonical shape first — same pattern
       // createSession below already follows.
+      //
+      // v1.6.0: `title` is an optional human label. Optional per row,
+      // not per server — the same response can carry titled and
+      // untitled rows — so callers fall back to the id rather than
+      // deciding once for the whole list. Empty string, not null, so
+      // `title || id` is all a caller needs.
       return (out.sessions || []).map((s) => {
         const id = s.sessionID || s.session_id || '';
         return {
@@ -316,6 +349,7 @@ window.AttachClient = (function () {
           hasEventLog: !!s.has_event_log,
           status: s.status || 'active',
           lastTouchedAt: s.last_touched_at || null,
+          title: typeof s.title === 'string' ? s.title : '',
           label: id,
         };
       });
@@ -497,7 +531,9 @@ window.AttachClient = (function () {
         this.onConnectionState('connecting');
       };
 
-      // Typed events (spec v1.1.0 §2).
+      // Typed events (spec §2). Registering a listener for an event the
+      // server never sends costs nothing, so this is the union across
+      // versions rather than something gated on `event_types`.
       const typed = [
         'capabilities',
         'status-update',
@@ -505,6 +541,10 @@ window.AttachClient = (function () {
         'inbox',
         'turn-complete',
         'turn-error',
+        // v1.5.0 §2.8 — the session's pause gate opened or closed.
+        'pause',
+        // v1.7.0 §2.9 — the agent's wake signal was raised.
+        'wake',
       ];
       // Capture the generation at listener-registration time so events
       // arriving after a selectSession() bump are tagged with the OLD
@@ -748,6 +788,36 @@ window.AttachClient = (function () {
     // 401s an unauthenticated /whoami like any other route.
     async whoami() {
       return this._get('/whoami');
+    }
+
+    // ─── Capability gating ──────────────────────────────────────────
+    //
+    // Thin reads over the cached capabilities frame. They exist as
+    // named methods rather than inline `client.capabilities.features &&
+    // ...` at each call site because the two questions below look
+    // interchangeable and are not, and a name is the cheapest place to
+    // put that distinction where someone will see it.
+
+    // Will pause state arrive on the stream? Gate RENDERING on this.
+    emitsPauseEvents() {
+      return emitsEvent(this.capabilities, 'pause');
+    }
+
+    // Can this agent actually hold? Gate the pause/resume CONTROLS on
+    // this — a v1.5.0 server lists the `pause` event whether or not the
+    // agent behind it implements PauseController, so the event being
+    // declared is not permission to draw a button. (The controls
+    // themselves are #70.)
+    supportsPause() {
+      return hasFeature(this.capabilities, 'pause');
+    }
+
+    // Can the operator read and reset a tripped watchdog without
+    // restarting the agent? Distinct from `cost_ceiling`, which is
+    // about one specific guardrail tripping. Callers of getGuardrails /
+    // resetGuardrails should gate on this rather than calling blind.
+    supportsGuardrails() {
+      return hasFeature(this.capabilities, 'guardrails');
     }
 
     // GET /sessions/{sid}/guardrails — current watchdog + cost-ceiling

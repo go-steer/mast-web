@@ -19,6 +19,7 @@
 //   - capabilities frame (v1.4.0 shape: features, slash_commands,
 //     agent, caller_id)
 //   - status (model, provider, turn state, context pct, perm mode)
+//   - pause gate (v1.5.0): paused / since / reason / interrupted
 //   - usage totals + per-model breakdown + last-turn cost with cache
 //     attribution
 //   - sessions list (from GET /sessions; includes idle/active status)
@@ -60,7 +61,7 @@ window.MastState.createSession = (function () {
     endpoint: '/',
     label: '',
 
-    // capabilities first-frame (spec v1.4.0). Null until the server
+    // capabilities first-frame (spec v1.7.0). Null until the server
     // sends it; consumers should treat null as "backend hasn't
     // advertised yet" and fall through to defaults.
     capabilities: null,
@@ -87,6 +88,39 @@ window.MastState.createSession = (function () {
       // last_turn: { tokensIn, tokensInCached, tokensOut, costUSD, model }
       lastTurn: null,
     },
+
+    // The pause gate (spec v1.5.0 §2.8). A paused session is one where
+    // no NEW turn starts until someone resumes — which is not the same
+    // fact as "no turn is running", because an idle agent picks up the
+    // next queued prompt on its own and a paused one does not.
+    //
+    // Anyone can cause a transition: another browser tab, an embedded
+    // TUI, a scheduler, a cost ceiling. So this is state we observe,
+    // never state we assume from having sent a request.
+    pause: {
+      paused: false,
+      // RFC 3339 string from the frame, not a Date — banners date from
+      // it and it round-trips through JSON unchanged.
+      since: null,
+      // Shown verbatim; the producer wrote it for an operator to read.
+      reason: '',
+      // Was a turn actually cancelled on the way in? "Your work was
+      // killed" and "the loop just won't start" are different
+      // situations and it is the first thing an operator asks.
+      interrupted: false,
+      // Disposition of the last resume: steer | continue | abandon.
+      // Only meaningful after one; '' before.
+      resumeMode: '',
+    },
+
+    // Last `wake` event (v1.7.0 §2.9), RFC 3339 or null.
+    //
+    // An edge, not a state — there is no unwake and nothing to
+    // reconcile on reconnect. And it does NOT mean an alert is waiting:
+    // whatever did the waking announces itself through its own frames.
+    // A consumer that renders "you have mail" off this is wrong for
+    // every wake that wasn't alert-driven.
+    lastWakeAt: null,
 
     // GET /sessions response, sorted by lastTouchedAt desc.
     sessions: [],
@@ -171,6 +205,78 @@ window.MastState.createSession = (function () {
       store.set({ usage: { ...s.usage, ...patch } });
     }
 
+    // ─── The pause gate ────────────────────────────────────────────────
+    //
+    // Two sources say whether the agent is held, and they disagree for
+    // about a second at a time. The `pause` event is the fast one; GET
+    // /status is the durable one, and it's the only one that can tell a
+    // client attaching to an already-paused session about a transition
+    // that happened before it connected.
+    //
+    // Spec §2.8 settles the conflict: an applied push wins over a
+    // contradicting poll for a short settle window, then the server
+    // wins again. Both halves matter. Without the window, a poll
+    // already in flight across a resume flips the banner back on for a
+    // tick. Without the expiry, a client that missed an event stays
+    // wrong forever. core-tui uses two seconds; so do we.
+    const PAUSE_SETTLE_MS = 2000;
+    let lastPushMs = 0;
+
+    // applyPauseEvent consumes a `pause` frame. Unknown `state` values
+    // are a no-op rather than a guess — §2.8 reserves the right to add
+    // states, and inventing a meaning for one is how a client breaks on
+    // a minor bump it was supposed to survive.
+    function applyPauseEvent(data) {
+      const d = data || {};
+      if (d.state !== 'paused' && d.state !== 'resumed') return;
+      const paused = d.state === 'paused';
+      lastPushMs = Date.now();
+      store.set({
+        pause: {
+          paused,
+          // `at` is the transition; on a resume there's no "since" left
+          // to hold, so it clears rather than going stale.
+          since: paused ? d.at || null : null,
+          reason: paused ? d.reason || '' : '',
+          // Absent `interrupted` on a paused frame means false — a
+          // plain /pause, or an interrupt that landed while idle.
+          interrupted: paused ? !!d.interrupted : false,
+          resumeMode: paused ? '' : d.mode || '',
+        },
+      });
+    }
+
+    // applyPauseStatus consumes the pause fields of a GET /status poll.
+    // Loses to a push applied inside the settle window; authoritative
+    // after it.
+    function applyPauseStatus(status) {
+      const st = status || {};
+      // A pre-v1.5.0 backend says nothing about pausing at all. Absent
+      // is not "running" — it's no answer, and overwriting observed
+      // state with it would clear a banner the server never retracted.
+      if (!('paused' in st) && !('turn_state' in st)) return;
+      const paused = 'paused' in st ? !!st.paused : st.turn_state === 'paused';
+      const s = store.get();
+      if (paused !== s.pause.paused && Date.now() - lastPushMs < PAUSE_SETTLE_MS) return;
+      store.set({
+        pause: {
+          paused,
+          since: paused ? st.paused_since || s.pause.since || null : null,
+          reason: paused ? st.pause_reason || s.pause.reason || '' : '',
+          interrupted: paused ? !!st.interrupted : false,
+          // A poll reports the gate, not how it last opened; keep what
+          // the stream told us rather than blanking it.
+          resumeMode: paused ? '' : s.pause.resumeMode,
+        },
+      });
+    }
+
+    // recordWake consumes a `wake` frame (v1.7.0 §2.9). Timestamp only,
+    // by design — see the note on lastWakeAt.
+    function recordWake(at) {
+      store.set({ lastWakeAt: at || null });
+    }
+
     function setSessions(sessions) {
       store.set({ sessions });
     }
@@ -249,6 +355,9 @@ window.MastState.createSession = (function () {
       mergeCapabilities,
       patchStatus,
       patchUsage,
+      applyPauseEvent,
+      applyPauseStatus,
+      recordWake,
       setSessions,
       setCurrentSession,
       setCurrentModel,

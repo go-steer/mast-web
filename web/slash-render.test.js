@@ -549,6 +549,108 @@ describe('SlashRender', () => {
     });
   });
 
+  describe('groupToolsByServer', () => {
+    // The shape core-agent flattens to: the server's own name in
+    // `source`, no `server` field at all.
+    it('buckets flattened attribution under the server name', () => {
+      const out = SlashRender.groupToolsByServer([
+        { name: 'gke_nodes_list', source: 'gke', description: 'List nodes' },
+        { name: 'gke_clusters_list', source: 'gke' },
+      ]);
+      expect(out).toEqual([
+        {
+          name: 'gke',
+          status: 'connected',
+          tools: [
+            { name: 'gke_nodes_list', description: 'List nodes' },
+            { name: 'gke_clusters_list', description: '' },
+          ],
+        },
+      ]);
+    });
+
+    it('buckets unflattened source/server attribution', () => {
+      const out = SlashRender.groupToolsByServer([
+        { name: 'gh_pr_view', source: 'mcp', server: 'github' },
+      ]);
+      expect(out.map((s) => s.name)).toEqual(['github']);
+    });
+
+    // The fallback that keeps /mcp useful against a backend whose
+    // adapter reports source 'other' for everything it hasn't
+    // attributed yet.
+    it('falls back to the <server>_<tool> convention when unattributed', () => {
+      const out = SlashRender.groupToolsByServer([
+        { name: 'kube_get', source: 'other' },
+        { name: 'kube_apply' },
+      ]);
+      expect(out).toEqual([
+        {
+          name: 'kube',
+          status: 'connected',
+          tools: [
+            { name: 'kube_get', description: '' },
+            { name: 'kube_apply', description: '' },
+          ],
+        },
+      ]);
+    });
+
+    // The bug the fallback used to have: splitting every underscored
+    // name invents a server called "fs" out of a built-in.
+    it('excludes builtin, skill and subagent tools rather than guessing', () => {
+      const out = SlashRender.groupToolsByServer([
+        { name: 'fs_read', source: 'builtin' },
+        { name: 'review_diff', source: 'skill:review' },
+        { name: 'delegate', source: 'subagent' },
+      ]);
+      expect(out).toEqual([]);
+    });
+
+    it('skips an unattributed tool with no underscore to split on', () => {
+      expect(SlashRender.groupToolsByServer([{ name: 'lookup' }])).toEqual([]);
+      expect(SlashRender.groupToolsByServer([{ name: '_leading' }])).toEqual([]);
+    });
+
+    it('sorts servers by name and tolerates junk input', () => {
+      const out = SlashRender.groupToolsByServer([
+        { name: 'zoo_list', source: 'zoo' },
+        { name: 'aviary_list', source: 'aviary' },
+        { name: '' },
+        'gh_pr_view',
+      ]);
+      expect(out.map((s) => s.name)).toEqual(['aviary', 'gh', 'zoo']);
+      expect(SlashRender.groupToolsByServer(null)).toEqual([]);
+    });
+  });
+
+  describe('formatGuardrails', () => {
+    it('reports mode, spend, trips and the reset usage line', () => {
+      const text = SlashRender.formatGuardrails({
+        watchdog: { mode: 'enforce', tripped: true, reason: 'loop detected' },
+        cost_ceiling: { session_cost_usd: 1.5, max_session_usd: 2, tripped: false },
+        halted: true,
+      });
+      expect(text).toContain('mode=enforce tripped=true (loop detected)');
+      expect(text).toContain('$1.50 / $2.00 tripped=false');
+      expect(text).toContain('Halted:        true');
+      expect(text).toContain('/guardrails reset [watchdog|cost_ceiling|all]');
+    });
+
+    // The zero-value shape a backend with no GuardrailProvider returns
+    // — always a 200, so this is the common answer, not an edge case.
+    it('reads an empty payload as off and untripped', () => {
+      const text = SlashRender.formatGuardrails({});
+      expect(text).toContain('mode=off tripped=false');
+      expect(text).toContain('$0.00 / $0.00 tripped=false');
+      expect(text).toContain('Halted:        false');
+    });
+
+    it('omits the parenthetical when there is no reason', () => {
+      expect(SlashRender.formatGuardrails(null)).not.toContain('(');
+    });
+  });
+
   describe('summarizeAgentEvent', () => {
     it('falls back when the protocol module is absent', () => {
       delete globalThis.AttachCoreProtocol;

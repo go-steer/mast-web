@@ -712,36 +712,13 @@
       sessionStore.setSessions(latest.sessions.filter((s) => s.id !== id));
     },
 
+    // /tools returns the merged tool catalog; SlashRender buckets it by
+    // MCP server. Shared with terminal.js — the attribution rules and
+    // the naming-convention fallback are the interesting part and there
+    // should be one of them.
     async listMcpServers() {
       if (!this.client) return [];
-      // /tools returns the merged tool catalog. Each entry may carry
-      // explicit source/server attribution (source:'mcp', server:
-      // '<name>') — prefer that when present. As of 2026-08 core-
-      // agent's production adapter doesn't populate it yet for MCP
-      // tools (pkg/attachadapter/capabilities.go reports source:
-      // 'other' pending an upstream metadata pass), so fall back to
-      // the <server>_<tool> naming convention every MCP-namespaced
-      // tool still follows. This upgrades automatically once the
-      // backend starts sending real attribution — no client change
-      // needed then.
-      const tools = await this.client.listTools();
-      const byServer = new Map();
-      (tools || []).forEach((t) => {
-        const name = t.name || t;
-        let server = t.source === 'mcp' && t.server ? t.server : null;
-        if (!server) {
-          const idx = name.indexOf('_');
-          if (idx <= 0) return;
-          server = name.substring(0, idx);
-        }
-        const bucket = byServer.get(server) || { name: server, status: 'connected', tools: [] };
-        // Keep the full name (not stripped of its server prefix) —
-        // matches how core-tui's /mcp renderer lists it, since that's
-        // the name an operator would actually invoke.
-        bucket.tools.push({ name, description: t.description || '' });
-        byServer.set(server, bucket);
-      });
-      return Array.from(byServer.values());
+      return window.SlashRender.groupToolsByServer(await this.client.listTools());
     },
 
     async listTools() {
@@ -3372,19 +3349,7 @@
     }
     try {
       const g = await mast.getGuardrails();
-      const w = g.watchdog || {};
-      const c = g.cost_ceiling || {};
-      addSystemMessage(
-        `Guardrails:\n` +
-          `  Watchdog:      mode=${w.mode || 'off'} tripped=${!!w.tripped}` +
-          `${w.reason ? ' (' + w.reason + ')' : ''}\n` +
-          `  Cost ceiling:  $${(c.session_cost_usd || 0).toFixed(2)} / ` +
-          `$${(c.max_session_usd || 0).toFixed(2)} tripped=${!!c.tripped}` +
-          `${c.reason ? ' (' + c.reason + ')' : ''}\n` +
-          `  Halted:        ${!!g.halted}\n\n` +
-          `Usage: /guardrails reset [watchdog|cost_ceiling|all] [additional-budget-usd]`,
-        true
-      );
+      addSystemMessage(window.SlashRender.formatGuardrails(g), true);
     } catch (e) {
       addSystemMessage(describeError(e));
     }

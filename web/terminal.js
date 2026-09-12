@@ -41,20 +41,22 @@
 // click-to-expand results, turn footers, the thinking indicator,
 // interrupt, inline permission prompts, server-dispatched slash
 // commands, grounded-source strips, observer-mode rendering of
-// externally-driven turns, and the client-side built-ins /tools,
-// /subagents, /usage and /whoami.
+// externally-driven turns, and the client-side built-in slash
+// commands: /help, /clear, /export, /tools, /mcp, /subagents,
+// /specialists, /sessions, /guardrails, /model, /usage, /whoami —
+// each of them gated on what the backend says it can serve.
 //
-// What isn't here yet, and should be: the rest of the client-side
-// slash commands app.js carries on top of the generic dispatch
-// (/attach, /sessions, /model, /mcp, /specialists, …), the model
-// picker, the guardrail drill-down, session export, and the batch
-// runner. These are unported, not excluded — four of the nine landed
-// with PR 2 (#59) and the rest land with PR 3 (#60), before the
-// classic shell is deleted rather than after. Parity with app.js is
-// the target; a terminal in a panel
-// should not be a lesser terminal than one in a tab, and where a
-// feature needs a different presentation to fit the panel, that's a
-// design problem to solve rather than a reason to drop it.
+// What isn't here yet, and should be: the built-ins that act on the
+// shell rather than on a session — /attach, /theme, /layout, the batch
+// runner, the shortcuts overlay and the command palette — plus the
+// sidebar's session delete and switch gestures. These are unported,
+// not excluded: PR 2 (#59) and PR 3a (#60) took the per-session set,
+// and the shell-level rest lands with PR 3b, before the classic shell
+// is deleted rather than after. Parity with app.js is the target; a
+// terminal in a panel should not be a lesser terminal than one in a
+// tab, and where a feature needs a different presentation to fit the
+// panel, that's a design problem to solve rather than a reason to
+// drop it.
 //
 // Genuinely not this file's job, because they belong to the shell
 // around the terminals rather than to any one of them: the sidebar and
@@ -405,6 +407,9 @@ window.MastTerminal = (function () {
         const md = mk('div', 'md-content');
         md.innerHTML = renderMarkdown(content);
         div.appendChild(md);
+        // The markdown source, kept because the rendered DOM is lossy
+        // and /export wants what the agent actually said.
+        div.dataset.source = content;
         addMessageActions(div, content);
       } else if (role === 'user') {
         div.appendChild(makeMsgHead('USER'));
@@ -746,6 +751,7 @@ window.MastTerminal = (function () {
     function updateStreamingMessage(msg, tokenText) {
       msg.text += tokenText;
       msg.md.innerHTML = renderMarkdown(msg.text);
+      msg.el.dataset.source = msg.text;
       scroll();
     }
 
@@ -1390,23 +1396,23 @@ window.MastTerminal = (function () {
     // ── Client-side built-ins ────────────────────────────────────────
     //
     // Answered here rather than by the agent, because each one reads a
-    // REST endpoint the slash channel doesn't expose. Ported from
-    // app.js by PR 2 (#59) — five of the nine methods that had to exist
-    // somewhere else before the classic shell can be deleted.
+    // REST endpoint the slash channel doesn't expose, or reads nothing
+    // at all. Ported from app.js by PR 2 (#59) and PR 3 (#60) — the
+    // classic shell's whole client-side command set had to exist
+    // somewhere else before index.html can be deleted.
     //
     // Built-ins win over an advertised name of the same spelling, which
     // is what app.js does and what core-tui settled on. The list of
     // built-in NAMES is its own thing, not a subset of some other
     // predicate — core-tui#289's sibling lesson, and the reason /quit
     // there once got shipped to the agent as prose.
-
-    function requireConnected() {
-      if (connection.getState() !== 'connected') {
-        addSystemMessage('Not connected.');
-        return false;
-      }
-      return true;
-    }
+    //
+    // Each one is a row in BUILTINS at the bottom of this section, and
+    // that table is the only place any of this is written down: /help
+    // lists what dispatch will run, because both call availability()
+    // on the same row. core-tui#275/#276 was the other arrangement —
+    // the listing and the running asking two different questions — and
+    // it shipped commands that appeared in help and then refused.
 
     function renderList(title, groups, opts) {
       if (window.SlashRender && typeof window.SlashRender.renderList === 'function') {
@@ -1421,7 +1427,6 @@ window.MastTerminal = (function () {
     // fetch, the empty case, and the choice of which system-message
     // flavour the answer needs.
     async function cmdTools(args) {
-      if (!requireConnected()) return;
       let tools;
       try {
         tools = await client.listTools();
@@ -1442,7 +1447,6 @@ window.MastTerminal = (function () {
     // /subagents events <name> [since] — that subagent's persisted turns
     // core-agent#627/#634 (catalog) + #638/#687 (drill-down).
     async function cmdSubagents(args) {
-      if (!requireConnected()) return;
       if ((args[0] || 'list').toLowerCase() === 'events') {
         await subagentEvents(args.slice(1));
         return;
@@ -1546,7 +1550,6 @@ window.MastTerminal = (function () {
     // session can do more than you think" are not derivable from the
     // first frame, and both change what an operator should believe.
     async function cmdWhoami() {
-      if (!requireConnected()) return;
       try {
         const who = await client.whoami();
         session.setWhoami(who);
@@ -1615,7 +1618,6 @@ window.MastTerminal = (function () {
     // client that attached mid-session and never saw the earlier
     // usage-update frames.
     async function cmdUsage() {
-      if (!requireConnected()) return;
       let u;
       try {
         u = await client.getUsage();
@@ -1642,12 +1644,359 @@ window.MastTerminal = (function () {
       addSystemMessage(lines.join('\n'));
     }
 
-    const BUILTINS = {
-      tools: cmdTools,
-      subagents: cmdSubagents,
-      whoami: cmdWhoami,
-      usage: cmdUsage,
-    };
+    // /mcp — the same catalog /tools reads, bucketed by MCP server.
+    // A different question ("which of my servers is contributing
+    // what"), so a different command; the bucketing rules and the
+    // attribution fallback live in SlashRender with /tools'.
+    async function cmdMcp() {
+      let tools;
+      try {
+        tools = await client.listTools();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/mcp failed: '));
+        return;
+      }
+      const servers = window.SlashRender.groupToolsByServer(tools);
+      if (servers.length === 0) {
+        addSystemMessage(
+          "No MCP servers are contributing tools. Configure them in the backend's .agents/mcp.json."
+        );
+        return;
+      }
+      renderList(
+        `MCP servers (${servers.length})`,
+        servers.map((s) => ({
+          header: `${s.name} — ${s.status}`,
+          items: s.tools,
+        }))
+      );
+    }
+
+    // /specialists — the same catalog /subagents lists, with the model
+    // and the modes each one runs in. app.js kept both names for the
+    // same endpoint (core-agent#627/#634) and so do we: /subagents
+    // answers "what can I drill into", /specialists "what can I spawn
+    // and on what".
+    async function cmdSpecialists() {
+      let specs;
+      try {
+        specs = await client.listConfiguredSubagents();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/specialists failed: '));
+        return;
+      }
+      if (!specs || specs.length === 0) {
+        addSystemMessage('No specialists registered on the backend.');
+        return;
+      }
+      renderList(`Specialists (${specs.length})`, [
+        {
+          items: specs.map((s) => {
+            const tags = [];
+            if (s.model) tags.push(s.model);
+            if (s.modes && s.modes.length) tags.push(s.modes.join('/'));
+            return { name: s.name, tags, description: s.description || '' };
+          }),
+        },
+      ]);
+    }
+
+    // /sessions — what else is on this backend. Read-only on purpose:
+    // a terminal is handed a session id at construction and the shell
+    // around it (a tab strip, a panel, a sidebar row) is what knows
+    // that binding, so switching from in here would repoint the client
+    // and leave the shell captioning the wrong session. The switch
+    // gesture belongs to the sidebar; see #60.
+    async function cmdSessions() {
+      let rows;
+      try {
+        rows = await client.listSessions();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/sessions failed: '));
+        return;
+      }
+      session.setSessions(rows);
+      if (!rows || rows.length === 0) {
+        addSystemMessage('No sessions on this backend.');
+        return;
+      }
+      // Most recently touched first — the operator's mental model, and
+      // the order the sidebar and core-tui's picker both use. Rows with
+      // no timestamp (older backends) sink.
+      const sorted = rows
+        .slice()
+        .sort(
+          (a, b) =>
+            (b.lastTouchedAt ? Date.parse(b.lastTouchedAt) : 0) -
+            (a.lastTouchedAt ? Date.parse(a.lastTouchedAt) : 0)
+        );
+      const here = sess().currentSession;
+      renderList(`Sessions (${sorted.length})`, [
+        {
+          items: sorted.map((s) => {
+            const tags = [];
+            if (s.app) tags.push(s.app);
+            if (s.status && s.status !== 'active') tags.push(s.status);
+            if (s.id === here) tags.push('this panel');
+            // A titled row shows the title and keeps the id underneath,
+            // because the id is what every other command takes.
+            return { name: s.title || s.id, tags, description: s.title ? s.id : '' };
+          }),
+        },
+      ]);
+    }
+
+    // /model — what this session is running. Read-only because there is
+    // nothing to write to: verified again 2026-09-12, core-agent has no
+    // model-switch endpoint (pkg/attach/handlers_operator.go), and the
+    // current model is server-driven via status-update. app.js shipped
+    // a `/model <name>` that could only ever throw; saying so up front
+    // is the honest version of the same non-capability.
+    function cmdModel() {
+      const model = sess().currentModel;
+      addSystemMessage(
+        (model ? 'Model: ' + model : 'The backend has not reported a model for this session yet.') +
+          '\nSwitching models needs a server-side endpoint that does not exist yet.'
+      );
+    }
+
+    // /guardrails [reset [watchdog|cost_ceiling|all] [budget]]
+    // — the watchdog and cost-ceiling trip state, and the operator
+    // reset for them (core-agent#670/#671). Gated on features.
+    // guardrails, which is the one flag in this table that a real
+    // backend actually turns off.
+    async function cmdGuardrails(args) {
+      if ((args[0] || '').toLowerCase() === 'reset') {
+        const guardrail = args[1] || undefined;
+        const budget = args[2] !== undefined ? Number(args[2]) : undefined;
+        try {
+          const r = await client.resetGuardrails({
+            guardrail,
+            additionalBudgetUsd: Number.isFinite(budget) ? budget : undefined,
+          });
+          if (r.ok) {
+            // A tripped ceiling freezes the input; clearing the flag is
+            // what makes the reset mean anything from in here.
+            session.setCostCeilingHit(false);
+            addSystemMessage(
+              'Guardrails reset: ' +
+                (r.reset && r.reset.length ? r.reset.join(', ') : '(nothing tripped)')
+            );
+          } else {
+            // 409, not a failure: the reset would re-trip immediately.
+            addSystemMessage(
+              r.message ||
+                'Reset would immediately re-trip — pass a budget: /guardrails reset cost_ceiling <usd>'
+            );
+          }
+        } catch (e) {
+          addSystemMessage(describeError(e, '/guardrails reset failed: '));
+        }
+        return;
+      }
+      try {
+        addSystemMessage(window.SlashRender.formatGuardrails(await client.getGuardrails()));
+      } catch (e) {
+        addSystemMessage(describeError(e, '/guardrails failed: '));
+      }
+    }
+
+    // /export [json|md] — this panel's transcript, downloaded.
+    //
+    // Scraped from `out` rather than from a model of the conversation,
+    // because there isn't one: the terminal renders frames as they
+    // arrive and the DOM is the only record. Scoped to this panel's
+    // container, which is the one improvement over app.js's version —
+    // there, one global query meant a workspace could only export
+    // whatever happened to be on screen.
+    //
+    // Server-side export of the full eventlog is still a separate,
+    // unbuilt thing (it needs an attach endpoint over pkg/audit); this
+    // is the rendered transcript and says so in the payload.
+    function cmdExport(args) {
+      const fmt = (args[0] || 'json').toLowerCase();
+      if (fmt !== 'json' && fmt !== 'md') {
+        addSystemMessage('Usage: /export [json|md]');
+        return;
+      }
+      const rows = [];
+      out.querySelectorAll('.message').forEach((el) => {
+        const role = el.classList.contains('user')
+          ? 'user'
+          : el.classList.contains('assistant')
+            ? 'assistant'
+            : el.classList.contains('system')
+              ? 'system'
+              : 'unknown';
+        // Prefer the markdown source an assistant row stashed; the
+        // rendered DOM has lost the fences by the time we get here.
+        const text = el.dataset && el.dataset.source ? el.dataset.source : el.textContent;
+        rows.push({ role, text: (text || '').trim() });
+      });
+      const s = sess();
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        endpoint: s.endpoint,
+        sessionId: s.currentSession || null,
+        turns: s.turnCount,
+        totalCostUSD: s.totalCostUSD,
+        source: 'rendered-transcript',
+        messages: rows,
+      };
+      const body =
+        fmt === 'md'
+          ? [
+              '# mast session export',
+              '',
+              `- Session: \`${s.currentSession || '(none)'}\``,
+              `- Endpoint: ${s.endpoint}`,
+              `- Turns: ${s.turnCount}`,
+              `- Cost: $${s.totalCostUSD.toFixed(6)}`,
+              `- Exported: ${payload.exportedAt}`,
+              '',
+              '---',
+              '',
+              ...rows.map((r) => `**${r.role}:**\n\n${r.text}\n`),
+            ].join('\n')
+          : JSON.stringify(payload, null, 2);
+      const blob = new Blob([body], {
+        type: fmt === 'md' ? 'text/markdown' : 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `mast-session-${s.currentSession || 'panel'}.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      addSystemMessage(`Exported ${rows.length} row${rows.length === 1 ? '' : 's'} as ${fmt}.`);
+    }
+
+    // /clear — display-only, which is why it runs offline. Everything
+    // else in this table needs a backend to answer it; clearing a panel
+    // should still work on a dead one.
+    function cmdClear() {
+      out.replaceChildren();
+      // The history block went with it; forget the handles so a stray
+      // scroll doesn't hand turns to a detached container.
+      replayView.el = null;
+      replayView.body = null;
+      replayView.more = null;
+      out.removeEventListener('scroll', onHistoryScroll);
+    }
+
+    function cmdHelp() {
+      const rows = BUILTINS.filter(available);
+      const width = rows.reduce((w, b) => Math.max(w, b.usage.length), 0);
+      const lines = rows.map((b) => b.usage.padEnd(width) + '  — ' + b.help);
+      const advertised = advertisedNames();
+      if (advertised.length) {
+        lines.push('', 'Advertised by this agent:');
+        advertised.forEach((n) => lines.push('/' + n));
+      } else {
+        lines.push('', 'This agent advertises no slash commands.');
+      }
+      const hidden = BUILTINS.filter((b) => !available(b)).map((b) => '/' + b.name);
+      if (hidden.length) {
+        lines.push('', 'Not supported by this backend: ' + hidden.join(', '));
+      }
+      addSystemMessage(lines.join('\n'));
+    }
+
+    // The table. `feature` names the capability flag a command needs;
+    // `offline` marks the ones that don't need a backend at all.
+    //
+    // Commands with no `feature` are ungated because there is nothing
+    // to gate them on — `features` has no key for a tool catalog or an
+    // identity lookup, and per §2.1's additive rule an absent key reads
+    // as on anyway, so inventing one here would only be a guess with
+    // extra steps. The endpoints answer or they error; that's the same
+    // deal PR 2 shipped.
+    const BUILTINS = [
+      { name: 'help', usage: '/help', help: 'This list', offline: true, run: cmdHelp },
+      { name: 'clear', usage: '/clear', help: 'Clear this panel', offline: true, run: cmdClear },
+      {
+        name: 'export',
+        usage: '/export [json|md]',
+        help: "Download this panel's transcript",
+        offline: true,
+        run: cmdExport,
+      },
+      {
+        name: 'tools',
+        usage: '/tools [source]',
+        help: 'Tool catalog, grouped by source',
+        run: cmdTools,
+      },
+      {
+        name: 'mcp',
+        usage: '/mcp',
+        help: 'MCP servers and what each contributes',
+        feature: 'mcp',
+        run: cmdMcp,
+      },
+      {
+        name: 'subagents',
+        usage: '/subagents [...]',
+        help: 'Configured subagents; `events <name>` to drill in',
+        run: cmdSubagents,
+      },
+      {
+        name: 'specialists',
+        usage: '/specialists',
+        help: 'Spawnable specialists, with model and modes',
+        // core-agent's `specialists` flag means "can spawn one", not
+        // "can list them" — a backend that reports false still answers
+        // the catalog endpoint. Gated anyway: a roster of things this
+        // backend will refuse to spawn is a menu of nothing. Noted as a
+        // known imprecision in #45 rather than pretended away.
+        feature: 'specialists',
+        run: cmdSpecialists,
+      },
+      {
+        name: 'sessions',
+        usage: '/sessions',
+        help: 'Sessions on this backend',
+        feature: 'multi_session',
+        run: cmdSessions,
+      },
+      {
+        name: 'guardrails',
+        usage: '/guardrails [reset ...]',
+        help: 'Watchdog and cost-ceiling state; `reset` to clear a trip',
+        feature: 'guardrails',
+        run: cmdGuardrails,
+      },
+      { name: 'model', usage: '/model', help: 'Model this session is running', run: cmdModel },
+      { name: 'usage', usage: '/usage', help: 'Session token + cost totals', run: cmdUsage },
+      {
+        name: 'whoami',
+        usage: '/whoami',
+        help: 'Backend identity for this caller',
+        run: cmdWhoami,
+      },
+    ];
+
+    // The one read. /help filters on this and dispatch checks it, so a
+    // command cannot be listed and then refuse, or refuse and then be
+    // invisible — core-tui#275/#276.
+    //
+    // Absent `features` map, or absent key within it, means on: the
+    // protocol's §2.1 additive rule, and the reason a 2026-02 backend
+    // doesn't lose /mcp for never having heard of the flag.
+    function available(b) {
+      if (!b.feature) return true;
+      const P = window.AttachCoreProtocol;
+      return !P || !P.hasFeature ? true : P.hasFeature(sess().capabilities, b.feature);
+    }
+
+    function advertisedNames() {
+      const caps = sess().capabilities;
+      return (caps && caps.slash_commands) || [];
+    }
+
+    function findBuiltin(name) {
+      return BUILTINS.find((b) => b.name === name);
+    }
 
     // Returns true when the input was a command and has been handled.
     async function handleSlash(trimmed) {
@@ -1659,36 +2008,32 @@ window.MastTerminal = (function () {
       // have us post /Compact to a backend that only answers /compact.
       const name = raw.toLowerCase();
       const args = parts.slice(1);
-      const caps = sess().capabilities;
-      const advertised = (caps && caps.slash_commands) || [];
 
-      if (name === 'help') {
-        const lines = [
-          '/clear             — Clear this panel',
-          '/help              — This list',
-          '/tools [source]    — Tool catalog, grouped by source',
-          '/subagents [...]   — Configured subagents; `events <name>` to drill in',
-          '/usage             — Session token + cost totals',
-          '/whoami            — Backend identity for this caller',
-        ];
-        if (advertised.length) {
-          lines.push('', 'Advertised by this agent:');
-          advertised.forEach((n) => lines.push('/' + n));
-        } else {
-          lines.push('', 'This agent advertises no slash commands.');
-        }
-        addSystemMessage(lines.join('\n'));
-        return true;
-      }
       // Built-ins win over an advertised name of the same spelling —
       // what app.js does, and what core-tui settled on. An agent that
       // advertises /tools gets shadowed rather than silently changing
       // what /tools means from one backend to the next.
-      if (Object.prototype.hasOwnProperty.call(BUILTINS, name)) {
-        await BUILTINS[name](args);
+      const builtin = findBuiltin(name);
+      if (builtin) {
+        // A gated-off command is a name we know and cannot serve, which
+        // is a different answer from "unknown" and deserves a different
+        // sentence. It isn't in /help either — same available() call.
+        if (!available(builtin)) {
+          addSystemMessage('/' + name + ' is not supported by this backend.');
+          return true;
+        }
+        if (!builtin.offline && connection.getState() !== 'connected') {
+          addSystemMessage('Not connected.');
+          return true;
+        }
+        await builtin.run(args);
         return true;
       }
-      if (advertised.includes(raw)) {
+      if (advertisedNames().includes(raw)) {
+        if (connection.getState() !== 'connected') {
+          addSystemMessage('Not connected.');
+          return true;
+        }
         await runServerSlash(raw, args);
         return true;
       }
@@ -1699,29 +2044,18 @@ window.MastTerminal = (function () {
     async function submit(text) {
       const trimmed = (text || '').trim();
       if (!trimmed || connection.isRunning()) return;
-      // Handled ahead of the connection check, unlike the rest: every
-      // other command needs a backend to answer it, and clearing a
-      // panel is a display action that should still work on a dead one.
-      if (trimmed === '/clear') {
-        out.replaceChildren();
-        // The history block went with it; forget the handles so a
-        // stray scroll doesn't hand turns to a detached container.
-        replayView.el = null;
-        replayView.body = null;
-        replayView.more = null;
-        out.removeEventListener('scroll', onHistoryScroll);
-        input.value = '';
-        syncInput();
-        return;
-      }
-      if (connection.getState() !== 'connected') {
-        addSystemMessage('Not connected.');
-        return;
-      }
+      // Commands answer for themselves on a dead connection: /clear and
+      // /export are display actions that should still work on one, and
+      // the rest say "Not connected." from the same table that decides
+      // they needed a backend. A prompt has nowhere to go either way.
       if (trimmed.startsWith('/')) {
         input.value = '';
         syncInput();
         await handleSlash(trimmed);
+        return;
+      }
+      if (connection.getState() !== 'connected') {
+        addSystemMessage('Not connected.');
         return;
       }
 

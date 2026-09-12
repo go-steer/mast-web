@@ -66,6 +66,12 @@
 //   groupToolsBySource(tools)
 //     — [[groupKey, tools], …] in heading order. Exported for tests
 //       and for anything that wants the buckets without the markup.
+//   groupToolsByServer(tools)
+//     — /mcp's view of the same catalog: [{name, status, tools}] per
+//       MCP server, with the naming-convention fallback for backends
+//       that don't attribute their MCP tools yet.
+//   formatGuardrails(guardrails)
+//     — the /guardrails report as plain text.
 //   summarizeAgentEvent(event)
 //     — one plain-text line for a persisted subagent turn event, for
 //       the `/subagents events` drill-down.
@@ -573,6 +579,72 @@ window.SlashRender = (function () {
     };
   }
 
+  // /mcp buckets the same catalog by MCP server and nothing else,
+  // which is a different question from /tools': "which of my servers
+  // is contributing what", not "where did this tool come from".
+  //
+  // Explicit attribution (source:'mcp' + server, or a flattened source
+  // that is the server's own name) is preferred when present. As of
+  // 2026-08 core-agent's production adapter doesn't populate it for
+  // MCP tools (pkg/attachadapter/capabilities.go reports source:
+  // 'other' pending an upstream metadata pass), so a tool with no
+  // usable attribution falls back to the <server>_<tool> naming
+  // convention every MCP-namespaced tool still follows. That fallback
+  // upgrades itself the moment the backend starts sending real
+  // attribution — no client change needed then.
+  //
+  // `builtin`, `skill:*` and `subagent` are not MCP servers and are
+  // excluded rather than guessed at: splitting `fs_read` on its
+  // underscore would invent a server called "fs".
+  const NON_MCP_SOURCES = ['builtin', 'skill', 'subagent', 'other'];
+
+  function groupToolsByServer(tools) {
+    const byServer = new Map();
+    (tools || []).forEach((t) => {
+      const tool = typeof t === 'string' ? { name: t } : t;
+      const name = tool.name;
+      if (!name) return;
+      const source = toolSource(tool);
+      let server = null;
+      if (source && NON_MCP_SOURCES.indexOf(toolGroupKey(source)) === -1) {
+        server = source;
+      } else if (!source || source === 'other') {
+        // Unattributed. The convention is the only thing left.
+        const idx = name.indexOf('_');
+        if (idx <= 0) return;
+        server = name.substring(0, idx);
+      } else {
+        return;
+      }
+      const bucket = byServer.get(server) || { name: server, status: 'connected', tools: [] };
+      // The full name, not stripped of its server prefix — it's the
+      // name an operator would actually invoke, and it's how core-tui's
+      // /mcp renderer lists it.
+      bucket.tools.push({ name, description: tool.description || '' });
+      byServer.set(server, bucket);
+    });
+    return [...byServer.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // The /guardrails report. Plain text rather than a list: it's four
+  // fixed rows of state, not a catalog, and a heading per row would be
+  // more chrome than content.
+  function formatGuardrails(g) {
+    const guard = g || {};
+    const w = guard.watchdog || {};
+    const c = guard.cost_ceiling || {};
+    const reason = (r) => (r ? ' (' + r + ')' : '');
+    const usd = (n) => '$' + Number(n || 0).toFixed(2);
+    return (
+      'Guardrails:\n' +
+      `  Watchdog:      mode=${w.mode || 'off'} tripped=${!!w.tripped}${reason(w.reason)}\n` +
+      `  Cost ceiling:  ${usd(c.session_cost_usd)} / ${usd(c.max_session_usd)} ` +
+      `tripped=${!!c.tripped}${reason(c.reason)}\n` +
+      `  Halted:        ${!!guard.halted}\n\n` +
+      'Usage: /guardrails reset [watchdog|cost_ceiling|all] [additional-budget-usd]'
+    );
+  }
+
   // One-line summary of a persisted subagent turn event (the same ADK
   // Event shape the SSE `agent` frame carries), for the `/subagents
   // events` drill-down. Reuses the pure fanoutAgentFrame parser rather
@@ -608,6 +680,8 @@ window.SlashRender = (function () {
     renderList,
     renderTools,
     groupToolsBySource,
+    groupToolsByServer,
+    formatGuardrails,
     summarizeAgentEvent,
   };
 })();

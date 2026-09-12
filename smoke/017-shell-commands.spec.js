@@ -88,18 +88,26 @@ test.describe('smoke: 017-shell-commands', () => {
     await input.fill('/layout chat');
     await input.press('Enter');
     await expect(page.locator('body')).toHaveAttribute('data-layout', 'chat');
-    // The rule these shells inherit from styles.css — .term-out is a
-    // flex column, so the user turn moves to the right margin.
-    await expect(page.locator('#solo-body .term:visible .message.user').first()).toHaveCSS(
-      'align-self',
-      'flex-end'
-    );
 
     await input.fill('/theme mono');
     await input.press('Enter');
     await expect(page.locator('body')).toHaveAttribute('data-theme', 'mono');
     // The HUD picker is the same setting by another route.
     await expect(page.locator('#hud-theme')).toHaveValue('mono');
+
+    // The prompt comes last on purpose. The fixture transcript has no
+    // user turn to align, so one has to be typed — and submit() refuses
+    // anything typed while a turn is running, slash commands included.
+    // The mock never closes this one, so a command after it is a
+    // command swallowed.
+    await input.fill('does this land on the right?');
+    await input.press('Enter');
+    // The rule these shells inherit from styles.css — .term-out is a
+    // flex column, so the user turn moves to the right margin.
+    await expect(page.locator('#solo-body .term:visible .message.user').first()).toHaveCSS(
+      'align-self',
+      'flex-end'
+    );
   });
 
   test('the session picker opens a session rather than retargeting one', async ({ page }) => {
@@ -119,10 +127,15 @@ test.describe('smoke: 017-shell-commands', () => {
     await expect(page.locator('#picker-modal')).toBeHidden();
     await expect(page.locator('.solo-tab')).toHaveCount(2);
     await expect(page.locator('#status-focus')).toContainText(OPS);
-    // Both terminals are still mounted; only the new one is on screen.
+    // Both terminals are still mounted, only the new one is on screen,
+    // and — the assertion that would catch a retarget — the one behind
+    // it still speaks for the session it was opened with. Transcript
+    // text cannot say this: the mock plays the same fixture for every
+    // session, so both panes read alike.
     await expect(page.locator('#solo-body .term')).toHaveCount(2);
     await expect(page.locator('#solo-body .term:visible')).toHaveCount(1);
-    await expect(page.locator('#solo-body .term:visible')).not.toContainText('Hello world');
+    await expect(page.locator('#solo-body .term:visible')).toHaveAttribute('data-session', OPS);
+    await expect(page.locator('#solo-body .term[data-session="smoke-session"]')).toHaveCount(1);
   });
 
   test('the shortcuts overlay lists the shell and the host shell alike', async ({ page }) => {

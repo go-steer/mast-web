@@ -25,6 +25,32 @@ import (
 	"time"
 )
 
+// defaultMockFixture is the stream every smoke test and every
+// `npm run dev` session sees unless it asks for another. That makes it
+// the mock's default picture of the world, which is why the spec guard
+// in mock_spec_test.go checks this one rather than the set.
+const defaultMockFixture = "001-happy-turn"
+
+// wireProtocolVersion is the attach-protocol version this mock models —
+// core-tui/docs/sse-event-stream-protocol.md. Bumping it is the first
+// step of a protocol catch-up, and TestMock_DefaultFixtureMatchesSpec
+// will then fail until the mock's advertised capabilities agree.
+//
+// It exists because the alternative is what actually happened: the
+// protocol went 1.4.0 → 1.7.0 over a month, the mock stayed at 1.4.0,
+// every test agreed with the mock, and we shipped a Stop button that
+// parked sessions (#68). Nothing was wrong with any individual test.
+// The problem was that no test asserted the mock was current, so being
+// out of date was not a failure condition.
+const wireProtocolVersion = "1.7.0"
+
+// mockPublishedEvents are the SSE events the mock emits from its own
+// handlers rather than from fixture replay — the pause gate's
+// transitions and the wake that follows an inject. A consumer can only
+// be tested against these if the mock advertises them, so the guard
+// checks that it does.
+var mockPublishedEvents = []string{"pause", "wake"}
+
 // mockHandler serves the fake attach-protocol endpoints the SPA hits
 // during connect + normal operation. Fed from JSONL conformance
 // fixtures under cfg.fixturesDir. Same shape the Python mock served,
@@ -46,6 +72,13 @@ type mockHandler struct {
 	// the posts is the only way the suite can see it.
 	mu     sync.Mutex
 	counts map[string]int
+
+	// Operator pause gate (protocol v1.5.0) and the fan-out that makes
+	// its events visible to streams already open. See mock_pause.go —
+	// this is the one piece of the mock that keeps real state, because
+	// a gate whose only state is "open" isn't a gate.
+	gates pauseGates
+	hub   mockHub
 }
 
 // countPost tallies one write against an endpoint name.
@@ -74,14 +107,27 @@ func (h *mockHandler) turnRequests(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// Session rows use the canonical {app, user, sessionID} wire shape the
+// real backends emit (core-agent docs/attach-mode-design.md), NOT the
+// snake_case the mock invented for itself.
+//
+// The invention cost us #41: listSessions understood only the mock's
+// shape, so every session rendered as `undefined` the first time the
+// SPA met a real daemon, and 144 green tests had nothing to say about
+// it. The client is deliberately tolerant of both shapes now — that's
+// correct defensiveness against backends in the wild — but the mock has
+// to model the wire truth, or the tolerant branch is the only one
+// anything ever exercises. sessionShapeIsCanonical in mock_test.go is
+// the guard.
+
 // mockSession is the canned session the SPA auto-selects on connect.
 // Kept minimal — just enough to open an SSE stream. Always first in
 // mockSessions so single-session consumers (smoke tests, index.html's
 // auto-select) keep landing on it.
 var mockSession = map[string]any{
-	"app_name":        "mast-web-mock",
-	"user_id":         "smoke@example.com",
-	"session_id":      "smoke-session",
+	"app":             "mast-web-mock",
+	"user":            "smoke@example.com",
+	"sessionID":       "smoke-session",
 	"has_event_log":   true,
 	"status":          "active",
 	"last_touched_at": "2026-07-20T12:00:00Z",
@@ -93,28 +139,35 @@ var mockSession = map[string]any{
 // without hand-forging session IDs. Each extra session streams a
 // different fixture (sessionFixtures) so the panels don't all show
 // the same transcript.
+//
+// `title` is the optional v1.6.0 field: a short human label a client
+// shows instead of the opaque session ID. Two rows carry one and two
+// don't, because both paths render and a roster where every row has a
+// title would never exercise the fallback.
 var mockSessions = []map[string]any{
 	mockSession,
 	{
-		"app_name":        "core-agent",
-		"user_id":         "smoke@example.com",
-		"session_id":      "ops-triage",
+		"app":             "core-agent",
+		"user":            "smoke@example.com",
+		"sessionID":       "ops-triage",
 		"has_event_log":   true,
 		"status":          "active",
 		"last_touched_at": "2026-07-20T11:52:00Z",
+		"title":           "Paging alert on checkout-api",
 	},
 	{
-		"app_name":        "core-agent",
-		"user_id":         "smoke@example.com",
-		"session_id":      "docs-writer",
+		"app":             "core-agent",
+		"user":            "smoke@example.com",
+		"sessionID":       "docs-writer",
 		"has_event_log":   true,
 		"status":          "idle",
 		"last_touched_at": "2026-07-20T09:14:00Z",
+		"title":           "Rewrite the attach quickstart",
 	},
 	{
-		"app_name":        "mast",
-		"user_id":         "smoke@example.com",
-		"session_id":      "repo-indexer",
+		"app":             "mast",
+		"user":            "smoke@example.com",
+		"sessionID":       "repo-indexer",
 		"has_event_log":   true,
 		"status":          "active",
 		"last_touched_at": "2026-07-20T11:59:00Z",
@@ -250,6 +303,10 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// anything a real backend serves.
 	mux.HandleFunc("GET /_mock/turn-requests", h.turnRequests)
 	mux.HandleFunc("DELETE /_mock/turn-requests", h.turnRequests)
+	// The pause gate is the mock's only persistent state, so it's also
+	// the only thing a spec can leak into the next one. Let them clear
+	// it rather than restart the server between cases.
+	mux.HandleFunc("DELETE /_mock/pause-gates", h.resetGates)
 
 	// Session-agnostic endpoints.
 	mux.HandleFunc("GET /whoami", h.whoami)
@@ -300,7 +357,9 @@ func isKnownSessionEndpoint(name string) bool {
 	switch name {
 	case "events", "inject", "wake", "interrupt", "status", "tools",
 		"agents", "subagents", "guardrails", "usage", "context", "memory",
-		"skills", "mcp", "pricing", "perms", "reload", "slash":
+		"skills", "mcp", "pricing", "perms", "reload", "slash",
+		// v1.5.0 operator pause gate.
+		"pause", "resume":
 		return true
 	}
 	return false
@@ -319,10 +378,10 @@ func (h *mockHandler) listSessions(w http.ResponseWriter, _ *http.Request) {
 func (h *mockHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	drainBody(r)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"app":       mockSession["app_name"],
-		"user":      mockSession["user_id"],
+		"app":       mockSession["app"],
+		"user":      mockSession["user"],
 		"sessionID": "smoke-session-2",
-		"url":       "http://" + r.Host + "/sessions/" + mockSession["app_name"].(string) + "/smoke-session-2",
+		"url":       "http://" + r.Host + "/sessions/" + mockSession["app"].(string) + "/smoke-session-2",
 	})
 }
 
@@ -357,13 +416,13 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 	case "perms":
 		// /perms/stream — long-lived SSE idle stream.
 		if len(tail) >= 2 && tail[1] == "stream" {
-			h.streamSSE(w, r, nil)
+			h.streamSSE(w, r, nil, "")
 			return
 		}
 		// /perms (no /stream) — return {} for the perms read.
 		writeJSON(w, http.StatusOK, map[string]any{})
 	case "status":
-		writeJSON(w, http.StatusOK, stubStatus)
+		writeJSON(w, http.StatusOK, h.statusFor(sid))
 	case "tools":
 		writeJSON(w, http.StatusOK, stubTools)
 	case "agents":
@@ -388,6 +447,29 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 		// on optional endpoints we haven't explicitly modeled.
 		writeJSON(w, http.StatusOK, map[string]any{})
 	}
+}
+
+// statusFor renders GET /sessions/{sid}/status with this session's
+// pause gate folded in (core-agent PauseInfo). A client that attaches
+// to an already-paused session never saw the `pause` event that closed
+// it, so /status is the only way it can find out — without this the
+// gate would be discoverable only by whoever happened to be watching.
+func (h *mockHandler) statusFor(sid string) map[string]any {
+	out := make(map[string]any, len(stubStatus)+4)
+	for k, v := range stubStatus {
+		out[k] = v
+	}
+	gate := h.gates.get(sid)
+	out["paused"] = gate.paused
+	if gate.paused {
+		out["turn_state"] = "paused"
+		out["paused_since"] = gate.since.UTC().Format(time.RFC3339Nano)
+		out["pause_reason"] = gate.reason
+		if gate.interrupted {
+			out["interrupted"] = true
+		}
+	}
+	return out
 }
 
 // subagentEvents backs GET /sessions/{app}/{sid}/agents/{name}/events
@@ -428,29 +510,41 @@ func (h *mockHandler) subagentEvents(w http.ResponseWriter, sid, name string) {
 }
 
 // sessionPost dispatches on the endpoint segment for POST requests
-// against /sessions/... . Handles interrupt (with X-Interrupted
-// header), slash/<name> (returns a markdown _render response), and a
-// {} fallthrough for inject / wake / perms/allow / perms/deny etc.
+// against /sessions/... . Handles the v1.5.0 pause gate (interrupt /
+// pause / resume — see mock_pause.go, the only stateful handlers here),
+// slash/<name> (returns a markdown _render response), and a {}
+// fallthrough for inject / wake / perms/allow / perms/deny etc.
 func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
-	drainBody(r)
-	_, _, tail, ok := sessionSegments(r.URL.Path)
+	_, sid, tail, ok := sessionSegments(r.URL.Path)
 	if !ok || len(tail) == 0 {
+		drainBody(r)
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
 	if tail[0] == "inject" || tail[0] == "wake" {
 		h.countPost(tail[0])
 	}
+	// The gate endpoints read their request body, so they can't be
+	// downstream of the blanket drain the no-op endpoints rely on.
 	switch tail[0] {
 	case "interrupt":
-		// /interrupt returns X-Interrupted: nothing-in-flight so the
-		// Stop button flashes without an error toast.
-		for k, v := range corsHeaders() {
-			w.Header().Set(k, v)
-		}
-		w.Header().Set("X-Interrupted", "nothing-in-flight")
-		w.WriteHeader(http.StatusOK)
+		h.interrupt(w, r, sid)
 		return
+	case "pause":
+		h.pause(w, r, sid)
+		return
+	case "resume":
+		h.resume(w, r, sid)
+		return
+	}
+	drainBody(r)
+	switch tail[0] {
+	case "inject", "wake":
+		// Both wake the loop, and since v1.7.0 the agent says so on the
+		// stream. Publishing it here is what lets a consumer be tested
+		// against a wake it caused — there is no other way to provoke
+		// one from outside.
+		h.hub.publish(sid, wakeFrame(time.Now()))
 	case "slash":
 		// v1.4.0-conformant response with the reserved _render
 		// convention so the SPA's slash-render dispatcher exercises
@@ -528,14 +622,21 @@ func (h *mockHandler) sseEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "load fixture "+fixture+": "+err.Error())
 		return
 	}
-	h.streamSSE(w, r, frames)
+	_, sid, _, _ := sessionSegments(r.URL.Path)
+	h.streamSSE(w, r, frames, sid)
 }
 
 // streamSSE flushes each frame + sleeps between them, then holds the
 // stream open with periodic keep-alive comments so the SPA doesn't
 // think we hung up. Nil frames = keep-alive-only stream (used by
 // /perms/stream).
-func (h *mockHandler) streamSSE(w http.ResponseWriter, r *http.Request, frames []frame) {
+//
+// A non-empty liveSID subscribes the stream to that session's fan-out,
+// so frames a POST handler produces after the fixture is exhausted —
+// `pause`, `wake` — arrive here. Pass "" for streams that shouldn't see
+// them: /perms/stream is a different channel and duplicating session
+// events onto it would be a lie about where they came from.
+func (h *mockHandler) streamSSE(w http.ResponseWriter, r *http.Request, frames []frame, liveSID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "server does not support streaming (no http.Flusher)")
@@ -553,6 +654,17 @@ func (h *mockHandler) streamSSE(w http.ResponseWriter, r *http.Request, frames [
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+
+	// Subscribe before replaying, not after: with a frame delay set the
+	// fixture takes seconds to drain, and an operator pressing Stop in
+	// that window would otherwise have their pause event dropped on the
+	// floor. Queued frames land as soon as the replay finishes.
+	var live <-chan frame
+	if liveSID != "" {
+		ch, unsubscribe := h.hub.subscribe(liveSID)
+		defer unsubscribe()
+		live = ch
+	}
 
 	ctx := r.Context()
 	delay := time.Duration(h.frameDelayMs) * time.Millisecond
@@ -572,13 +684,19 @@ func (h *mockHandler) streamSSE(w http.ResponseWriter, r *http.Request, frames [
 		}
 	}
 
-	// Keep-alive loop until the client disconnects.
+	// Live phase: keep-alives until the client disconnects, plus
+	// anything a POST handler publishes for this session.
 	tick := time.NewTicker(15 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case fr := <-live:
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", fr.Event, fr.Data); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-tick.C:
 			if _, err := io.WriteString(w, ": keep-alive\n\n"); err != nil {
 				return

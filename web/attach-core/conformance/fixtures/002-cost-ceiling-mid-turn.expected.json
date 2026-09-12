@@ -3,15 +3,32 @@
     "type": "capabilities",
     "data": {
       "protocol_version": "1.2.0",
-      "event_types": ["capabilities", "status-update", "usage-update", "turn-error"],
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "turn-error",
+        "agent"
+      ],
       "server": "core-agent"
     }
   },
   {
     "type": "status-update",
-    "data": { "model": "gemini-2.5-pro", "provider": "vertex", "turn_state": "streaming" }
+    "data": {
+      "model": "gemini-2.5-pro",
+      "provider": "vertex",
+      "turn_state": "streaming"
+    }
   },
-  { "type": "stream-chunk", "data": { "text": "Working", "partial": true, "author": "assistant" } },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Working",
+      "partial": true,
+      "author": "assistant"
+    }
+  },
   {
     "type": "turn-error",
     "data": {

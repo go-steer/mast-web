@@ -149,7 +149,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.apiPrefix, "api-prefix", envOr("API_PREFIX", "/attach"), "proxy-mode request prefix routed to the backend (env: API_PREFIX)")
 	fs.StringVar(&cfg.backendURL, "backend-url", os.Getenv("BACKEND_URL"), "proxy-mode target URL (env: BACKEND_URL)")
 	fs.StringVar(&cfg.backendToken, "backend-token", os.Getenv("BACKEND_TOKEN"), "proxy-mode server-injected bearer token (env: BACKEND_TOKEN)")
-	fs.StringVar(&cfg.fixture, "fixture", envOr("MOCK_FIXTURE", "001-happy-turn"), "mock-mode default fixture name (env: MOCK_FIXTURE)")
+	fs.StringVar(&cfg.fixture, "fixture", envOr("MOCK_FIXTURE", defaultMockFixture), "mock-mode default fixture name (env: MOCK_FIXTURE)")
 	frameDelayDefault, _ := strconv.Atoi(envOr("MOCK_FRAME_DELAY_MS", "150"))
 	fs.IntVar(&cfg.frameDelayMs, "frame-delay-ms", frameDelayDefault, "mock-mode delay between SSE frames (env: MOCK_FRAME_DELAY_MS)")
 	fs.StringVar(&cfg.fixturesDir, "fixtures-dir", os.Getenv("MOCK_FIXTURES_DIR"), "mock-mode fixture source dir; defaults to <web-dir>/attach-core/conformance/fixtures/ (env: MOCK_FIXTURES_DIR)")

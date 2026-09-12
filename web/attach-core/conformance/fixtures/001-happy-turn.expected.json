@@ -2,7 +2,7 @@
   {
     "type": "capabilities",
     "data": {
-      "protocol_version": "1.2.0",
+      "protocol_version": "1.7.0",
       "event_types": [
         "capabilities",
         "status-update",
@@ -10,9 +10,16 @@
         "inbox",
         "turn-complete",
         "turn-error",
-        "agent"
+        "agent",
+        "pause",
+        "wake"
       ],
-      "server": "core-agent"
+      "server": "core-agent",
+      "features": {
+        "interrupt": true,
+        "pause": true,
+        "guardrails": true
+      }
     }
   },
   {
@@ -27,24 +34,55 @@
   },
   {
     "type": "inbox",
-    "data": { "state": "queued", "prompt_id": "p1", "queued_at": "2026-07-16T12:00:00Z" }
+    "data": {
+      "state": "queued",
+      "prompt_id": "p1",
+      "queued_at": "2026-07-16T12:00:00Z"
+    }
   },
   {
     "type": "inbox",
-    "data": { "state": "dequeued", "prompt_id": "p1", "queued_at": "2026-07-16T12:00:00Z" }
+    "data": {
+      "state": "dequeued",
+      "prompt_id": "p1",
+      "queued_at": "2026-07-16T12:00:00Z"
+    }
   },
-  { "type": "stream-chunk", "data": { "text": "Hello", "partial": true, "author": "assistant" } },
-  { "type": "stream-chunk", "data": { "text": " world", "partial": true, "author": "assistant" } },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Hello",
+      "partial": true,
+      "author": "assistant"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": " world",
+      "partial": true,
+      "author": "assistant"
+    }
+  },
   {
     "type": "tool-call",
-    "data": { "id": "c1", "name": "fs_read", "args": { "path": "/etc/hostname" } }
+    "data": {
+      "id": "c1",
+      "name": "fs_read",
+      "args": {
+        "path": "/etc/hostname"
+      }
+    }
   },
   {
     "type": "tool-result",
     "data": {
       "id": "c1",
       "name": "fs_read",
-      "response": { "content": "example.com\n", "latency_ms": 12 },
+      "response": {
+        "content": "example.com\n",
+        "latency_ms": 12
+      },
       "latencyMs": 12
     }
   },

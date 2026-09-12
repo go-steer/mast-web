@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,88 @@ func writeFile(t *testing.T, dir, name, contents string) {
 
 func TestMock_ListSessions(t *testing.T) {
 	srv := newMockServer(t)
+	rows := getSessionRows(t, srv)
+	if len(rows) == 0 {
+		t.Fatal("want at least one session")
+	}
+	if rows[0]["sessionID"] != "smoke-session" {
+		t.Fatalf("want smoke-session first (single-session consumers auto-select it), got %v", rows[0]["sessionID"])
+	}
+}
+
+// TestMock_SessionRowsUseCanonicalWireShape is the regression guard for
+// go-steer/mast-web#41 / #42.
+//
+// The mock used to emit snake_case session fields it invented for
+// itself — session_id / app_name / user_id — while the real backends
+// emit {app, user, sessionID} per core-agent's attach-mode-design.md.
+// listSessions understood only the invention, so the first live daemon
+// the SPA met rendered every session as `undefined`, and the whole test
+// suite was green throughout. Nothing could have caught it, because the
+// only backend under test agreed with the bug.
+//
+// This is what catches it: the mock's rows must carry the canonical
+// keys and must not carry the legacy ones. The client stays tolerant of
+// both shapes on purpose — real backends in the wild are not our
+// problem to fix — but if the mock drifts back, this fails instead of
+// waiting for a person to notice in production.
+func TestMock_SessionRowsUseCanonicalWireShape(t *testing.T) {
+	srv := newMockServer(t)
+	rows := getSessionRows(t, srv)
+
+	// Required on every row, and the whole point of the guard.
+	required := []string{"app", "user", "sessionID"}
+	// The snake_case invention. Never again.
+	forbidden := []string{"app_name", "user_id", "session_id"}
+	// Allowed alongside the required three. `title` is the optional
+	// v1.6.0 human label. An unlisted key means someone added a field
+	// to the mock without checking it against the spec — which is the
+	// exact motion that produced the original drift, so it fails here.
+	optional := map[string]bool{
+		"has_event_log": true, "status": true, "last_touched_at": true, "title": true,
+	}
+
+	for i, row := range rows {
+		for _, k := range required {
+			v, ok := row[k].(string)
+			if !ok || v == "" {
+				t.Errorf("row %d: missing canonical field %q (got %#v)", i, k, row[k])
+			}
+		}
+		for _, k := range forbidden {
+			if _, bad := row[k]; bad {
+				t.Errorf("row %d: legacy snake_case field %q is back — see #41", i, k)
+			}
+		}
+		for k := range row {
+			if optional[k] {
+				continue
+			}
+			if slices.Contains(required, k) {
+				continue
+			}
+			t.Errorf("row %d: unrecognized field %q — add it to the spec check or drop it", i, k)
+		}
+	}
+
+	// v1.6.0's optional title has two renderings — with and without —
+	// and a roster that only shows one of them tests only one of them.
+	var titled, untitled int
+	for _, row := range rows {
+		if s, ok := row["title"].(string); ok && s != "" {
+			titled++
+		} else {
+			untitled++
+		}
+	}
+	if titled == 0 || untitled == 0 {
+		t.Errorf("want both titled and untitled rows so each renders; got %d titled, %d untitled", titled, untitled)
+	}
+}
+
+// getSessionRows fetches GET /sessions and returns the rows.
+func getSessionRows(t *testing.T, srv *httptest.Server) []map[string]any {
+	t.Helper()
 	resp, err := http.Get(srv.URL + "/sessions")
 	if err != nil {
 		t.Fatal(err)
@@ -78,11 +161,13 @@ func TestMock_ListSessions(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), `"session_id": "smoke-session"`) &&
-		!strings.Contains(string(body), `"session_id":"smoke-session"`) {
-		t.Fatalf("want smoke-session in response, got %q", string(body))
+	var got struct {
+		Sessions []map[string]any `json:"sessions"`
 	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got.Sessions
 }
 
 func TestMock_CreateSession(t *testing.T) {

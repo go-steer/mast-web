@@ -116,4 +116,68 @@ describe('AttachCoreProtocol', () => {
       expect(raw.protocol_version).toBe('1.2.0');
     });
   });
+
+  // The two-question split from spec §2.8. These are the helpers that
+  // decide whether a shell renders a pause banner and whether it offers
+  // a Pause button, and the interesting cases are all the ones where
+  // the honest answer to the two questions differs.
+  describe('emitsEvent / hasFeature', () => {
+    const v17 = {
+      protocol_version: '1.7.0',
+      event_types: ['capabilities', 'status-update', 'pause', 'wake'],
+      features: { interrupt: true, pause: true },
+    };
+
+    it('reads event_types for what the stream will carry', () => {
+      expect(AttachCoreProtocol.emitsEvent(v17, 'pause')).toBe(true);
+      expect(AttachCoreProtocol.emitsEvent(v17, 'wake')).toBe(true);
+      expect(AttachCoreProtocol.emitsEvent(v17, 'inbox')).toBe(false);
+    });
+
+    it('assumes the classic set, and only that, when event_types is absent', () => {
+      // A pre-v1.1.0 server never declared one. Rendering nothing at
+      // all would be worse than assuming the events that predate the
+      // field — but nothing newer may be assumed.
+      const bare = { protocol_version: '1.0.0', server: 'core-agent' };
+      expect(AttachCoreProtocol.emitsEvent(bare, 'status-update')).toBe(true);
+      expect(AttachCoreProtocol.emitsEvent(bare, 'agent')).toBe(true);
+      expect(AttachCoreProtocol.emitsEvent(bare, 'pause')).toBe(false);
+      expect(AttachCoreProtocol.emitsEvent(bare, 'wake')).toBe(false);
+    });
+
+    it('answers no for a null capabilities frame', () => {
+      // Null means the server hasn't advertised yet, not that it can't
+      // do anything — but before the first frame there is nothing to
+      // render, so no is the safe read.
+      expect(AttachCoreProtocol.emitsEvent(null, 'pause')).toBe(false);
+    });
+
+    it('reads features for what the backend will accept', () => {
+      expect(AttachCoreProtocol.hasFeature(v17, 'pause')).toBe(true);
+      expect(AttachCoreProtocol.hasFeature({ features: { pause: false } }, 'pause')).toBe(false);
+    });
+
+    it('treats an absent feature key as on, per the §2.1 additive rule', () => {
+      // A producer that predates a flag stays silent about it. Reading
+      // that silence as "off" would switch off working features on
+      // every older backend each time the spec grows one — and it is
+      // what the shells already assume (app.js reads absent as on).
+      expect(AttachCoreProtocol.hasFeature({ features: { pause: true } }, 'guardrails')).toBe(true);
+      expect(AttachCoreProtocol.hasFeature({ protocol_version: '1.2.0' }, 'pause')).toBe(true);
+      expect(AttachCoreProtocol.hasFeature(null, 'pause')).toBe(true);
+    });
+
+    it('gives different answers to the two questions for the same frame', () => {
+      // The case the spec calls out by name: a server that speaks the
+      // frame but sits in front of an agent that cannot hold. Read only
+      // event_types and you offer a button the server will reject; read
+      // only features and you ignore a pause somebody else caused.
+      const speaksButCannotHold = {
+        event_types: ['capabilities', 'pause'],
+        features: { pause: false },
+      };
+      expect(AttachCoreProtocol.emitsEvent(speaksButCannotHold, 'pause')).toBe(true);
+      expect(AttachCoreProtocol.hasFeature(speaksButCannotHold, 'pause')).toBe(false);
+    });
+  });
 });

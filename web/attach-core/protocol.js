@@ -30,10 +30,15 @@
 //       each to emit({type, data}). Handles both PascalCase and
 //       camelCase field variants; tolerates missing Content/parts.
 //   parseCapabilities(data)
-//     — Normalize a capabilities frame into a stable shape. v0.2.0
-//       consumers read protocol_version / event_types / server; v1.3.0
-//       will add features / slash_commands / agent / caller_id (see
-//       core-agent#329). Returns null on non-object input.
+//     — Normalize a capabilities frame into a stable shape. Consumers
+//       read protocol_version / event_types / server, plus (since
+//       v1.4.0, core-agent#329) features / slash_commands / agent /
+//       caller_id. Returns null on non-object input.
+//   emitsEvent(caps, name)
+//     — Will this server send this SSE event?
+//   hasFeature(caps, name)
+//     — Did this server advertise this feature flag? Different
+//       question from emitsEvent; see the note above the two.
 
 window.AttachCoreProtocol = (function () {
   'use strict';
@@ -99,5 +104,58 @@ window.AttachCoreProtocol = (function () {
     return { ...data };
   }
 
-  return { fanoutAgentFrame, parseCapabilities };
+  // ── Capability gating ──────────────────────────────────────────────
+  //
+  // A capabilities frame answers two different questions and they have
+  // two different answers. Conflating them is the mistake the spec
+  // calls out by name, so the two questions get two functions:
+  //
+  //   emitsEvent(caps, 'pause')     — will state arrive on the stream?
+  //   hasFeature(caps, 'pause')     — can I offer the control?
+  //
+  // A v1.5.0 server lists `pause` in event_types whether or not the
+  // agent behind it can actually hold. So a client that reads only
+  // event_types offers a Pause button that does nothing, and one that
+  // reads only features ignores a pause somebody else caused. Render
+  // received state off the first; offer controls off the second.
+
+  // emitsEvent reports whether the server said it can send this SSE
+  // event. Absent event_types means a pre-v1.1.0 server that never
+  // declared one — assume the classic set is present rather than
+  // rendering nothing, but don't assume anything newer.
+  const CLASSIC_EVENTS = [
+    'capabilities',
+    'status-update',
+    'usage-update',
+    'inbox',
+    'turn-complete',
+    'turn-error',
+    'agent',
+  ];
+
+  function emitsEvent(caps, name) {
+    if (!caps || typeof caps !== 'object') return false;
+    const types = caps.event_types;
+    if (!Array.isArray(types)) return CLASSIC_EVENTS.includes(name);
+    return types.includes(name);
+  }
+
+  // hasFeature reports whether the server advertised a feature flag.
+  //
+  // An absent `features` map means a pre-v1.4.0 server, which had no
+  // way to say no — assume on, matching what the shells already do. An
+  // absent KEY inside a present map is the same case for a flag added
+  // after that server was built: the additive rule (§2.1) lets a
+  // producer stay silent about something it predates, and reading that
+  // silence as "off" would switch off working features on older
+  // backends every time the spec grows one.
+  function hasFeature(caps, name) {
+    if (!caps || typeof caps !== 'object') return true;
+    const features = caps.features;
+    if (!features || typeof features !== 'object') return true;
+    if (!(name in features)) return true;
+    return !!features[name];
+  }
+
+  return { fanoutAgentFrame, parseCapabilities, emitsEvent, hasFeature };
 })();

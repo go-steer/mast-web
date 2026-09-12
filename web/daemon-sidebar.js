@@ -187,15 +187,25 @@ window.MastDaemonSidebar = (function () {
           if (state.active) row.classList.add('active');
           row.dataset.status = s.status || 'active';
 
+          // v1.6.0 gave session rows an optional `title`. When there is
+          // one it wins the wide slot — it's the whole point of the
+          // field — and the id moves to the meta slot rather than
+          // disappearing, because the id is what correlates a row with
+          // an event log or a URL. Untitled rows are unchanged.
           const idEl = document.createElement('span');
           idEl.className = 'side-session-id';
-          idEl.textContent = s.id;
+          idEl.textContent = s.title || s.id;
           const metaEl = document.createElement('span');
           metaEl.className = 'side-session-meta';
-          metaEl.textContent = s.app || s.user || '';
+          metaEl.textContent = s.title ? s.id : s.app || s.user || '';
           row.appendChild(idEl);
           row.appendChild(metaEl);
-          row.title = s.id + (s.app ? ' · ' + s.app : '') + ' · ' + d.endpoint;
+          row.title =
+            (s.title ? s.title + ' · ' : '') +
+            s.id +
+            (s.app ? ' · ' + s.app : '') +
+            ' · ' +
+            d.endpoint;
 
           row.addEventListener('click', function () {
             onOpen(d, s);

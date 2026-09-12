@@ -31,7 +31,7 @@ And two capabilities that matter more than their PR titles suggest:
 
 Those two together are the hard half of a fleet dashboard, and they already work.
 
-**Capability manifest** (protocol v1.4.0 — `capabilities.features` / `slash_commands` / `agent` / `caller_id`). Per-backend feature negotiation over the wire. This is the mechanism a shell asks "what should I render?" — no `if (backend === 'mast')` branch, per `web-design.md` open question 4.
+**Capability manifest** (protocol v1.4.0 — `capabilities.features` / `slash_commands` / `agent` / `caller_id`). Per-backend feature negotiation over the wire. This is the mechanism a shell asks "what should I render?" — no `if (backend === 'mast')` branch, per `web-design.md` open question 4. Since v1.5.0 the manifest answers two questions, not one: `event_types` says what will arrive on the stream, `features` says what controls the backend will accept. Render received state off the first, offer buttons off the second — `AttachCoreProtocol.emitsEvent` / `hasFeature`.
 
 ## 2. What is actually missing
 

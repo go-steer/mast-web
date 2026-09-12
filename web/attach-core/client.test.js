@@ -584,6 +584,100 @@ describe('AttachClient', () => {
       expect(r).toEqual({ ok: true, interrupted: 'nothing-in-flight' });
     });
 
+    it('interrupt sends {"hold": false} so a v1.5.0 producer cancels instead of parking', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(''),
+        headers: { get: () => null },
+      });
+      globalThis.fetch = fetchMock;
+      await client.interrupt();
+      // The whole bug: core-agent resolves an absent `hold` as TRUE
+      // (`hold := req.Hold == nil || *req.Hold`), so a bare '{}' parks
+      // the loop and the operator's Stop wedges the session.
+      const [, init] = fetchMock.mock.calls[0];
+      expect(JSON.parse(init.body)).toEqual({ hold: false });
+    });
+
+    it('interrupt reports paused from the v1.5.0 response body', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () =>
+          Promise.resolve(JSON.stringify({ session: 's1', interrupted: true, paused: false })),
+        headers: { get: () => null },
+      });
+      const r = await client.interrupt();
+      expect(r).toEqual({ ok: true, interrupted: 'yes', paused: false });
+    });
+
+    it('interrupt surfaces paused: true when a producer parks anyway', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () =>
+          Promise.resolve(JSON.stringify({ session: 's1', interrupted: true, paused: true })),
+        headers: { get: () => null },
+      });
+      const r = await client.interrupt();
+      // Contract violation on the producer side, but the caller needs to
+      // be able to tell the operator a resume is owed rather than leave
+      // the session silently wedged.
+      expect(r.paused).toBe(true);
+    });
+
+    it('interrupt prefers the body’s interrupted flag over the header', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        // Header says idle; body says the cancelled turn is still
+        // unwinding. The body is the v1.5.0 truth — an operator pressing
+        // Stop twice should be told it landed, not "nothing in flight".
+        text: () => Promise.resolve(JSON.stringify({ interrupted: true, paused: false })),
+        headers: { get: (name) => (name === 'X-Interrupted' ? 'nothing-in-flight' : null) },
+      });
+      const r = await client.interrupt();
+      expect(r.interrupted).toBe('yes');
+    });
+
+    it('interrupt falls back to the header when a pre-1.5.0 producer sends no body', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(''),
+        headers: { get: (name) => (name === 'X-Interrupted' ? 'nothing-in-flight' : null) },
+      });
+      const r = await client.interrupt();
+      expect(r).toEqual({ ok: true, interrupted: 'nothing-in-flight' });
+      expect(r.paused).toBeUndefined();
+    });
+
     it('interrupt returns { ok: false, unsupported: true } on 412 (no InterruptProvider)', async () => {
       const client = new AttachClient({
         endpoint: 'https://example',

@@ -611,19 +611,34 @@ window.AttachClient = (function () {
     // turn (if any). Returns a structured shape rather than raw JSON
     // so UI code can distinguish:
     //   { ok: true, interrupted: 'yes' }              — active turn cancelled
-    //   { ok: true, interrupted: 'nothing-in-flight'} — 200 + X-Interrupted
-    //                                                   header (session idle)
+    //   { ok: true, interrupted: 'nothing-in-flight'} — session was idle
     //   { ok: false, unsupported: true }              — 412 (agent has no
     //                                                   InterruptProvider
     //                                                   capability). UI should
     //                                                   disable the Stop button.
+    // `paused` is added when the server sent a v1.5.0 body (see below).
     // Other errors propagate as thrown Error / PermanentStreamError.
+    //
+    // We send {"hold": false} deliberately. Protocol v1.5.0 flipped the
+    // default for this endpoint from "cancel the turn" to "park the
+    // loop" — core-agent resolves it as
+    //
+    //     hold := req.Hold == nil || *req.Hold       (handlers.go:768)
+    //
+    // so an empty body means HOLD. A client that omits the flag gets a
+    // gate it never asked for: the operator presses Stop, sees a cancel,
+    // and the session then refuses to start another turn with nothing on
+    // screen saying a resume is owed. The spec's §4 requires producers to
+    // keep honouring an explicit `hold: false` precisely so pre-1.5.0
+    // clients can keep the old semantics — we are the client that has to
+    // ask. Offering a *deliberate* hold is go-steer/mast-web#70, and when
+    // that lands this flag becomes a parameter rather than a constant.
     async interrupt() {
       const path = '/sessions/' + encodeURIComponent(this.sessionId) + '/interrupt';
       const r = await fetch(this.endpoint + path, {
         method: 'POST',
         headers: { ...this._headers(), 'Content-Type': 'application/json' },
-        body: '{}',
+        body: JSON.stringify({ hold: false }),
       });
       if (r.status === 412) {
         // Agent doesn't implement InterruptProvider. Not an error
@@ -645,10 +660,41 @@ window.AttachClient = (function () {
       // the session was already idle; the button press is a no-op
       // that should give brief feedback but not surface an error.
       const flag = r.headers.get('X-Interrupted') || '';
-      return {
+      const out = {
         ok: true,
         interrupted: flag === 'nothing-in-flight' ? 'nothing-in-flight' : 'yes',
       };
+      // v1.5.0 added a response body — InterruptResponse in core-agent's
+      // pkg/attach/pause.go — carrying {session, interrupted, paused,
+      // running_subagents, stopped_subagents}. Two reasons to read it:
+      //
+      //   - `paused` is the post-condition gate state, so it tells us
+      //     whether the hold: false above was actually honoured rather
+      //     than leaving us to trust it. A true here against our request
+      //     is a producer bug, and callers can say so instead of leaving
+      //     the operator with a silently wedged session.
+      //   - `interrupted` is the same fact the header carries but with
+      //     better semantics: it stays true while a cancelled turn is
+      //     still unwinding, so an operator pressing Stop twice because
+      //     nothing visibly happened is told the interrupt landed rather
+      //     than "nothing in flight". Prefer it where present.
+      //
+      // Pre-1.5.0 producers send no body, so parse defensively and keep
+      // the header reading as the fallback. `running_subagents` is not
+      // surfaced yet — it wants somewhere to render (#70).
+      let body = null;
+      try {
+        body = JSON.parse(await r.text());
+      } catch {
+        // No body, or not JSON — pre-v1.5.0 producer. Header stands.
+      }
+      if (body && typeof body === 'object') {
+        if (typeof body.interrupted === 'boolean') {
+          out.interrupted = body.interrupted ? 'yes' : 'nothing-in-flight';
+        }
+        if (typeof body.paused === 'boolean') out.paused = body.paused;
+      }
+      return out;
     }
 
     // ─── Read-only inspection ───────────────────────────────────────

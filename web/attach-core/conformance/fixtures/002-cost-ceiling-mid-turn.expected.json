@@ -3,13 +3,7 @@
     "type": "capabilities",
     "data": {
       "protocol_version": "1.2.0",
-      "event_types": [
-        "capabilities",
-        "status-update",
-        "usage-update",
-        "turn-error",
-        "agent"
-      ],
+      "event_types": ["capabilities", "status-update", "usage-update", "turn-error", "agent"],
       "server": "core-agent"
     }
   },

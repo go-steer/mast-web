@@ -326,6 +326,46 @@ window.MastState.createDaemons = (function () {
       }
     }
 
+    // Deletes a session on the daemon and drops it from the record.
+    // Resolves { ok, error } rather than throwing: the caller is a
+    // sidebar button, and every failure here is something an operator
+    // should read rather than something a shell should crash on.
+    //
+    // The qualified DELETE /sessions/{app}/{sid} path, which is why the
+    // row has to be in the last listing — the unqualified shortcut 409s
+    // when two tenants have a session of the same name.
+    async function deleteSession(d, session) {
+      const ep = endpointOf(d);
+      const rec = getDaemon(ep);
+      if (!rec) return { ok: false, error: 'daemon ' + ep + ' is not attached' };
+      const sid = typeof session === 'string' ? session : session && session.id;
+      const row = (rec.sessions || []).find(function (s) {
+        return s.id === sid;
+      });
+      if (!row) {
+        return { ok: false, error: 'session ' + sid + ' is not in this listing — refresh first' };
+      }
+      // core-agent 403s on the bootstrap session (it is what the daemon
+      // falls back to), so say so here rather than spend a round trip
+      // learning it.
+      if (sid === 'default') {
+        return { ok: false, error: 'the bootstrap `default` session cannot be deleted' };
+      }
+      try {
+        await rec.client.deleteSession(row.app, sid);
+      } catch (e) {
+        return { ok: false, error: e && e.message ? e.message : String(e) };
+      }
+      // Drop it locally rather than re-listing: the row is gone either
+      // way, and a refresh would repaint the whole group for one row.
+      patchDaemon(ep, {
+        sessions: (getDaemon(ep).sessions || []).filter(function (s) {
+          return s.id !== sid;
+        }),
+      });
+      return { ok: true, error: '' };
+    }
+
     // The rows this boot should register, and whether they were
     // derived rather than chosen.
     //
@@ -370,6 +410,7 @@ window.MastState.createDaemons = (function () {
       refresh,
       refreshAll,
       newSession,
+      deleteSession,
       discover,
       persist,
       site() {

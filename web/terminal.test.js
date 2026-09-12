@@ -74,12 +74,16 @@ function stubClient() {
   };
 }
 
-function mount({ features, slashCommands } = {}) {
+function mount({ features, slashCommands, commands } = {}) {
   const client = stubClient();
   globalThis.AttachClient = function () {
     return client;
   };
-  const term = globalThis.MastTerminal.create({ endpoint: '/', sessionId: 's1' });
+  const term = globalThis.MastTerminal.create({
+    endpoint: '/',
+    sessionId: 's1',
+    commands: commands,
+  });
   document.body.appendChild(term.el);
   term.connection.setState('connected');
   term.session.setCapabilities({
@@ -309,6 +313,151 @@ describe('MastTerminal built-ins', () => {
       // One row: this panel's /whoami. The other panel's two are not
       // in the count, and a document-wide query would have made it three.
       expect(mine.text()).toContain('Exported 1 row as json.');
+    });
+  });
+
+  // PR 3b: a shell (shell.js, or app.js before it) contributes commands
+  // that act on the window. The point of passing them in rather than
+  // letting the shell keep its own list is that they land in this
+  // table, so every question about "what commands exist" still has one
+  // answer — which is #45 again, one level up.
+  describe('shell-contributed commands', () => {
+    const shellCmd = (over) => ({
+      name: 'layout',
+      usage: '/layout [id]',
+      help: 'Transcript arrangement',
+      offline: true,
+      run: () => {},
+      ...over,
+    });
+
+    it('dispatches one, and hands it somewhere to answer', async () => {
+      const seen = [];
+      const cmd = shellCmd({
+        run: (args, io) => {
+          seen.push(args);
+          io.print('Layout: ' + args[0]);
+        },
+      });
+      const { term, text } = mount({ features: {}, commands: [cmd] });
+      await term.submit('/layout chat');
+      expect(seen).toEqual([['chat']]);
+      expect(text()).toContain('Layout: chat');
+    });
+
+    it('lists them under their own heading in /help', async () => {
+      const { term, text } = mount({ features: {}, commands: [shellCmd()] });
+      await term.submit('/help');
+      expect(text()).toContain('This shell:');
+      expect(text()).toContain('/layout [id]');
+      // Still one list: the built-ins did not move out of it.
+      expect(text()).toContain('/clear');
+    });
+
+    // /clear has to mean the same thing in every panel of every shell.
+    // A shell that could redefine it would make that a per-page
+    // question, which is exactly the ambiguity this table exists to
+    // remove.
+    it('refuses to let a shell shadow a built-in', async () => {
+      const hijack = shellCmd({
+        name: 'clear',
+        run: () => {
+          throw new Error('ran');
+        },
+      });
+      const { term, text } = mount({ features: {}, commands: [hijack] });
+      await term.submit('/whoami');
+      await term.submit('/clear');
+      expect(text()).toBe('');
+    });
+
+    it('puts them behind the same capability gate as the built-ins', async () => {
+      const gated = shellCmd({ name: 'roomy', usage: '/roomy', feature: 'spatial' });
+      const { term, text } = mount({ features: { spatial: false }, commands: [gated] });
+      await term.submit('/help');
+      expect(text()).toContain('Not supported by this backend: /roomy');
+      await term.submit('/roomy');
+      expect(text()).toContain('/roomy is not supported by this backend.');
+    });
+
+    it('ignores a malformed descriptor rather than breaking the table', async () => {
+      const { term, text } = mount({
+        features: {},
+        commands: [{ name: 'nope' }, null, shellCmd()],
+      });
+      await term.submit('/help');
+      expect(text()).toContain('/layout [id]');
+      expect(text()).not.toContain('/nope');
+    });
+
+    // What the command palette reads. A palette that offers a name the
+    // prompt would then refuse is the second read this whole table
+    // exists to prevent, so it comes from here rather than from a list
+    // the shell keeps alongside.
+    it('reports the live, gated table through api.commands', () => {
+      const { term } = mount({
+        features: { mcp: false },
+        slashCommands: ['compact'],
+        commands: [shellCmd()],
+      });
+      const names = term.commands.map((c) => c.name);
+      expect(names).toContain('layout');
+      expect(names).toContain('help');
+      expect(names).toContain('compact');
+      expect(names).not.toContain('mcp');
+
+      const bySource = Object.fromEntries(term.commands.map((c) => [c.name, c.source]));
+      expect(bySource.layout).toBe('shell');
+      expect(bySource.help).toBe('builtin');
+      expect(bySource.compact).toBe('agent');
+    });
+  });
+
+  // The batch runner is the caller that needs this: it drives a queue
+  // of prompts and has to know what each one cost. Everything else
+  // ignores the return value.
+  describe('submit() reports the turn back to its caller', () => {
+    it('returns null when no turn happened', async () => {
+      const { term } = mount({ features: {} });
+      expect(await term.submit('/help')).toBeNull();
+      expect(await term.submit('   ')).toBeNull();
+      term.connection.setState('disconnected');
+      expect(await term.submit('hello')).toBeNull();
+    });
+
+    it("returns the turn's measurements when it closes", async () => {
+      const { term, client } = mount({ features: {} });
+      client.inject = async () => {};
+      const pending = term.submit('hello');
+      // runPrompt registers the turn synchronously; a live stream would
+      // close it from a turn-complete frame.
+      term.connection.getActiveTurn().finish({
+        totalMs: 1200,
+        tokens: { in: 30, out: 90 },
+        costUSD: 0.0042,
+        toolCalls: 2,
+      });
+      const r = await pending;
+      expect(r.ok).toBe(true);
+      expect(r.totalMs).toBe(1200);
+      expect(r.tokens).toEqual({ in: 30, out: 90 });
+      expect(r.costUSD).toBe(0.0042);
+      // Nothing streamed, so there was no first frame before the close;
+      // the total is the honest answer rather than a zero.
+      expect(r.ttfbMs).toBe(1200);
+    });
+
+    it('returns the failure instead of throwing it', async () => {
+      const { term, client, text } = mount({ features: {} });
+      client.inject = async () => {
+        throw new Error('socket died');
+      };
+      const r = await term.submit('hello');
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('socket died');
+      // And it is still rendered, because the other callers of submit()
+      // are keypresses with nobody to catch a rejection.
+      expect(text()).toContain('socket died');
     });
   });
 });

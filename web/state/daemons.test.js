@@ -139,6 +139,11 @@ describe('state/daemons — registry operations', () => {
         if (this.fail) throw this.fail;
         return { id: 's2', app: 'demo', user: 'ada' };
       },
+      deleted: [],
+      async deleteSession(app, sid) {
+        if (this.fail) throw this.fail;
+        this.deleted.push([app, sid]);
+      },
     };
     clients.set(rec.endpoint, client);
     return client;
@@ -253,6 +258,77 @@ describe('state/daemons — registry operations', () => {
     clients.get('https://a').fail = new Error('no capacity');
     expect(await r.newSession('https://a')).toBeNull();
     expect(r.getDaemon('https://a').lastError).toBe('no capacity');
+  });
+
+  // A sidebar button is the only caller, so every one of these resolves
+  // with { ok, error } rather than throwing: the operator needs to read
+  // the reason, not have the shell fall over on it.
+  describe('deleteSession', () => {
+    async function withSession() {
+      const r = registry();
+      r.add('https://a');
+      await r.refresh('https://a');
+      return r;
+    }
+
+    it('deletes app-qualified and drops the row without re-listing', async () => {
+      const r = await withSession();
+      const before = clients.get('https://a').listCalls;
+      expect(await r.deleteSession('https://a', 's1')).toEqual({ ok: true, error: '' });
+      // Qualified, because the unqualified shortcut 409s when two
+      // tenants have a session of the same name.
+      expect(clients.get('https://a').deleted).toEqual([['demo', 's1']]);
+      expect(r.getDaemon('https://a').sessions).toEqual([]);
+      // A refresh here would repaint the whole group for one row.
+      expect(clients.get('https://a').listCalls).toBe(before);
+    });
+
+    it('takes a row object as readily as an id', async () => {
+      const r = await withSession();
+      const row = r.getDaemon('https://a').sessions[0];
+      expect((await r.deleteSession('https://a', row)).ok).toBe(true);
+      expect(clients.get('https://a').deleted).toEqual([['demo', 's1']]);
+    });
+
+    it('refuses an unattached daemon', async () => {
+      const r = registry();
+      expect(await r.deleteSession('https://never', 's1')).toEqual({
+        ok: false,
+        error: 'daemon https://never is not attached',
+      });
+    });
+
+    // The app qualifier comes out of the last listing, so a row that
+    // isn't in it has no qualifier to send.
+    it('refuses a session that is not in the listing', async () => {
+      const r = await withSession();
+      const res = await r.deleteSession('https://a', 's9');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('refresh first');
+    });
+
+    // core-agent 403s on it — it is what the daemon falls back to — so
+    // there is no point spending a round trip to learn that.
+    it('refuses the bootstrap session without asking the server', async () => {
+      const r = registry();
+      r.add('https://a');
+      clients.get('https://a').sessions = [{ id: 'default', app: 'demo' }];
+      await r.refresh('https://a');
+      const res = await r.deleteSession('https://a', 'default');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('bootstrap');
+      expect(clients.get('https://a').deleted).toEqual([]);
+    });
+
+    it('relays a server refusal and keeps the row', async () => {
+      const r = await withSession();
+      clients.get('https://a').fail = new Error('session is running');
+      expect(await r.deleteSession('https://a', 's1')).toEqual({
+        ok: false,
+        error: 'session is running',
+      });
+      expect(r.getDaemon('https://a').sessions).toHaveLength(1);
+    });
   });
 
   it('discover prefers stored rows and never asks the server', async () => {

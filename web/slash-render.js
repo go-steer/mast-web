@@ -52,6 +52,23 @@
 //                             {ok, errors[]}.
 //   escapeHTML         — exported for consumers that need it (e.g.
 //                        addSystemMessageHTML in app.js).
+//   renderList(title, groups, opts)
+//     — the catalog list every client-side built-in renders into:
+//       /tools, /subagents, /mcp. Lifted out of app.js so the
+//       surviving shells get the same output instead of a second
+//       copy. See the note above the function for the grouping rules.
+//   renderTools(tools, filter)
+//     — /tools, whole. Returns {html} or {text}: the source-grouped
+//       catalog, the filtered detail view, or the miss that names the
+//       sources on offer. Here rather than in a shell because the
+//       grouping rules are the interesting part and there should be
+//       one of them.
+//   groupToolsBySource(tools)
+//     — [[groupKey, tools], …] in heading order. Exported for tests
+//       and for anything that wants the buckets without the markup.
+//   summarizeAgentEvent(event)
+//     — one plain-text line for a persisted subagent turn event, for
+//       the `/subagents events` drill-down.
 
 window.SlashRender = (function () {
   'use strict';
@@ -370,6 +387,216 @@ window.SlashRender = (function () {
     return renderer(response);
   }
 
+  // ─── Catalog lists ────────────────────────────────────────────────
+  //
+  // Shared by the client-side built-ins that print a roster — /tools,
+  // /subagents, /mcp. Lifted out of app.js's renderListHTML so the
+  // shells that survive v0.4 render the same thing rather than growing
+  // a second copy of it.
+  //
+  // `groups` is [{header?, items: [{name, tags?, description?}]}].
+  // A group with no items prints "(none)" rather than vanishing —
+  // an empty MCP server is a fact about the backend, not an absence.
+  //
+  // opts.summary prints one line under the title. It exists for the
+  // grouped /tools header ("builtin 14 · gke 31 · skill 9"), which is
+  // the whole point of grouping: the counts are what tell an operator
+  // whether the list they are about to scroll is theirs or a server's.
+  function renderList(title, groups, opts) {
+    const o = opts || {};
+    const parts = [`<div class="list-title">${escapeHTML(title)}</div>`];
+    if (o.summary) {
+      parts.push(`<div class="list-summary">${escapeHTML(o.summary)}</div>`);
+    }
+    (groups || []).forEach((g) => {
+      if (g.header) {
+        parts.push(`<div class="list-group-header">${escapeHTML(g.header)}</div>`);
+      }
+      const items = g.items || [];
+      if (items.length === 0) {
+        parts.push('<div class="list-item-desc">(none)</div>');
+        return;
+      }
+      items.forEach((it) => {
+        const tags =
+          it.tags && it.tags.length
+            ? ` <span class="list-item-tags">[${escapeHTML(it.tags.join(', '))}]</span>`
+            : '';
+        parts.push(
+          `<div class="list-item">` +
+            `<div class="list-item-name">▸ ${escapeHTML(it.name)}${tags}</div>` +
+            (it.description
+              ? `<div class="list-item-desc">${escapeHTML(it.description)}</div>`
+              : '') +
+            `</div>`
+        );
+      });
+    });
+    return parts.join('');
+  }
+
+  // ─── /tools ───────────────────────────────────────────────────────
+  //
+  // The catalog used to render as one flat alphabetical run with a
+  // description under every row. That was right for the ~14 built-ins a
+  // host reported when app.js's version was written, and it stopped
+  // being right when hosts started reporting their MCP and skill tools
+  // too (core-agent#827, core-tui#289): the operator's own built-ins
+  // end up interleaved into a wall of server rows, the one tool they
+  // came for is buried, and the descriptions — most of the vertical
+  // space — are what buries it.
+  //
+  // Two modes, split on how much the operator already knows:
+  //
+  //   Grouped (the default, and only when there is more than one
+  //   source). Per-source counts, a heading per source, bare names. No
+  //   descriptions: the operator is scanning for a name.
+  //
+  //   Detailed, with descriptions, for `/tools <source>` and for a
+  //   catalog with one source anyway. There the operator has already
+  //   narrowed to a set small enough to read, which is the point at
+  //   which a description earns its rows — so a single-source catalog
+  //   renders exactly as it did before.
+
+  // core-agent flattens its Source/Server pair into one column, so an
+  // MCP tool reports its server's own name rather than the bare word
+  // "mcp". Older producers send the pair unflattened; normalizing here
+  // means everything downstream sees one shape.
+  function toolSource(t) {
+    if (!t) return '';
+    if (t.source === 'mcp' && t.server) return t.server;
+    return t.source || '';
+  }
+
+  // The heading a source falls under: everything before a colon is the
+  // family, so a session's several `skill:<name>` sources collapse to
+  // one "skill" heading instead of one heading each. Nothing is lost —
+  // the row keeps the full source in its annotation when it's shown at
+  // all. An empty source groups under "other" rather than under "",
+  // which would render a heading with no name.
+  function toolGroupKey(source) {
+    if (!source) return 'other';
+    const colon = source.indexOf(':');
+    return colon > 0 ? source.slice(0, colon) : source;
+  }
+
+  // builtin first because it's the set the operator already knows,
+  // other last because it's the leftovers, the rest alphabetical.
+  function toolGroupRank(key) {
+    if (key === 'builtin') return 0;
+    if (key === 'other') return 2;
+    return 1;
+  }
+
+  // → [[key, tools], …] in heading order, alphabetical within a group.
+  function groupToolsBySource(tools) {
+    const sorted = (tools || [])
+      .map((t) => (typeof t === 'string' ? { name: t } : t))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const byKey = new Map();
+    sorted.forEach((t) => {
+      const key = toolGroupKey(toolSource(t));
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(t);
+    });
+    return [...byKey.entries()].sort((a, b) => {
+      const ra = toolGroupRank(a[0]);
+      const rb = toolGroupRank(b[0]);
+      return ra !== rb ? ra - rb : a[0].localeCompare(b[0]);
+    });
+  }
+
+  // Grouped rows keep the gate and drop the description: "this one will
+  // stop and ask" changes what the operator does next, where the
+  // description only tells them what they came here already knowing.
+  // Detail rows carry the full source too, since the heading that would
+  // have supplied it isn't there.
+  function toolRow(t, detailed) {
+    const tags = [];
+    const source = toolSource(t);
+    if (detailed && source) tags.push(source);
+    if (t.gate_state) tags.push(t.gate_state);
+    return { name: t.name || String(t), tags, description: detailed ? t.description : '' };
+  }
+
+  // Returns {html} to render, or {text} for the one answer that isn't a
+  // list. The caller picks the system-message flavour; this decides
+  // what the answer is.
+  function renderTools(tools, filter) {
+    const grouped = groupToolsBySource(tools);
+    const keys = grouped.map(([key]) => key);
+    const want = String(filter || '').toLowerCase();
+
+    if (want) {
+      // Matches a group key ("skill") or a full source ("skill:review",
+      // "gke"), case-insensitively, across every group.
+      const hits = [];
+      grouped.forEach(([key, entries]) => {
+        entries.forEach((t) => {
+          if (key.toLowerCase() === want || toolSource(t).toLowerCase() === want) hits.push(t);
+        });
+      });
+      if (hits.length === 0) {
+        // Name the sources that do exist. Filtering by source is the
+        // only reason to want those names, so an operator who guessed
+        // wrong has no other way to learn them — this is the difference
+        // between a dead end and a discovery.
+        return { text: `/tools: no tools from "${filter}". Sources: ` + keys.join(', ') };
+      }
+      return {
+        html: renderList(`Tools from ${filter} (${hits.length})`, [
+          { items: hits.map((t) => toolRow(t, true)) },
+        ]),
+      };
+    }
+
+    // One source is not a grouping problem — a heading over the whole
+    // catalog says nothing the count didn't.
+    if (grouped.length === 1) {
+      return {
+        html: renderList(`Tools (${tools.length})`, [
+          { items: grouped[0][1].map((t) => toolRow(t, true)) },
+        ]),
+      };
+    }
+
+    const counts = grouped.map(([key, entries]) => `${key} ${entries.length}`).join(' · ');
+    return {
+      html: renderList(
+        `Tools (${tools.length}): ${counts}`,
+        grouped.map(([key, entries]) => ({
+          header: `${key} (${entries.length})`,
+          items: entries.map((t) => toolRow(t, false)),
+        })),
+        { summary: '/tools <source> for descriptions' }
+      ),
+    };
+  }
+
+  // One-line summary of a persisted subagent turn event (the same ADK
+  // Event shape the SSE `agent` frame carries), for the `/subagents
+  // events` drill-down. Reuses the pure fanoutAgentFrame parser rather
+  // than re-deriving Content/parts field-variant handling — the
+  // variants are the hard part and there is exactly one correct
+  // implementation of them.
+  //
+  // Here rather than in a shell because two shells now print it. Plain
+  // text, not HTML: the caller decides.
+  function summarizeAgentEvent(event) {
+    if (!window.AttachCoreProtocol) return '(event)';
+    const parts = [];
+    window.AttachCoreProtocol.fanoutAgentFrame({ event }, (e) => parts.push(e));
+    if (parts.length === 0) return '(empty)';
+    return parts
+      .map((p) => {
+        if (p.type === 'stream-chunk') return `text: ${p.data.text.slice(0, 80)}`;
+        if (p.type === 'tool-call') return `call ${p.data.name}`;
+        if (p.type === 'tool-result') return `result ${p.data.name} (${p.data.latencyMs}ms)`;
+        return p.type;
+      })
+      .join('; ');
+  }
+
   return {
     renderSlashResponse,
     register,
@@ -378,5 +605,9 @@ window.SlashRender = (function () {
     SCHEMAS,
     validate,
     escapeHTML,
+    renderList,
+    renderTools,
+    groupToolsBySource,
+    summarizeAgentEvent,
   };
 })();

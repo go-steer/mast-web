@@ -200,6 +200,14 @@ var (
 	// doesn't populate MCP attribution yet) so the SPA's name-prefix
 	// fallback bucketing in mast.listMcpServers() is exercised against
 	// the mock, not just the aspirational fully-attributed shape.
+	//
+	// It also spans four source families, which is the point of most of
+	// these rows: a catalog of five built-ins renders through /tools'
+	// single-source path and never touches the grouping, the folding of
+	// several skill:<name> sources into one heading, or the
+	// `/tools <source>` filter (core-tui#289, mast-web#59). A mock that
+	// only models the easy shape is how a client ships believing it
+	// handles the hard one.
 	stubTools = map[string]any{
 		"tools": []map[string]any{
 			{"name": "fs_read", "description": "Read files", "source": "builtin", "gate_state": "allowed"},
@@ -207,6 +215,19 @@ var (
 			{"name": "bash_exec", "description": "Run shell commands", "source": "builtin", "gate_state": "prompted"},
 			{"name": "kube_get", "description": "kubectl get", "source": "other", "gate_state": "allowed"},
 			{"name": "kube_apply", "description": "kubectl apply", "source": "other", "gate_state": "prompted"},
+			// Flattened MCP attribution: core-agent reports the server's
+			// own name in `source` rather than the bare word "mcp".
+			{"name": "gke_clusters_list", "description": "List GKE clusters", "source": "gke", "gate_state": "allowed"},
+			{"name": "gke_nodes_list", "description": "List cluster nodes", "source": "gke", "gate_state": "allowed"},
+			// Unflattened source/server pair — the older shape, still on
+			// the wire from some producers, which clients must normalize
+			// to the same bucket as the rows above.
+			{"name": "gh_pr_view", "description": "Show a pull request", "source": "mcp", "server": "github", "gate_state": "allowed"},
+			// Two skills, one heading: the fold is only visible when
+			// there is more than one to fold.
+			{"name": "review_diff", "description": "Review a diff", "source": "skill:review", "gate_state": "allowed"},
+			{"name": "write_adr", "description": "Write a decision record", "source": "skill:adr", "gate_state": "allowed"},
+			{"name": "delegate", "description": "Hand work to a subagent", "source": "subagent", "gate_state": "prompted"},
 		},
 	}
 	stubAgents = map[string]any{

@@ -368,4 +368,42 @@ describe('state/session — factory', () => {
     expect(shared.get().currentModel).toBe('sonnet');
     expect(createSession().get().currentModel).toBe('');
   });
+
+  // ─── whoami (PR 2 / #59) ───────────────────────────────────────────
+
+  describe('setWhoami', () => {
+    it('starts null and stores the resolved identity', () => {
+      const st = createSession();
+      expect(st.get().whoami).toBeNull();
+      st.setWhoami({ identity: 'ada@example.com', source: 'bearer', admin: true });
+      expect(st.get().whoami).toEqual({
+        identity: 'ada@example.com',
+        source: 'bearer',
+        admin: true,
+      });
+    });
+
+    // "We asked and got nothing" has to read the same as "we never
+    // asked" — both mean there is no identity to show, and a consumer
+    // that has to tell {} from null to find that out will get it wrong.
+    it('normalizes an answer with no identity to null', () => {
+      const st = createSession();
+      st.setWhoami({ identity: 'ada@example.com' });
+      st.setWhoami({});
+      expect(st.get().whoami).toBeNull();
+      st.setWhoami({ identity: 'ada@example.com' });
+      st.setWhoami(null);
+      expect(st.get().whoami).toBeNull();
+      st.setWhoami({ identity: 'ada@example.com' });
+      st.setWhoami('ada');
+      expect(st.get().whoami).toBeNull();
+    });
+
+    it('is per-instance', () => {
+      const a = createSession();
+      const b = createSession();
+      a.setWhoami({ identity: 'ada@example.com' });
+      expect(b.get().whoami).toBeNull();
+    });
+  });
 });

@@ -1615,10 +1615,11 @@ body[data-layout='chat'] .message.user {
 }
 
 /* Structured system-message lists — /mcp, /tools, /subagents. Rendered
-   via app.js's renderListHTML() + addSystemMessageHTML rather than a
+   via SlashRender.renderList() + addSystemMessageHTML rather than a
    plain-text run-on line, so a bulleted name + tags sits on its own
    line with the description indented below it (mirrors core-tui's
-   renderToolList / MCP-server renderer). */
+   renderToolList / MCP-server renderer). Both shells use these: the
+   renderer moved out of app.js in PR 2 (#59) so it would outlive it. */
 .message.system .list-title {
   font-weight: 600;
   color: var(--accent);
@@ -1626,6 +1627,16 @@ body[data-layout='chat'] .message.user {
   letter-spacing: 0.1em;
   font-size: 11px;
   margin-bottom: 6px;
+}
+
+/* One dim line under the title: per-source counts for grouped /tools,
+   the "…for descriptions" hint, a usage note. Sits above the first
+   group header, so that header's :first-of-type margin reset still
+   applies — this is a different element, not another header. */
+.message.system .list-summary {
+  margin-bottom: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 .message.system .list-group-header {

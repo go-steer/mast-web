@@ -40,14 +40,18 @@
 // What's here today: streaming markdown, tool-call rows with
 // click-to-expand results, turn footers, the thinking indicator,
 // interrupt, inline permission prompts, server-dispatched slash
-// commands, grounded-source strips, and observer-mode rendering of
-// externally-driven turns.
+// commands, grounded-source strips, observer-mode rendering of
+// externally-driven turns, and the client-side built-ins /tools,
+// /subagents, /usage and /whoami.
 //
-// What isn't here yet, and should be: the client-side slash commands
-// app.js carries on top of the generic dispatch (/attach, /sessions,
-// /model, …), the model picker, subagent and guardrail drill-downs,
-// session export, and the batch runner. These are unported, not
-// excluded. Parity with app.js is the target; a terminal in a panel
+// What isn't here yet, and should be: the rest of the client-side
+// slash commands app.js carries on top of the generic dispatch
+// (/attach, /sessions, /model, /mcp, /specialists, …), the model
+// picker, the guardrail drill-down, session export, and the batch
+// runner. These are unported, not excluded — four of the nine landed
+// with PR 2 (#59) and the rest land with PR 3 (#60), before the
+// classic shell is deleted rather than after. Parity with app.js is
+// the target; a terminal in a panel
 // should not be a lesser terminal than one in a tab, and where a
 // feature needs a different presentation to fit the panel, that's a
 // design problem to solve rather than a reason to drop it.
@@ -134,6 +138,23 @@ window.MastTerminal = (function () {
         : 'Backend is restarting — retry shortly.';
     }
     return (prefix || 'Error: ') + (e && e.message ? e.message : e);
+  }
+
+  // Plain-text rendering of a GET /whoami answer, for /whoami and for
+  // the shells' identity slot.
+  //
+  // `source` is suppressed when it's "bearer" — that's the ordinary
+  // case and printing it trains the operator to skim past the line
+  // where it *isn't*. proxy_by and admin are never suppressed: one
+  // says someone else signed for this caller, the other says the
+  // session outranks what its operator would assume.
+  function describeWhoami(who) {
+    if (!who || !who.identity) return 'Backend reported no identity for this caller.';
+    const notes = [];
+    if (who.source && who.source !== 'bearer') notes.push('via ' + who.source);
+    if (who.proxy_by) notes.push('on behalf of ' + who.proxy_by);
+    if (who.admin) notes.push('admin');
+    return who.identity + (notes.length ? ' (' + notes.join(', ') + ')' : '');
   }
 
   // Gemini grounding evidence. core-agent projects a turn's grounding
@@ -1090,6 +1111,20 @@ window.MastTerminal = (function () {
       switch (ev.type) {
         case 'capabilities':
           session.setCapabilities(ev.data);
+          // Enrich in the background with the resolved identity. The
+          // frame carries caller_id, which is what the token presented;
+          // /whoami is what the backend made of it, and it's the only
+          // source of proxy_by and admin. Failures are swallowed on
+          // purpose — an identity slot that can't fill stays empty, and
+          // a pre-v1.3.0 server 404s here.
+          client.whoami().then(
+            (who) => {
+              if (ui.destroyed) return;
+              session.setWhoami(who);
+              onChange(api, 'whoami');
+            },
+            () => {}
+          );
           return;
 
         case 'status-update': {
@@ -1352,16 +1387,290 @@ window.MastTerminal = (function () {
       }
     }
 
+    // ── Client-side built-ins ────────────────────────────────────────
+    //
+    // Answered here rather than by the agent, because each one reads a
+    // REST endpoint the slash channel doesn't expose. Ported from
+    // app.js by PR 2 (#59) — five of the nine methods that had to exist
+    // somewhere else before the classic shell can be deleted.
+    //
+    // Built-ins win over an advertised name of the same spelling, which
+    // is what app.js does and what core-tui settled on. The list of
+    // built-in NAMES is its own thing, not a subset of some other
+    // predicate — core-tui#289's sibling lesson, and the reason /quit
+    // there once got shipped to the agent as prose.
+
+    function requireConnected() {
+      if (connection.getState() !== 'connected') {
+        addSystemMessage('Not connected.');
+        return false;
+      }
+      return true;
+    }
+
+    function renderList(title, groups, opts) {
+      if (window.SlashRender && typeof window.SlashRender.renderList === 'function') {
+        addSystemMessageHTML(window.SlashRender.renderList(title, groups, opts));
+      } else {
+        addSystemMessage(title);
+      }
+    }
+
+    // /tools [source] — the tool catalog, grouped by source.
+    // Shape and rationale live in SlashRender.renderTools; this is the
+    // fetch, the empty case, and the choice of which system-message
+    // flavour the answer needs.
+    async function cmdTools(args) {
+      if (!requireConnected()) return;
+      let tools;
+      try {
+        tools = await client.listTools();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/tools failed: '));
+        return;
+      }
+      if (!tools || tools.length === 0) {
+        addSystemMessage('No tools registered on the backend.');
+        return;
+      }
+      const out = window.SlashRender.renderTools(tools, args[0] || '');
+      if (out.html) addSystemMessageHTML(out.html);
+      else addSystemMessage(out.text);
+    }
+
+    // /subagents [list]                — the configured/spawnable roster
+    // /subagents events <name> [since] — that subagent's persisted turns
+    // core-agent#627/#634 (catalog) + #638/#687 (drill-down).
+    async function cmdSubagents(args) {
+      if (!requireConnected()) return;
+      if ((args[0] || 'list').toLowerCase() === 'events') {
+        await subagentEvents(args.slice(1));
+        return;
+      }
+      let subs;
+      try {
+        subs = await client.listConfiguredSubagents();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/subagents failed: '));
+        return;
+      }
+      if (!subs || subs.length === 0) {
+        addSystemMessage('No subagents configured on the backend.');
+        return;
+      }
+      renderList(
+        `Configured subagents (${subs.length})`,
+        [
+          {
+            items: subs.map((s) => ({
+              name: s.name,
+              tags: [s.model, s.modes && s.modes.length ? s.modes.join('/') : ''].filter(Boolean),
+              description: s.description,
+            })),
+          },
+        ],
+        { summary: '/subagents events <name> [since] to drill in' }
+      );
+    }
+
+    // The subagent-events path is qualified by app, and a terminal is
+    // constructed from a session id alone — the app is a fact only GET
+    // /sessions carries. app.js could read it off the sidebar's last
+    // snapshot; a terminal has no sidebar, so it asks, and caches the
+    // answer in the store where the shell around it can use it too.
+    //
+    // Reports the failure itself rather than returning empty, because
+    // "which app" is not a question the operator can answer and the two
+    // ways to fail here read very differently.
+    async function currentApp() {
+      const sid = sess().currentSession;
+      const cached = (sess().sessions || []).find((s) => s.id === sid);
+      if (cached && cached.app) return cached.app;
+      let rows;
+      try {
+        rows = await client.listSessions();
+      } catch (e) {
+        addSystemMessage(describeError(e, 'could not resolve the app for this session: '));
+        return '';
+      }
+      session.setSessions(rows);
+      const row = rows.find((s) => s.id === sid);
+      if (!row || !row.app) {
+        addSystemMessage(`Session ${sid} is not in this backend's session list.`);
+        return '';
+      }
+      return row.app;
+    }
+
+    async function subagentEvents(args) {
+      const name = args[0];
+      if (!name) {
+        addSystemMessage('Usage: /subagents events <name> [since]');
+        return;
+      }
+      const app = await currentApp();
+      if (!app) return;
+      const since = Number(args[1]);
+      try {
+        const out = await client.getSubagentEvents(app, name, {
+          since: Number.isFinite(since) ? since : undefined,
+        });
+        const events = out.events || [];
+        if (events.length === 0) {
+          addSystemMessage(`No persisted events for subagent "${name}" yet.`);
+          return;
+        }
+        // Tail preview; `since` pages further back once next_since is
+        // known, which is why it's printed rather than swallowed.
+        const preview = events
+          .slice(-10)
+          .map((e) => '  #' + e.seq + ' ' + window.SlashRender.summarizeAgentEvent(e.event))
+          .join('\n');
+        addSystemMessage(
+          `Subagent "${name}" — ${events.length} event(s) (next_since=${out.next_since}` +
+            (out.truncated ? ', truncated' : '') +
+            '):\n' +
+            preview
+        );
+      } catch (e) {
+        addSystemMessage(describeError(e, '/subagents events failed: '));
+      }
+    }
+
+    // /whoami — who the backend resolved this caller to.
+    //
+    // `capabilities.caller_id` arrives on the first frame and is the
+    // identity the token *presented*; this is the one the backend
+    // resolved it to, plus proxy_by and admin. Those two are why the
+    // round trip is worth making: "acting on behalf of" and "this
+    // session can do more than you think" are not derivable from the
+    // first frame, and both change what an operator should believe.
+    async function cmdWhoami() {
+      if (!requireConnected()) return;
+      try {
+        const who = await client.whoami();
+        session.setWhoami(who);
+        onChange(api, 'whoami');
+        addSystemMessage(describeWhoami(sess().whoami));
+      } catch (e) {
+        addSystemMessage(describeError(e, '/whoami failed: '));
+      }
+    }
+
+    // Folds a GET /usage snapshot into the store. Every field is
+    // optional and a missing one leaves the existing value alone rather
+    // than zeroing it: the snapshot is a repair for a client that
+    // missed usage-update frames, and a repair that can erase what the
+    // stream already delivered is worse than no repair.
+    function applyUsageSnapshot(u) {
+      if (!u || typeof u !== 'object') return;
+      const patch = {};
+      const o = u.overall;
+      if (o && typeof o === 'object') {
+        if (typeof o.tokens_in === 'number') patch.tokensIn = o.tokens_in;
+        if (typeof o.tokens_out === 'number') patch.tokensOut = o.tokens_out;
+        if (typeof o.cost_usd === 'number') patch.costUSD = o.cost_usd;
+        if (typeof o.turns === 'number') patch.turns = o.turns;
+      }
+      if (u.per_model && typeof u.per_model === 'object') {
+        const byModel = {};
+        Object.keys(u.per_model).forEach((m) => {
+          const b = u.per_model[m] || {};
+          byModel[m] = {
+            tokensIn: b.tokens_in || 0,
+            tokensOut: b.tokens_out || 0,
+            costUSD: b.cost_usd || 0,
+            turns: b.turns || 0,
+          };
+        });
+        patch.byModel = byModel;
+      }
+      if (u.last_turn && typeof u.last_turn === 'object') {
+        patch.lastTurn = {
+          tokensIn: u.last_turn.tokens_in || 0,
+          tokensInCached: u.last_turn.tokens_in_cached || 0,
+          tokensOut: u.last_turn.tokens_out || 0,
+          costUSD: u.last_turn.cost_usd || 0,
+          model: u.last_turn.model || '',
+        };
+      }
+      session.patchUsage(patch);
+      // The status bar reads these two, not usage.*, because they're
+      // updated eagerly at turn close before usage-update lands. Keep
+      // them in step or /usage and the status bar disagree on screen.
+      if (typeof patch.costUSD === 'number') session.setTotalCostUSD(patch.costUSD);
+      if (typeof patch.turns === 'number') {
+        session.setTurnCount(patch.turns);
+        ui.serverCountsTurns = true;
+      }
+      updateStatus();
+    }
+
+    // /usage — session totals from GET /usage.
+    //
+    // The per-turn footer already prices each turn as it lands, and the
+    // status bar carries a running cost; neither answers "what has this
+    // session cost me, by model", which is the question that decides
+    // whether to keep going. The snapshot also repairs totals for a
+    // client that attached mid-session and never saw the earlier
+    // usage-update frames.
+    async function cmdUsage() {
+      if (!requireConnected()) return;
+      let u;
+      try {
+        u = await client.getUsage();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/usage failed: '));
+        return;
+      }
+      applyUsageSnapshot(u);
+      const s = sess().usage;
+      const lines = [
+        'Session usage',
+        `  Turns:  ${s.turns}`,
+        `  Tokens: ${s.tokensIn} in · ${s.tokensOut} out`,
+        `  Cost:   $${s.costUSD.toFixed(4)}`,
+      ];
+      const models = Object.keys(s.byModel).sort();
+      models.forEach((m, i) => {
+        const b = s.byModel[m];
+        lines.push(
+          `  ${i === 0 ? 'Models:' : '       '} ${m} (${b.turns} turn${b.turns === 1 ? '' : 's'}, ` +
+            `${b.tokensIn} in / ${b.tokensOut} out, $${b.costUSD.toFixed(4)})`
+        );
+      });
+      addSystemMessage(lines.join('\n'));
+    }
+
+    const BUILTINS = {
+      tools: cmdTools,
+      subagents: cmdSubagents,
+      whoami: cmdWhoami,
+      usage: cmdUsage,
+    };
+
     // Returns true when the input was a command and has been handled.
     async function handleSlash(trimmed) {
       const parts = trimmed.slice(1).split(/\s+/);
-      const name = parts[0];
+      const raw = parts[0];
+      // Built-ins are ours to spell, so they match case-insensitively.
+      // An advertised name is the agent's, matched exactly — the server
+      // routes on the string it published, and folding case here would
+      // have us post /Compact to a backend that only answers /compact.
+      const name = raw.toLowerCase();
       const args = parts.slice(1);
       const caps = sess().capabilities;
       const advertised = (caps && caps.slash_commands) || [];
 
       if (name === 'help') {
-        const lines = ['/clear             — Clear this panel', '/help              — This list'];
+        const lines = [
+          '/clear             — Clear this panel',
+          '/help              — This list',
+          '/tools [source]    — Tool catalog, grouped by source',
+          '/subagents [...]   — Configured subagents; `events <name>` to drill in',
+          '/usage             — Session token + cost totals',
+          '/whoami            — Backend identity for this caller',
+        ];
         if (advertised.length) {
           lines.push('', 'Advertised by this agent:');
           advertised.forEach((n) => lines.push('/' + n));
@@ -1371,19 +1680,28 @@ window.MastTerminal = (function () {
         addSystemMessage(lines.join('\n'));
         return true;
       }
-      if (advertised.includes(name)) {
-        await runServerSlash(name, args);
+      // Built-ins win over an advertised name of the same spelling —
+      // what app.js does, and what core-tui settled on. An agent that
+      // advertises /tools gets shadowed rather than silently changing
+      // what /tools means from one backend to the next.
+      if (Object.prototype.hasOwnProperty.call(BUILTINS, name)) {
+        await BUILTINS[name](args);
         return true;
       }
-      addSystemMessage('Unknown command: /' + name + '. Type /help for available commands.');
+      if (advertised.includes(raw)) {
+        await runServerSlash(raw, args);
+        return true;
+      }
+      addSystemMessage('Unknown command: /' + raw + '. Type /help for available commands.');
       return true;
     }
 
     async function submit(text) {
       const trimmed = (text || '').trim();
       if (!trimmed || connection.isRunning()) return;
-      // The only client-side command that survives the minification:
-      // clearing a panel is a display action, not a backend one.
+      // Handled ahead of the connection check, unlike the rest: every
+      // other command needs a backend to answer it, and clearing a
+      // panel is a display action that should still work on a dead one.
       if (trimmed === '/clear') {
         out.replaceChildren();
         // The history block went with it; forget the handles so a
@@ -1559,6 +1877,12 @@ window.MastTerminal = (function () {
           turns: s.turnCount,
           costUSD: s.totalCostUSD,
           capabilities: s.capabilities,
+          // Resolved backend identity, or null while /whoami is in
+          // flight or on a server too old to answer. Already rendered
+          // for a HUD slot — a shell should not have to know that
+          // proxy_by means "on behalf of".
+          identity: s.whoami ? describeWhoami(s.whoami) : '',
+          whoami: s.whoami,
         };
       },
 

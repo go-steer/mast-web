@@ -122,6 +122,22 @@ window.MastState.createSession = (function () {
     // every wake that wasn't alert-driven.
     lastWakeAt: null,
 
+    // GET /whoami — who the backend thinks this caller is. Null until
+    // someone asks; nobody asks automatically, because it is a second
+    // round trip for a fact `capabilities.caller_id` already carries
+    // approximately.
+    //
+    // The difference is what "approximately" hides: caller_id is the
+    // identity the token presented, and this is the identity the
+    // backend resolved it to, plus `proxy_by` when something signed on
+    // this caller's behalf and `admin` when the session can do more
+    // than its operator expects. Both of those change what an operator
+    // should believe about what they are looking at, and neither is
+    // derivable from the first frame.
+    //
+    // Shape: { identity, source?, proxy_by?, admin? }.
+    whoami: null,
+
     // GET /sessions response, sorted by lastTouchedAt desc.
     sessions: [],
 
@@ -203,6 +219,14 @@ window.MastState.createSession = (function () {
     function patchUsage(patch) {
       const s = store.get();
       store.set({ usage: { ...s.usage, ...patch } });
+    }
+
+    // A non-object answer (an old server returning `{}` through a
+    // permissive proxy, say) is stored as null rather than as an empty
+    // object, so "we asked and got nothing" reads the same as "we never
+    // asked" — both mean there is no identity to show.
+    function setWhoami(who) {
+      store.set({ whoami: who && typeof who === 'object' && who.identity ? who : null });
     }
 
     // ─── The pause gate ────────────────────────────────────────────────
@@ -355,6 +379,7 @@ window.MastState.createSession = (function () {
       mergeCapabilities,
       patchStatus,
       patchUsage,
+      setWhoami,
       applyPauseEvent,
       applyPauseStatus,
       recordWake,

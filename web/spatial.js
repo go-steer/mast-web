@@ -44,6 +44,8 @@
   const floor = document.getElementById('grid-floor');
   const hudPanels = document.getElementById('hud-panels');
   const hudCamera = document.getElementById('hud-camera');
+  const hudIdentity = document.getElementById('hud-identity');
+  const hudIdentitySep = document.getElementById('hud-identity-sep');
   const statusFocus = document.getElementById('status-focus');
   const statusClock = document.getElementById('status-clock');
   const daemonList = document.getElementById('daemon-list');
@@ -445,6 +447,7 @@
     if (!p) {
       document.body.classList.remove('has-active');
       statusFocus.textContent = 'active: —';
+      updateIdentity();
       updateSidebar();
       saveWorkspace();
       return;
@@ -459,6 +462,7 @@
     updateCast(p);
     document.body.classList.add('has-active');
     statusFocus.textContent = 'active: ' + p.title;
+    updateIdentity();
     sound('focus');
     // The size change animates; pin the transcript to the bottom once
     // it has settled, and hand over the keyboard. Tracks the 0.52s
@@ -481,6 +485,7 @@
       active = null;
       document.body.classList.remove('has-active');
       statusFocus.textContent = 'active: —';
+      updateIdentity();
     }
     place(p);
     settle(p, fromX);
@@ -648,6 +653,7 @@
           if (wasRunning && !t.state.running) sound('turn');
           wasRunning = t.state.running;
         }
+        if (what === 'whoami' && p === active) updateIdentity();
         if (p) updateCast(p);
       },
     });
@@ -776,6 +782,7 @@
     }
     panels.delete(p.key);
     updateCount();
+    updateIdentity();
     updateSidebar();
     saveWorkspace();
     window.setTimeout(function () {
@@ -786,6 +793,18 @@
   function updateCount() {
     const n = panels.size;
     hudPanels.textContent = n + (n === 1 ? ' terminal' : ' terminals');
+  }
+
+  // The identity belongs to the focused panel, not to the room: panels
+  // can sit on different daemons, and the operator is not necessarily
+  // the same principal on each. Blank with nothing focused — a room
+  // has no one identity to report.
+  function updateIdentity() {
+    const identity = active ? active.term.state.identity : '';
+    hudIdentity.textContent = identity;
+    hudIdentity.title = identity ? 'Backend identity for the focused panel' : '';
+    hudIdentity.hidden = !identity;
+    hudIdentitySep.hidden = !identity;
   }
 
   // Re-park everything into fresh slots, in open order.

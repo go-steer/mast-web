@@ -2263,21 +2263,11 @@
 
   // One-line summary of a persisted subagent turn event (same ADK
   // Event shape as the SSE `agent` frame) for the /subagents events
-  // drill-down. Reuses the pure fanoutAgentFrame parser rather than
-  // re-deriving Content/parts field-variant handling.
+  // drill-down. Moved to SlashRender alongside renderList (PR 2 / #59)
+  // so the surviving shells print the same summary; kept as a name
+  // because the call site below reads better with it.
   function summarizeAgentEvent(event) {
-    if (!window.AttachCoreProtocol) return '(event)';
-    const parts = [];
-    window.AttachCoreProtocol.fanoutAgentFrame({ event }, (e) => parts.push(e));
-    if (parts.length === 0) return '(empty)';
-    return parts
-      .map((p) => {
-        if (p.type === 'stream-chunk') return `text: ${p.data.text.slice(0, 80)}`;
-        if (p.type === 'tool-call') return `call ${p.data.name}`;
-        if (p.type === 'tool-result') return `result ${p.data.name} (${p.data.latencyMs}ms)`;
-        return p.type;
-      })
-      .join('; ');
+    return window.SlashRender.summarizeAgentEvent(event);
   }
 
   // Builds an HTML system-message block for a titled, optionally
@@ -2289,32 +2279,12 @@
   // addSystemMessageHTML; all fields are escaped here.
   //
   // groups: [{ header?: string, items: [{ name, tags?: string[], description?: string }] }]
-  function renderListHTML(title, groups) {
-    const parts = [`<div class="list-title">${escapeHtml(title)}</div>`];
-    groups.forEach((g) => {
-      if (g.header) {
-        parts.push(`<div class="list-group-header">${escapeHtml(g.header)}</div>`);
-      }
-      if (g.items.length === 0) {
-        parts.push('<div class="list-item-desc">(none)</div>');
-        return;
-      }
-      g.items.forEach((it) => {
-        const tags =
-          it.tags && it.tags.length
-            ? ` <span class="list-item-tags">[${escapeHtml(it.tags.join(', '))}]</span>`
-            : '';
-        parts.push(
-          `<div class="list-item">` +
-            `<div class="list-item-name">▸ ${escapeHtml(it.name)}${tags}</div>` +
-            (it.description
-              ? `<div class="list-item-desc">${escapeHtml(it.description)}</div>`
-              : '') +
-            `</div>`
-        );
-      });
-    });
-    return parts.join('');
+  // Now a thin alias: the implementation moved to SlashRender so the
+  // surviving shells could use it too (PR 2 / #59). Kept as a name
+  // because ~6 call sites below read better with it, and all of them
+  // go away with this file.
+  function renderListHTML(title, groups, opts) {
+    return window.SlashRender.renderList(title, groups, opts);
   }
 
   // ─── Sidebar: models, sessions, MCP servers, specialists ───────────
@@ -3139,7 +3109,7 @@
       '/model [name]      — List or switch model',
       '/sessions [list|switch <id>]  — Manage sessions',
       '/mcp list          — Show MCP servers + their tools (backend-configured; read-only)',
-      '/tools             — Show the flat registered-tool catalog',
+      '/tools [source]    — Tool catalog, grouped by source',
       '/specialists list  — Show registered specialists',
       '/subagents [events <name> [since]]  — Configured subagent catalog / turn drill-down',
       '/guardrails [reset [watchdog|cost_ceiling|all] [budget]]  — Watchdog + cost-ceiling status/reset',
@@ -3256,12 +3226,16 @@
     }
   }
 
-  // /tools — flat registered-tool catalog (GET /sessions/{sid}/tools).
-  // Distinct from /mcp list, which buckets the same catalog by MCP
-  // server; this is the ungrouped view, annotated with each tool's
-  // source classification and permission gate state where the
-  // backend provides them.
-  async function cmdTools(_args) {
+  // /tools [source] — registered-tool catalog (GET /sessions/{sid}/
+  // tools), grouped by source. Distinct from /mcp list, which buckets
+  // the same catalog by MCP server and nothing else; this covers every
+  // source a host reports, and takes an argument to drill into one.
+  //
+  // Rendering (and the reason it is grouped at all) lives in
+  // SlashRender.renderTools, shared with terminal.js — the two shells
+  // disagreeing about what the tool list looks like would be a bug
+  // nobody could see from inside either one.
+  async function cmdTools(args) {
     if (!connected) {
       addSystemMessage('Not connected to a backend');
       return;
@@ -3272,13 +3246,9 @@
         addSystemMessage('No tools registered on the backend.');
         return;
       }
-      const items = tools.map((t) => {
-        const tags = [];
-        if (t.source) tags.push(t.source === 'mcp' && t.server ? t.server : t.source);
-        if (t.gate_state) tags.push(t.gate_state);
-        return { name: t.name || t, tags, description: t.description };
-      });
-      addSystemMessageHTML(renderListHTML(`Tools (${items.length})`, [{ items }]));
+      const out = window.SlashRender.renderTools(tools, (args && args[0]) || '');
+      if (out.html) addSystemMessageHTML(out.html);
+      else addSystemMessage(out.text);
     } catch (e) {
       addSystemMessage(describeError(e));
     }

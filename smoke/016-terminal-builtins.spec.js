@@ -200,7 +200,9 @@ test.describe('smoke: 016-terminal-builtins', () => {
     await run(page, screen, '/model');
 
     const out = screen.locator('.message.system').last();
-    await expect(out).toContainText('mock-model-1.5');
+    // From the fixture's status-update, which is where the model comes
+    // from — there is no model endpoint to ask.
+    await expect(out).toContainText('Model: gemini-2.5-flash');
     await expect(out).toContainText('does not exist yet');
     expect(await turnRequests(page)).toEqual({});
   });
@@ -219,7 +221,7 @@ test.describe('smoke: 016-terminal-builtins', () => {
     expect(await turnRequests(page)).toEqual({});
   });
 
-  test('/help lists every available built-in and the advertised set', async ({ page }) => {
+  test('/help lists every available built-in', async ({ page }) => {
     const screen = await openSoloSession(page);
     await run(page, screen, '/help');
     const help = screen.locator('.message.system').last();
@@ -240,7 +242,10 @@ test.describe('smoke: 016-terminal-builtins', () => {
     ]) {
       await expect(help).toContainText(name);
     }
-    await expect(help).toContainText('Advertised by this agent:');
+    // The default fixture advertises none, and saying so is better than
+    // a silent gap where a section would be. The gating block below
+    // runs against a fixture that does advertise some.
+    await expect(help).toContainText('This agent advertises no slash commands.');
     // Nothing is gated off against the default fixture, so the
     // not-supported footer should be absent rather than empty.
     await expect(help).not.toContainText('Not supported by this backend');
@@ -269,6 +274,10 @@ test.describe('smoke: 016-terminal-builtins', () => {
       await expect(help).toContainText('/guardrails');
       // Explicitly true.
       await expect(help).toContainText('/specialists');
+      // This fixture does advertise some, so the section is populated
+      // rather than replaced by the "advertises no slash commands" line.
+      await expect(help).toContainText('Advertised by this agent:');
+      await expect(help).toContainText('/compact');
     });
 
     test('invoking one says so, and posts nothing', async ({ page }) => {

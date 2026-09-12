@@ -25,6 +25,12 @@
 // ask "is this session already open, and is it the one in front?" so
 // the rows can be painted accordingly.
 //
+// Session delete lives here rather than in a terminal (PR 3b, #60): a
+// panel cannot sensibly be the thing that removes the session it is
+// attached to, and the sidebar is the one place that lists sessions
+// nobody has opened. The shell is told after the fact — onDeleted —
+// because closing the terminals is its job, not this module's.
+//
 // Requires: state/{subscriptions,daemons}.js, attach-core/{errors,
 // client}.js, and .side-* styles from spatial.css.
 //
@@ -40,6 +46,8 @@ window.MastDaemonSidebar = (function () {
   //   onOpenAll     — (daemon) the ⊞ button; omitted hides the button
   //   onDetach      — (daemon) about to be dropped; close its terminals
   //   onRefreshed   — (daemon) its session list just came back
+  //   onDeleted     — (daemon, session) it is gone upstream; close it
+  //   confirm       — (message) → bool; window.confirm unless overridden
   //   sessionState  — (daemon, session) → { open, active } for row paint
   function create(opts) {
     const cfg = opts || {};
@@ -49,6 +57,13 @@ window.MastDaemonSidebar = (function () {
     const onOpenAll = typeof cfg.onOpenAll === 'function' ? cfg.onOpenAll : null;
     const onDetach = typeof cfg.onDetach === 'function' ? cfg.onDetach : function () {};
     const onRefreshed = typeof cfg.onRefreshed === 'function' ? cfg.onRefreshed : function () {};
+    const onDeleted = typeof cfg.onDeleted === 'function' ? cfg.onDeleted : function () {};
+    const ask =
+      typeof cfg.confirm === 'function'
+        ? cfg.confirm
+        : function (message) {
+            return window.confirm(message);
+          };
     const sessionState =
       typeof cfg.sessionState === 'function'
         ? cfg.sessionState
@@ -95,6 +110,57 @@ window.MastDaemonSidebar = (function () {
     async function newSession(d) {
       const s = await registry.newSession(d);
       if (s) onOpen(registry.getDaemon(d.endpoint || d), s);
+    }
+
+    // Per-daemon, transient, and not in the registry: a failed delete
+    // is a fact about this gesture, not about the daemon's health, and
+    // writing it to the record would leave a permanent red line under a
+    // backend that is fine. Cleared on the next successful mutation or
+    // when it times out.
+    const notices = new Map();
+    const noticeTimers = new Map();
+    const NOTICE_MS = 8000;
+
+    function setNotice(endpoint, text) {
+      window.clearTimeout(noticeTimers.get(endpoint));
+      if (!text) {
+        notices.delete(endpoint);
+        noticeTimers.delete(endpoint);
+      } else {
+        notices.set(endpoint, text);
+        noticeTimers.set(
+          endpoint,
+          window.setTimeout(function () {
+            notices.delete(endpoint);
+            noticeTimers.delete(endpoint);
+            render();
+          }, NOTICE_MS)
+        );
+      }
+      render();
+    }
+
+    // Deleting a session is the one destructive thing in this sidebar,
+    // so it asks first — and it asks with the title the operator can
+    // see, because "delete ops-triage?" and "delete s-8f2c?" are not
+    // equally answerable questions.
+    //
+    // The terminals go after the server agrees, not before: a refused
+    // delete that had already closed the panel would cost the operator
+    // a transcript for nothing.
+    async function deleteSession(d, s) {
+      const label = s.title ? s.title + ' (' + s.id + ')' : s.id;
+      if (!ask('Delete session ' + label + ' on ' + d.alias + '?\n\nThis cannot be undone.')) {
+        return { ok: false, error: 'cancelled' };
+      }
+      const r = await registry.deleteSession(d, s);
+      if (!r.ok) {
+        setNotice(d.endpoint, 'delete failed: ' + r.error);
+        return r;
+      }
+      setNotice(d.endpoint, '');
+      onDeleted(d, s);
+      return r;
     }
 
     // Registers every daemon and lists each one. Resolves with the
@@ -166,6 +232,14 @@ window.MastDaemonSidebar = (function () {
         head.appendChild(drop);
         group.appendChild(head);
 
+        const notice = notices.get(d.endpoint);
+        if (notice) {
+          const line = document.createElement('div');
+          line.className = 'side-error';
+          line.textContent = notice;
+          group.appendChild(line);
+        }
+
         if (d.state === 'error') {
           const err = document.createElement('div');
           err.className = 'side-error';
@@ -207,6 +281,39 @@ window.MastDaemonSidebar = (function () {
             ' · ' +
             d.endpoint;
 
+          // A <span role="button"> rather than a nested <button>, which
+          // is invalid inside the row's own button — the same trick the
+          // solo tab strip uses for its close affordance.
+          //
+          // `default` gets no delete control at all: the server refuses
+          // it, so offering the gesture would only be a way to find that
+          // out. Ditto a daemon that hasn't connected — there is nothing
+          // to send the DELETE on.
+          if (s.id !== 'default' && d.client) {
+            const del = document.createElement('span');
+            del.className = 'side-session-del';
+            del.setAttribute('role', 'button');
+            del.setAttribute('aria-label', 'Delete session ' + s.id);
+            del.tabIndex = 0;
+            del.textContent = '×';
+            del.title = 'Delete session ' + s.id + ' on ' + d.alias;
+            del.addEventListener('click', function (e) {
+              // Without this the row's own handler opens the session
+              // the operator is in the middle of deleting.
+              e.stopPropagation();
+              deleteSession(d, s);
+            });
+            // role=button without this is a lie: a <span> gets none of
+            // the keyboard behaviour the role promises.
+            del.addEventListener('keydown', function (e) {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              e.stopPropagation();
+              deleteSession(d, s);
+            });
+            row.appendChild(del);
+          }
+
           row.addEventListener('click', function () {
             onOpen(d, s);
           });
@@ -231,6 +338,7 @@ window.MastDaemonSidebar = (function () {
       refresh: refresh,
       refreshAll: refreshAll,
       newSession: newSession,
+      deleteSession: deleteSession,
       render: render,
       boot: boot,
       site: registry.site,

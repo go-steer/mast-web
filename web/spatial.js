@@ -641,6 +641,10 @@
       token: daemon.token,
       sessionId: session.id,
       label: title,
+      // /theme, /layout, /attach, /batch, /shortcuts. Every panel gets
+      // the same list because they act on the room, not on the panel —
+      // typing /theme mono in one is meant to repaint all of them.
+      commands: shell.commands,
       onChange: function (t, what) {
         if (what === 'conn') {
           panel.dataset.conn = t.state.connState;
@@ -1270,6 +1274,12 @@
       });
     },
     onRefreshed: restoreInto,
+    // The session is gone upstream; its panel is a transcript of
+    // something that no longer exists and a prompt that can only fail.
+    onDeleted: function (d, s) {
+      const p = panels.get(panelKey(d.endpoint, s.id));
+      if (p) closePanel(p);
+    },
     sessionState: function (d, s) {
       const p = panels.get(panelKey(d.endpoint, s.id));
       return { open: !!p, active: !!p && p === active };
@@ -1279,6 +1289,30 @@
   function updateSidebar() {
     agents.render();
   }
+
+  // ─── Shell ────────────────────────────────────────────────────────
+  // The window's own commands and overlays — palette, session picker,
+  // shortcuts, batch runner. It is handed the panel at the stage centre
+  // rather than a fixed terminal, because "the one I am typing into" is
+  // what every one of those means here.
+
+  const shell = window.MastShell.create({
+    registry: agents.registry,
+    themeSelect: document.getElementById('hud-theme'),
+    activeTerminal: function () {
+      return active ? active.term : null;
+    },
+    // Already-open sessions come to the stage centre rather than
+    // opening twice; openTerminal does that itself.
+    openSession: openTerminal,
+    shortcuts: [
+      { key: '← ↑ → ↓', description: 'Pan the camera; hold shift to move faster' },
+      { key: '+ / −', description: 'Zoom in and out' },
+      { key: 'R / 0', description: 'Free-look toggle / reset the view' },
+      { key: 'O', description: 'Open every session on the focused daemon' },
+      { key: 'Esc', description: 'Park the panel at the stage centre' },
+    ],
+  });
 
   // ─── Wiring ───────────────────────────────────────────────────────
 
@@ -1423,6 +1457,7 @@
       return agents.daemons;
     },
     registry: agents.registry,
+    shell: shell,
     open: openTerminal,
     openAll: openAll,
     activate: activate,

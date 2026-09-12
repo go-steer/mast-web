@@ -46,22 +46,24 @@
 // /specialists, /sessions, /guardrails, /model, /usage, /whoami —
 // each of them gated on what the backend says it can serve.
 //
-// What isn't here yet, and should be: the built-ins that act on the
-// shell rather than on a session — /attach, /theme, /layout, the batch
-// runner, the shortcuts overlay and the command palette — plus the
-// sidebar's session delete and switch gestures. These are unported,
-// not excluded: PR 2 (#59) and PR 3a (#60) took the per-session set,
-// and the shell-level rest lands with PR 3b, before the classic shell
-// is deleted rather than after. Parity with app.js is the target; a
-// terminal in a panel should not be a lesser terminal than one in a
-// tab, and where a feature needs a different presentation to fit the
-// panel, that's a design problem to solve rather than a reason to
-// drop it.
+// The commands that act on the window rather than on a session —
+// /theme, /layout, /attach, /batch, /shortcuts — are not here, and are
+// not missing either: a shell passes them in as `commands` and they
+// join the same table, so /help lists them and the gate covers them
+// without this file knowing what a theme is. web/shell.js is where
+// both surviving shells get theirs.
 //
 // Genuinely not this file's job, because they belong to the shell
-// around the terminals rather than to any one of them: the sidebar and
-// the setup / shortcuts / palette / picker modals. spatial.js owns
-// those, the same way app.js does for the classic shell.
+// around the terminals rather than to any one of them: the sidebar
+// (including session delete) and the shortcuts / palette / picker
+// modals. shell.js and spatial.js own those, the same way app.js does
+// for the classic shell.
+//
+// With PR 3b that closes the parity list app.js had over a panel
+// terminal. The target was never "most of it": a terminal in a panel
+// should not be a lesser terminal than one in a tab, and where a
+// feature needed a different presentation to fit the panel, that was a
+// design problem to solve rather than a reason to drop it.
 //
 // Requires (load order): marked + marked-highlight + highlight.js from
 // web/vendor/ — the CSP on spatial.html has no CDN in script-src — then
@@ -270,6 +272,15 @@ window.MastTerminal = (function () {
     const endpoint = cfg.endpoint || '/';
     const token = cfg.token || '';
     const onChange = typeof cfg.onChange === 'function' ? cfg.onChange : function () {};
+    // Shell-level slash commands, contributed by whatever mounted this
+    // terminal — /theme, /layout, /attach and the rest act on the
+    // window, not on a session, so the shell owns them and hands them
+    // down. Same descriptor shape as the built-ins below, and they land
+    // in the same table for the same reason /help and dispatch share
+    // available(): a command listed from one place and dispatched from
+    // another is the second read, and the second read is what shipped
+    // core-tui#275/#276.
+    const shellCommands = Array.isArray(cfg.commands) ? cfg.commands : [];
 
     // Everything app.js keeps in module scope lives here instead — but
     // in the shared stores rather than in this closure, one instance of
@@ -1885,9 +1896,18 @@ window.MastTerminal = (function () {
     }
 
     function cmdHelp() {
-      const rows = BUILTINS.filter(available);
+      const rows = COMMANDS.filter(available);
       const width = rows.reduce((w, b) => Math.max(w, b.usage.length), 0);
-      const lines = rows.map((b) => b.usage.padEnd(width) + '  — ' + b.help);
+      const describe = (b) => b.usage.padEnd(width) + '  — ' + b.help;
+      const lines = rows.filter((b) => !b.shell).map(describe);
+      // The shell's commands are listed apart because they answer a
+      // different question: /clear is about this panel, /layout is about
+      // every panel on the page. Same table, same gate, two headings.
+      const shellRows = rows.filter((b) => b.shell);
+      if (shellRows.length) {
+        lines.push('', 'This shell:');
+        shellRows.forEach((b) => lines.push(describe(b)));
+      }
       const advertised = advertisedNames();
       if (advertised.length) {
         lines.push('', 'Advertised by this agent:');
@@ -1895,7 +1915,7 @@ window.MastTerminal = (function () {
       } else {
         lines.push('', 'This agent advertises no slash commands.');
       }
-      const hidden = BUILTINS.filter((b) => !available(b)).map((b) => '/' + b.name);
+      const hidden = COMMANDS.filter((b) => !available(b)).map((b) => '/' + b.name);
       if (hidden.length) {
         lines.push('', 'Not supported by this backend: ' + hidden.join(', '));
       }
@@ -1976,6 +1996,28 @@ window.MastTerminal = (function () {
       },
     ];
 
+    // Built-ins plus the shell's contributions, which is the table
+    // everything downstream reads: dispatch, /help, and the shell's own
+    // command palette via api.commands.
+    //
+    // A shell cannot shadow a built-in. /clear means the same thing in
+    // every panel of every shell, and a shell that could redefine it
+    // would make that a per-page question.
+    const COMMANDS = BUILTINS.concat(
+      shellCommands
+        .filter(function (c) {
+          return (
+            c &&
+            typeof c.name === 'string' &&
+            typeof c.run === 'function' &&
+            !BUILTINS.some((b) => b.name === c.name.toLowerCase())
+          );
+        })
+        .map(function (c) {
+          return { ...c, name: c.name.toLowerCase(), shell: true };
+        })
+    );
+
     // The one read. /help filters on this and dispatch checks it, so a
     // command cannot be listed and then refuse, or refuse and then be
     // invisible — core-tui#275/#276.
@@ -1994,8 +2036,8 @@ window.MastTerminal = (function () {
       return (caps && caps.slash_commands) || [];
     }
 
-    function findBuiltin(name) {
-      return BUILTINS.find((b) => b.name === name);
+    function findCommand(name) {
+      return COMMANDS.find((b) => b.name === name);
     }
 
     // Returns true when the input was a command and has been handled.
@@ -2013,7 +2055,7 @@ window.MastTerminal = (function () {
       // what app.js does, and what core-tui settled on. An agent that
       // advertises /tools gets shadowed rather than silently changing
       // what /tools means from one backend to the next.
-      const builtin = findBuiltin(name);
+      const builtin = findCommand(name);
       if (builtin) {
         // A gated-off command is a name we know and cannot serve, which
         // is a different answer from "unknown" and deserves a different
@@ -2026,7 +2068,11 @@ window.MastTerminal = (function () {
           addSystemMessage('Not connected.');
           return true;
         }
-        await builtin.run(args);
+        // Built-ins close over the transcript; a shell's command was
+        // written somewhere else and is handed the two things it could
+        // not otherwise reach — somewhere to answer, and the terminal
+        // it was typed into.
+        await builtin.run(args, builtin.shell ? { print: addSystemMessage, terminal: api } : null);
         return true;
       }
       if (advertisedNames().includes(raw)) {
@@ -2041,9 +2087,13 @@ window.MastTerminal = (function () {
       return true;
     }
 
+    // Resolves with the turn's measurements once it closes, or null
+    // when there was no turn — a slash command, a dead connection, or
+    // one already in flight. The batch runner is the caller that needs
+    // this; the input wiring ignores it.
     async function submit(text) {
       const trimmed = (text || '').trim();
-      if (!trimmed || connection.isRunning()) return;
+      if (!trimmed || connection.isRunning()) return null;
       // Commands answer for themselves on a dead connection: /clear and
       // /export are display actions that should still work on one, and
       // the rest say "Not connected." from the same table that decides
@@ -2052,11 +2102,11 @@ window.MastTerminal = (function () {
         input.value = '';
         syncInput();
         await handleSlash(trimmed);
-        return;
+        return null;
       }
       if (connection.getState() !== 'connected') {
         addSystemMessage('Not connected.');
-        return;
+        return null;
       }
 
       // A turn still inside its grace window (an observer one — an
@@ -2076,10 +2126,19 @@ window.MastTerminal = (function () {
       let searchEl = null;
       let sourcesEl = null;
       const seenSources = new Set();
+      // Time to the first frame of any kind. turn-complete carries the
+      // total but nothing carries this, and it is the number that says
+      // whether the agent is thinking or the queue is full.
+      const startedAt = performance.now();
+      let firstFrameAt = 0;
+      const mark = () => {
+        if (!firstFrameAt) firstFrameAt = performance.now();
+      };
 
       try {
         const result = await runPrompt(trimmed, {
           onToken(t) {
+            mark();
             if (!streaming) {
               thinking.stop();
               streaming = createStreamingMessage();
@@ -2087,6 +2146,7 @@ window.MastTerminal = (function () {
             updateStreamingMessage(streaming, t);
           },
           onToolCall(server, tool) {
+            mark();
             streaming = null;
             pendingToolEls.push(addToolPendingMessage(server, tool));
           },
@@ -2094,12 +2154,14 @@ window.MastTerminal = (function () {
             completeToolMessage(pendingToolEls.shift(), latencyMs, errMsg, resultJSON);
           },
           onGroundingQuery(query) {
+            mark();
             thinking.stop();
             streaming = null;
             if (!searchEl) searchEl = addSearchQueryRow();
             appendSearchQuery(searchEl, query);
           },
           onGroundingSource(title, uri) {
+            mark();
             thinking.stop();
             streaming = null;
             if (seenSources.has(uri)) return;
@@ -2111,8 +2173,18 @@ window.MastTerminal = (function () {
         ui.lastFooter = addTurnFooter(result);
         if (!ui.serverCountsTurns) session.incrementTurnCount();
         updateStatus();
+        return {
+          ok: true,
+          ...result,
+          ttfbMs: firstFrameAt ? firstFrameAt - startedAt : result.totalMs,
+        };
       } catch (e) {
+        // Rendered into the transcript, which is where an operator will
+        // look, and handed back for a caller that is driving a queue
+        // rather than watching one. Deliberately not rethrown: every
+        // other call site is a keypress with nobody to catch it.
         addSystemMessage(describeError(e));
+        return { ok: false, error: describeError(e) };
       } finally {
         thinking.stop();
         stopElapsed();
@@ -2220,6 +2292,29 @@ window.MastTerminal = (function () {
         };
       },
 
+      // What this terminal will actually dispatch, right now, with the
+      // capability gate already applied and the agent's advertised
+      // names folded in. The shell's command palette reads this rather
+      // than keeping a list of its own: a palette that offers a name
+      // the prompt would refuse is the second read again (#45).
+      get commands() {
+        return COMMANDS.filter(available)
+          .map((c) => ({
+            name: c.name,
+            usage: c.usage,
+            help: c.help,
+            source: c.shell ? 'shell' : 'builtin',
+          }))
+          .concat(
+            advertisedNames().map((n) => ({
+              name: n,
+              usage: '/' + n,
+              help: 'Advertised by this agent',
+              source: 'agent',
+            }))
+          );
+      },
+
       // Fires on any change to either store. Returns an unsubscribe.
       subscribe(fn) {
         const offS = session.subscribe(() => fn(api));
@@ -2254,6 +2349,17 @@ window.MastTerminal = (function () {
 
       submit: submit,
       stop: stop,
+
+      // Drops text into the prompt and puts the caret after it, without
+      // sending. What the command palette wants: picking /tools from a
+      // list should leave you able to type ` builtin` after it, not
+      // commit you to the bare command.
+      prefill(text) {
+        input.value = text || '';
+        syncInput();
+        api.focusInput();
+        input.selectionStart = input.selectionEnd = input.value.length;
+      },
 
       focusInput() {
         // preventScroll: the prompt sits inside a 3D-transformed panel

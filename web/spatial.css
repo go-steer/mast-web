@@ -1400,6 +1400,30 @@ body.solo.side-hidden #spatial-sidebar {
   opacity: 0.66;
 }
 
+/* Destructive, so it stays invisible until the row is under the
+   pointer — a delete control that is always lit next to every session
+   is a delete control somebody eventually hits by accident. Keyboard
+   focus reveals it too, or it would be unreachable without a mouse. */
+.side-session-del {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  border-radius: 2px;
+  color: var(--text-dim);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.side-session:hover .side-session-del,
+.side-session:focus-within .side-session-del,
+.side-session-del:focus-visible {
+  opacity: 1;
+}
+
+.side-session-del:hover {
+  color: var(--red);
+}
+
 .side-empty,
 .side-error {
   padding: 2px 4px;
@@ -1473,6 +1497,24 @@ body.solo.side-hidden #spatial-sidebar {
 
 #scene-vignette {
   background: radial-gradient(ellipse at 50% 48%, transparent 44%, var(--room-vignette) 100%);
+}
+
+/* ─── Batch drawer ───────────────────────────────────────────────────
+   shell.js builds the panel; styles.css styles its insides. Only the
+   outer frame differs here, and it has to: in the classic shell
+   #batch-panel is a flex child of the document and `border-top` puts it
+   under the transcript. There is no such column in these shells — the
+   room and the tab strip fill the viewport — so it becomes a drawer
+   pinned to the bottom edge, over everything except the modals (z-index
+   100) it can be opened from. */
+#batch-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  border-top: 1px solid var(--accent);
+  box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
 }
 
 /* ─── HUD + status bar ───────────────────────────────────────────── */

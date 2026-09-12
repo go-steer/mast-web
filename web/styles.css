@@ -1410,7 +1410,8 @@ body.turn-active .hud-right {
    the attribute-less default (the rules above). 'chat' is the opt-in
    that restores right-aligned tinted user bubbles, tinted with the
    theme's own --blue via color-mix so it stays correct across all six
-   themes without a hardcoded rgba each. Wiring lives in web/app.js. */
+   themes without a hardcoded rgba each. Wiring lives in web/shell.js
+   (and, until #61 retires it, web/app.js). */
 body[data-layout='chat'] .message.user {
   align-self: flex-end;
   max-width: 80%;

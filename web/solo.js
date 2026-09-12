@@ -24,14 +24,15 @@
 //
 // It is not a fork of the room: the panel chrome is spatial.css, the
 // terminal is terminal.js, the daemon registry is state/daemons.js and
-// the sidebar over it is daemon-sidebar.js, the theme list is theme.js.
+// the sidebar over it is daemon-sidebar.js, the theme list is theme.js,
+// and the palette / picker / shortcuts / batch overlays are shell.js.
 // What lives here is the tab model and the wiring, which is the only
 // part that differs.
 //
-// index.html (the classic shell) is untouched and stays the
-// feature-complete one — app.js still carries the client-side slash
-// commands, the model picker, session export and the batch runner that
-// terminal.js hasn't been given yet.
+// With #60 that list is the whole of the classic shell's feature set:
+// terminal.js answers every slash command app.js did, shell.js answers
+// the ones that act on the window, and what remains in app.js is
+// index.html's own markup. index.html is next to go (#61).
 (function () {
   'use strict';
 
@@ -201,6 +202,10 @@
       token: daemon.token,
       sessionId: session.id,
       label: title,
+      // /theme, /layout, /attach, /batch, /shortcuts. Every tab gets
+      // the same list because they act on the shell, not on the tab —
+      // typing /layout chat in one is meant to change all of them.
+      commands: shell.commands,
       onChange: function () {
         if (!t) return;
         // A terminal reports 'disconnected' from the moment it is built,
@@ -398,10 +403,34 @@
       });
     },
     onRefreshed: restoreInto,
+    // The session is gone upstream; its tab is a transcript of
+    // something that no longer exists and a prompt that can only fail.
+    onDeleted: function (d, s) {
+      closeTab(tabs.get(keyFor(d.endpoint, s.id)));
+    },
     sessionState: function (d, s) {
       const t = tabs.get(keyFor(d.endpoint, s.id));
       return { open: !!t, active: !!t && t === selected };
     },
+  });
+
+  // ─── Shell ─────────────────────────────────────────────────────────
+  // The window's own commands and overlays. It is handed the tab in
+  // front rather than a fixed terminal: /theme typed in one tab and
+  // the palette opened over another have to reach the same place.
+
+  const shell = window.MastShell.create({
+    registry: agents.registry,
+    themeSelect: document.getElementById('hud-theme'),
+    activeTerminal: function () {
+      return selected ? selected.term : null;
+    },
+    openSession: open,
+    shortcuts: [
+      { key: 'Alt+1…9', description: 'Jump to a tab by position' },
+      { key: 'Alt+[ / Alt+]', description: 'Previous / next tab' },
+      { key: 'Alt+W', description: 'Close the tab in front' },
+    ],
   });
 
   // ─── Wiring ────────────────────────────────────────────────────────
@@ -508,6 +537,7 @@
       return agents.daemons;
     },
     registry: agents.registry,
+    shell: shell,
     open: open,
     openAll: openAll,
     select: select,

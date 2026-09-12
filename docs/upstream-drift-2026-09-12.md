@@ -176,6 +176,24 @@ The v0.4 plan's "Sibling upstream (informational)" section calls per-turn caller
 
 Otherwise: §1 is a self-contained unit that blocks on nothing (notably not on PR 1's state seam) and can run parallel from day one alongside PRs 7 and 8. §2 is amendments to #59, #60 and #63. §2.2 is a scope call recorded rather than taken.
 
+### 4.1 The mock is why this was a surprise, so it moves to the front
+
+[#42](https://github.com/go-steer/mast-web/issues/42) — "align sessions mock fixtures with the real backend wire shape" — was unmilestoned and slated to be closed incidentally by PR 6, near the end of the release. It moves to v0.4.0, landing with the §1 catch-up.
+
+It was filed because the mock had drifted from the real wire shape and, in its own words, "because every test ran against the mock, the drift stayed invisible behind 144/144 green". That is precisely what recurred here, an order of magnitude larger: three protocol bumps, missed by the client and the docs both, with every test green throughout — because the mock models a 1.4.0 world and the tests agree with it.
+
+§1.1 is the sharp version. `cmd/mast-web-server/mock.go:445` returns `X-Interrupted: nothing-in-flight` unconditionally and never parks, so **the bug is unreproducible against our own rig**. A fix can land; a regression cannot be caught.
+
+So #42 is not a stale fixture, it is the standing guard on whether the next three bumps are a surprise too — and the acceptance criterion it already carries is the right one:
+
+> add a lightweight shape assertion (or reuse the `spec-conformance` suite) so a mock fixture that diverges from the documented wire shape fails a test rather than passing silently
+
+The work splits by cost. Event consumption is cheap: `cmd/mast-web-server/fixtures.go` replays JSONL frames verbatim, so `pause` and `wake` fixtures are new files. The gate is not: the `/interrupt` → park → `/resume` round-trip needs handler state in the mock plus `POST /pause` and `POST /resume`. Alongside both, the `capabilities` frame has to advertise 1.7.0 with the two event names and the `pause` / `guardrails` feature keys, or the two-way gating in §1.2 has nothing exercising it.
+
+PR 6 keeps the second identity and the ACL-filtered `/sessions`. That half is genuinely its own, and it is easier on top of a mock that is not simultaneously three versions behind.
+
+**Revised sequencing:** #68 → PR 1 → (§1 + #42, PR 7, PR 8 in parallel) → PR 2 → PR 3 → PR 4 → (PR 5, PR 6). The §1.1 one-liner still lands first and alone; its CI regression test arrives with the mock work, and until then the only coverage is `dev/tools/e2e-real-backend`, which does not run per-PR.
+
 ---
 
 ## Sources

@@ -1452,6 +1452,12 @@ window.MastTerminal = (function () {
       try {
         const r = await client.interrupt();
         if (r && r.unsupported) addSystemMessage('This agent does not support interrupt.');
+        // We asked for hold: false, so this should never fire. If it does,
+        // the agent is parked behind a gate this shell has no control to
+        // lift yet (that's #70) — say so rather than let the next turn
+        // silently fail to start.
+        if (r && r.paused)
+          addSystemMessage('The agent is paused and will not start another turn until it resumes.');
       } catch (e) {
         addSystemMessage(describeError(e, 'Interrupt failed: '));
       } finally {

@@ -2936,6 +2936,13 @@
         );
         hideStopButton();
       }
+      // We asked for hold: false, so this should never fire. If it does,
+      // the agent is parked behind a gate we have no control to lift
+      // (that's #70) — say so rather than let the next turn silently
+      // fail to start.
+      if (r.paused) {
+        addSystemMessage('The agent is paused and will not start another turn until it resumes.');
+      }
     } catch (e) {
       addSystemMessage(describeError(e, 'interrupt failed: '));
     } finally {

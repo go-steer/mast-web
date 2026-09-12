@@ -36,6 +36,11 @@
       <span class="hud-item">SOLO_SHELL v0.1</span>
       <span class="hud-sep">|</span>
       <span class="hud-item" id="hud-count">0 sessions</span>
+      <!-- Who the active session's backend resolved this caller to.
+           Hidden until /whoami answers: an empty identity slot reads
+           as "signed out", which is the one thing it never means. -->
+      <span class="hud-sep" id="hud-identity-sep" hidden>|</span>
+      <span class="hud-item" id="hud-identity" hidden></span>
       <span class="hud-spacer"></span>
       <!-- Options are filled in by theme.js, against the same storage
            key the other shells use. -->

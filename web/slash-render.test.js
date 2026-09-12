@@ -383,4 +383,196 @@ describe('SlashRender', () => {
       warn.mockRestore();
     });
   });
+
+  // ─── renderList ────────────────────────────────────────────────────
+
+  describe('renderList', () => {
+    it('renders a title, group headers, names, tags and descriptions', () => {
+      const html = SlashRender.renderList('Tools (2)', [
+        {
+          header: 'builtin',
+          items: [
+            { name: 'fs_read', tags: ['allowed'], description: 'Read files' },
+            { name: 'fs_write' },
+          ],
+        },
+      ]);
+      expect(html).toContain('<div class="list-title">Tools (2)</div>');
+      expect(html).toContain('<div class="list-group-header">builtin</div>');
+      expect(html).toContain('fs_read');
+      expect(html).toContain('[allowed]');
+      expect(html).toContain('Read files');
+      // A row with neither description nor tags still renders.
+      expect(html).toContain('fs_write');
+    });
+
+    it('renders opts.summary under the title and omits it otherwise', () => {
+      expect(SlashRender.renderList('T', [], { summary: 'builtin 2 · gke 1' })).toContain(
+        '<div class="list-summary">builtin 2 · gke 1</div>'
+      );
+      expect(SlashRender.renderList('T', [])).not.toContain('list-summary');
+    });
+
+    // An empty group is a fact about the backend — an MCP server with no
+    // tools — not an absence to hide.
+    it('prints (none) for an empty group rather than dropping it', () => {
+      const html = SlashRender.renderList('T', [{ header: 'gke', items: [] }]);
+      expect(html).toContain('gke');
+      expect(html).toContain('(none)');
+    });
+
+    it('escapes every field', () => {
+      const html = SlashRender.renderList('<t>', [
+        {
+          header: '<h>',
+          items: [{ name: '<n>', tags: ['<g>'], description: '<d>' }],
+        },
+      ]);
+      expect(html).not.toContain('<t>');
+      expect(html).not.toContain('<h>');
+      expect(html).not.toContain('<n>');
+      expect(html).not.toContain('<g>');
+      expect(html).not.toContain('<d>');
+      expect(html).toContain('&lt;n&gt;');
+    });
+
+    it('tolerates a null group list and missing items', () => {
+      expect(SlashRender.renderList('T', null)).toContain('list-title');
+      expect(SlashRender.renderList('T', [{}])).toContain('(none)');
+    });
+  });
+
+  // ─── /tools grouping (core-tui#289) ────────────────────────────────
+
+  describe('groupToolsBySource', () => {
+    const catalog = [
+      { name: 'kube_get', source: 'other' },
+      { name: 'gke_nodes', source: 'gke' },
+      { name: 'fs_write', source: 'builtin' },
+      { name: 'write_adr', source: 'skill:adr' },
+      { name: 'fs_read', source: 'builtin' },
+      { name: 'review_diff', source: 'skill:review' },
+      { name: 'gh_pr_view', source: 'mcp', server: 'github' },
+      { name: 'orphan' },
+    ];
+
+    it('orders builtin first, other last, the rest alphabetically', () => {
+      const keys = SlashRender.groupToolsBySource(catalog).map(([k]) => k);
+      expect(keys).toEqual(['builtin', 'github', 'gke', 'skill', 'other']);
+    });
+
+    it('folds every skill:<name> into one skill heading', () => {
+      const skill = SlashRender.groupToolsBySource(catalog).find(([k]) => k === 'skill')[1];
+      expect(skill.map((t) => t.name)).toEqual(['review_diff', 'write_adr']);
+    });
+
+    // Producers send MCP attribution both flattened (source is the
+    // server's own name) and unflattened (source "mcp" + server).
+    it('normalizes the unflattened source/server pair to the server name', () => {
+      const keys = SlashRender.groupToolsBySource(catalog).map(([k]) => k);
+      expect(keys).toContain('github');
+      expect(keys).not.toContain('mcp');
+    });
+
+    it('buckets a sourceless tool under other rather than an unnamed group', () => {
+      const other = SlashRender.groupToolsBySource(catalog).find(([k]) => k === 'other')[1];
+      expect(other.map((t) => t.name).sort()).toEqual(['kube_get', 'orphan']);
+    });
+
+    it('sorts alphabetically within a group', () => {
+      const builtin = SlashRender.groupToolsBySource(catalog).find(([k]) => k === 'builtin')[1];
+      expect(builtin.map((t) => t.name)).toEqual(['fs_read', 'fs_write']);
+    });
+
+    it('accepts bare strings and an empty catalog', () => {
+      expect(SlashRender.groupToolsBySource(['a', 'b'])).toEqual([
+        ['other', [{ name: 'a' }, { name: 'b' }]],
+      ]);
+      expect(SlashRender.groupToolsBySource([])).toEqual([]);
+      expect(SlashRender.groupToolsBySource(null)).toEqual([]);
+    });
+  });
+
+  describe('renderTools', () => {
+    const multi = [
+      { name: 'fs_read', source: 'builtin', description: 'Read files', gate_state: 'allowed' },
+      { name: 'gke_nodes', source: 'gke', description: 'List nodes' },
+      { name: 'review_diff', source: 'skill:review', description: 'Review a diff' },
+      { name: 'write_adr', source: 'skill:adr', description: 'Write a record' },
+    ];
+
+    it('groups with per-source counts and drops descriptions', () => {
+      const { html } = SlashRender.renderTools(multi, '');
+      expect(html).toContain('Tools (4): builtin 1 · gke 1 · skill 2');
+      expect(html).toContain('<div class="list-group-header">skill (2)</div>');
+      expect(html).toContain('/tools &lt;source&gt; for descriptions');
+      expect(html).not.toContain('Read files');
+    });
+
+    // The gate is the one annotation worth its width in grouped mode:
+    // "this will stop and ask" changes what the operator does next.
+    it('keeps the gate annotation in grouped mode', () => {
+      expect(SlashRender.renderTools(multi, '').html).toContain('[allowed]');
+    });
+
+    it('restores descriptions and the full source when filtered', () => {
+      const { html } = SlashRender.renderTools(multi, 'skill');
+      expect(html).toContain('Tools from skill (2)');
+      expect(html).toContain('Review a diff');
+      expect(html).toContain('skill:review');
+      expect(html).not.toContain('gke_nodes');
+    });
+
+    it('matches a full source as well as a group key, case-insensitively', () => {
+      expect(SlashRender.renderTools(multi, 'SKILL:ADR').html).toContain('write_adr');
+      expect(SlashRender.renderTools(multi, 'SKILL:ADR').html).not.toContain('review_diff');
+      expect(SlashRender.renderTools(multi, 'GKE').html).toContain('gke_nodes');
+    });
+
+    // A miss that only says "no" is a dead end: filtering by source is
+    // the only reason to want the source names, so name them.
+    it('names the available sources on a miss', () => {
+      const { text, html } = SlashRender.renderTools(multi, 'nope');
+      expect(html).toBeUndefined();
+      expect(text).toBe('/tools: no tools from "nope". Sources: builtin, gke, skill');
+    });
+
+    // The pre-#289 layout, unchanged: grouping a catalog that has one
+    // source only costs it a heading that says nothing.
+    it('renders a single-source catalog in detail, ungrouped', () => {
+      const one = [{ name: 'fs_read', source: 'builtin', description: 'Read files' }];
+      const { html } = SlashRender.renderTools(one, '');
+      expect(html).toContain('Tools (1)');
+      expect(html).not.toContain('list-group-header');
+      expect(html).not.toContain('list-summary');
+      expect(html).toContain('Read files');
+    });
+  });
+
+  describe('summarizeAgentEvent', () => {
+    it('falls back when the protocol module is absent', () => {
+      delete globalThis.AttachCoreProtocol;
+      expect(SlashRender.summarizeAgentEvent({})).toBe('(event)');
+    });
+
+    it('summarizes text, calls and results from the fanout', () => {
+      globalThis.AttachCoreProtocol = {
+        fanoutAgentFrame(_frame, emit) {
+          emit({ type: 'stream-chunk', data: { text: 'hello' } });
+          emit({ type: 'tool-call', data: { name: 'fs_read' } });
+          emit({ type: 'tool-result', data: { name: 'fs_read', latencyMs: 12 } });
+        },
+      };
+      expect(SlashRender.summarizeAgentEvent({})).toBe(
+        'text: hello; call fs_read; result fs_read (12ms)'
+      );
+      delete globalThis.AttachCoreProtocol;
+    });
+
+    it('reports an event that fans out to nothing', () => {
+      globalThis.AttachCoreProtocol = { fanoutAgentFrame() {} };
+      expect(SlashRender.summarizeAgentEvent({})).toBe('(empty)');
+      delete globalThis.AttachCoreProtocol;
+    });
+  });
 });

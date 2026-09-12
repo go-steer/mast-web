@@ -42,6 +42,8 @@
   const empty = document.getElementById('solo-empty');
   const tabStrip = document.getElementById('solo-tabs');
   const hudCount = document.getElementById('hud-count');
+  const hudIdentity = document.getElementById('hud-identity');
+  const hudIdentitySep = document.getElementById('hud-identity-sep');
   const statusFocus = document.getElementById('status-focus');
   const statusClock = document.getElementById('status-clock');
   const daemonList = document.getElementById('daemon-list');
@@ -85,6 +87,14 @@
     empty.hidden = !!t;
     statusFocus.textContent = 'active: ' + (t ? t.title : '—');
     hudCount.textContent = tabs.size === 1 ? '1 session' : tabs.size + ' sessions';
+    // The identity belongs to the active tab, not to the shell: tabs
+    // can sit on different daemons, and the operator is not
+    // necessarily the same principal on each.
+    const identity = t ? t.term.state.identity : '';
+    hudIdentity.textContent = identity;
+    hudIdentity.title = identity ? 'Backend identity for this session' : '';
+    hudIdentity.hidden = !identity;
+    hudIdentitySep.hidden = !identity;
   }
 
   function renderTabs() {

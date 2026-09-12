@@ -52,6 +52,11 @@
       <span class="hud-item" id="hud-panels">0 terminals</span>
       <span class="hud-sep">|</span>
       <span class="hud-item" id="hud-camera">yaw 0° pitch 0°</span>
+      <!-- Who the focused panel's backend resolved this caller to.
+           Hidden until /whoami answers: an empty identity slot reads
+           as "signed out", which is the one thing it never means. -->
+      <span class="hud-sep" id="hud-identity-sep" hidden>|</span>
+      <span class="hud-item" id="hud-identity" hidden></span>
       <span class="hud-spacer"></span>
       <!-- Options are filled in by spatial.js, which shares the theme
            list and the storage key with the classic shell's /theme. -->

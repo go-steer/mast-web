@@ -508,7 +508,7 @@
     return endpoint + '#' + sessionId;
   }
 
-  // Tracks panel-boot's duration in spatial.css, plus a frame of slack.
+  // Tracks panel-boot's duration in panel.css, plus a frame of slack.
   const BOOT_MS = 700;
 
   // How far apart a batch of terminals comes up. Long enough to read as

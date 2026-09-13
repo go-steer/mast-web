@@ -22,7 +22,7 @@
 // the camera, and gives the frame a tab strip so several sessions can
 // be open without any of them being small.
 //
-// It is not a fork of the room: the panel chrome is spatial.css, the
+// It is not a fork of the room: the panel chrome is panel.css, the
 // terminal is terminal.js, the daemon registry is state/daemons.js and
 // the sidebar over it is daemon-sidebar.js, the theme list is theme.js,
 // and the palette / picker / shortcuts / batch overlays are shell.js.
@@ -54,7 +54,7 @@
   // over here.
   const HUES = ['--hue-1', '--hue-2', '--hue-3', '--hue-4'];
 
-  // Tracks panel-boot's duration in spatial.css, plus a frame of slack.
+  // Tracks panel-boot's duration in panel.css, plus a frame of slack.
   const BOOT_MS = 700;
 
   // Long enough for the flash to read as a cut, short enough that it

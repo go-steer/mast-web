@@ -1,0 +1,461 @@
+/* Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* chrome.css — the furniture both shells wear.
+ *
+ * The HUD strip along the top, the status bar along the bottom, the
+ * agent sidebar down the left, the two atmosphere overlays and the
+ * batch drawer. None of it knows whether it is framing one terminal or
+ * a room full of them, which is exactly why it is here: through v0.3
+ * this lived in spatial.css and solo.html loaded that whole sheet to
+ * reach it, so the default shell was styled as an override of the
+ * secondary one. #62 split it.
+ *
+ * Loaded by both shells, after styles.css (palette, themes, transcript
+ * primitives) and before panel.css. The room's own additions —
+ * #hud-camera, the audio toggle, the radar — stay in spatial.css.
+ */
+
+/* ─── The room both shells stand in ──────────────────────────────────
+   Named for the 3D one because that is where the lighting was designed,
+   but solo wears all of it: the same backdrop gradient, the same
+   damage vocabulary. What it doesn't have is a camera — see solo.css
+   for what it flattens and spatial.css for what it flattens away. */
+body.spatial,
+body.solo {
+  /* What a terminal wears once its session is gone: half the theme's
+     red, half its dimmest text. A dead terminal should read as drained
+     rather than as an alert — the alert already happened, this is the
+     aftermath. Room-level rather than per-.panel because it depends on
+     nothing per-panel, and because the radar blip has to reach it too. */
+  --hue-dead: color-mix(in srgb, var(--red) 42%, var(--text-dim));
+
+  display: block;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(
+    ellipse at 50% 62%,
+    var(--room-core) 0%,
+    var(--room-mid) 60%,
+    var(--room-edge) 100%
+  );
+  cursor: default;
+}
+
+/* ─── Sidebar ────────────────────────────────────────────────────────
+   The agent list. Sits over the scene rather than in it — a picker
+   that drifted in 3D would be a cruel joke. */
+
+#spatial-sidebar {
+  position: absolute;
+  left: 0;
+  top: 34px;
+  bottom: 26px;
+  width: 236px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 11px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  backdrop-filter: blur(4px);
+  border-right: 1px solid var(--frame);
+  box-shadow: 8px 0 26px -22px var(--glow);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+body.spatial.side-hidden #spatial-sidebar,
+body.solo.side-hidden #spatial-sidebar {
+  transform: translateX(-101%);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+}
+
+.side-head .side-icon {
+  margin-left: auto;
+}
+
+.side-icon {
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.side-icon:hover,
+.side-icon:focus-visible {
+  color: var(--accent);
+  border-color: var(--frame);
+  outline: none;
+}
+
+.side-icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.side-icon:disabled:hover {
+  color: var(--text-dim);
+  border-color: transparent;
+}
+
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-daemon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--frame);
+  margin-bottom: 3px;
+}
+
+.side-daemon-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.side-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-dim);
+}
+
+.side-daemon[data-state='connected'] .side-dot {
+  background: var(--green);
+  box-shadow: 0 0 7px var(--green);
+}
+
+.side-daemon[data-state='connecting'] .side-dot {
+  background: var(--yellow);
+}
+
+.side-daemon[data-state='error'] .side-dot {
+  background: var(--red);
+}
+
+.side-session {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-session:hover,
+.side-session:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.side-session.open {
+  border-left-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--text);
+}
+
+.side-session.active {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.side-session-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-session-meta {
+  font-size: 9px;
+  opacity: 0.62;
+  flex: none;
+}
+
+.side-session[data-status='idle'] .side-session-id {
+  opacity: 0.66;
+}
+
+/* Destructive, so it stays invisible until the row is under the
+   pointer — a delete control that is always lit next to every session
+   is a delete control somebody eventually hits by accident. Keyboard
+   focus reveals it too, or it would be unreachable without a mouse. */
+.side-session-del {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  border-radius: 2px;
+  color: var(--text-dim);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.side-session:hover .side-session-del,
+.side-session:focus-within .side-session-del,
+.side-session-del:focus-visible {
+  opacity: 1;
+}
+
+.side-session-del:hover {
+  color: var(--red);
+}
+
+.side-empty,
+.side-error {
+  padding: 2px 4px;
+  font-size: 10px;
+  font-style: italic;
+}
+
+.side-error {
+  color: var(--red);
+  font-style: normal;
+  word-break: break-word;
+}
+
+#add-daemon {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--frame);
+}
+
+.side-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+#add-daemon input {
+  background: var(--bg);
+  border: 1px solid var(--frame);
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  min-width: 0;
+}
+
+#add-daemon input:focus {
+  border-color: var(--accent);
+}
+
+.side-wide {
+  width: 100%;
+}
+
+.side-hint {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.5;
+  opacity: 0.66;
+}
+
+/* ─── Overlays ───────────────────────────────────────────────────── */
+
+#scene-scanlines,
+#scene-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#scene-scanlines {
+  background: repeating-linear-gradient(to bottom, var(--scan) 0 1px, transparent 1px 3px);
+  opacity: 0.9;
+}
+
+#scene-vignette {
+  background: radial-gradient(ellipse at 50% 48%, transparent 44%, var(--room-vignette) 100%);
+}
+
+/* ─── Batch drawer ───────────────────────────────────────────────────
+   shell.js builds the panel; styles.css styles its insides. Only the
+   outer frame differs here, and it has to: the base rule is still
+   shaped for the classic shell, where #batch-panel was a flex child of
+   the document and `border-top` put it under the transcript. Neither
+   surviving shell has that column — the room and the tab strip fill
+   the viewport — so it becomes a drawer pinned to the bottom edge, over
+   everything except the modals (z-index 100) it can be opened from. */
+#batch-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  border-top: 1px solid var(--accent);
+  box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+}
+
+/* ─── HUD + status bar ───────────────────────────────────────────── */
+
+#spatial-hud,
+#spatial-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  backdrop-filter: blur(3px);
+  color: var(--text-dim);
+}
+
+#spatial-hud {
+  top: 0;
+  border-bottom: 1px solid var(--frame);
+  box-shadow: 0 6px 22px -18px var(--glow);
+}
+
+#spatial-status {
+  bottom: 0;
+  border-top: 1px solid var(--frame);
+  box-shadow: 0 -6px 22px -18px var(--glow);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+/* The wordmark is the one piece of chrome that carries the gradient.
+   Themes that don't have one leave --brand-image at `none`, which makes
+   background-clip a no-op and falls back to a plain accent-colored
+   word. */
+#spatial-hud .hud-brand {
+  font-size: 13px;
+  background-image: var(--brand-image);
+  background-clip: text;
+  color: var(--brand-color);
+}
+
+.hud-sep {
+  color: var(--border-soft);
+  opacity: 0.75;
+}
+
+.hud-spacer {
+  flex: 1;
+}
+
+.hud-item,
+.status-item {
+  white-space: nowrap;
+}
+
+#status-focus,
+#status-clock {
+  color: var(--accent);
+}
+
+.hud-btn {
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--frame);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.hud-btn:hover,
+.hud-btn:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 0 12px -3px var(--glow);
+  outline: none;
+}
+
+.hud-toggle {
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* The picker borrows .hud-btn wholesale; only the native select chrome
+   needs correcting. The dropdown itself is painted by the OS, so it
+   needs a real background or it renders white-on-white in some
+   browsers. */
+#hud-theme {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  max-width: 190px;
+}
+
+#hud-theme option {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #spatial-sidebar {
+    transition: none;
+  }
+}

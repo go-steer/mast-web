@@ -32,7 +32,7 @@
 // because closing the terminals is its job, not this module's.
 //
 // Requires: state/{subscriptions,daemons}.js, attach-core/{errors,
-// client}.js, and .side-* styles from spatial.css.
+// client}.js, and .side-* styles from chrome.css.
 //
 //   const sidebar = MastDaemonSidebar.create({ listEl, onOpen });
 //   sidebar.boot().then(function (endpoints) { … });

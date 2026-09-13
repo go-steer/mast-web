@@ -17,14 +17,16 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
     />
-    <!-- styles.css supplies the palette and every transcript primitive;
-         spatial.css supplies the terminal itself — the panel bezel, the
-         screen frame, the boot flash, the damage states and the .side-*
-         sidebar. solo.css only flattens the room out of it: no camera,
-         no floor, one panel filling the stage. -->
+    <!-- The same four sheets spatial.html loads, minus the room. Order
+         is the cascade: styles.css is the palette and every transcript
+         primitive, chrome.css is the HUD / status bar / sidebar,
+         panel.css is the terminal itself — bezel, screen, boot flash,
+         damage states — and solo.css flattens that one panel to fill
+         the stage. -->
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="vendor/highlight-github-dark-11.12.0.min.css" />
-    <link rel="stylesheet" href="spatial.css" />
+    <link rel="stylesheet" href="chrome.css" />
+    <link rel="stylesheet" href="panel.css" />
     <link rel="stylesheet" href="solo.css" />
   </head>
   <body class="solo">

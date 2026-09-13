@@ -16,12 +16,16 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
     />
-    <!-- styles.css supplies the palette, all six themes, and every
-         transcript primitive (.message / .md-content / .tool-row /
-         .turn-footer); spatial.css only adds the 3D scene and the
-         per-panel terminal chrome on top. -->
+    <!-- The same four sheets solo.html loads, with the room in place of
+         the flattening. Order is the cascade: styles.css is the palette,
+         every theme and every transcript primitive (.message /
+         .md-content / .tool-row / .turn-footer); chrome.css is the HUD /
+         status bar / sidebar; panel.css is a terminal; spatial.css puts
+         several of them in a 3D scene. -->
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="vendor/highlight-github-dark-11.12.0.min.css" />
+    <link rel="stylesheet" href="chrome.css" />
+    <link rel="stylesheet" href="panel.css" />
     <link rel="stylesheet" href="spatial.css" />
   </head>
   <body class="spatial">

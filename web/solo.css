@@ -13,13 +13,17 @@
  * limitations under the License.
  */
 
-/* solo.css — the spatial shell's terminal without the room.
+/* solo.css — one terminal, full size, no room.
  *
- * Everything that makes a panel look like a screen is in spatial.css
- * and is reused here verbatim: the bezel and its edge gradient, the
+ * Everything that makes a panel look like a screen is in panel.css and
+ * is reused here verbatim: the bezel and its edge gradient, the
  * specular sweep, the CRT power-on, the sync bar while reconnecting,
- * the damage states, the scanline and vignette overlays, the .side-*
- * sidebar. This file does three things only:
+ * the damage states. The HUD, status bar, sidebar and the two
+ * atmosphere overlays are chrome.css. Both are shared with
+ * spatial.html rather than borrowed from it — through v0.3 they were
+ * inside spatial.css and this file was an override layer over the
+ * whole of it, which stopped being defensible once #61 made solo the
+ * shell `/` lands on. This file does three things only:
  *
  *   1. flattens .panel-anchor / .panel out of the 3D scene — no camera,
  *      no absolute placement, no drift, one panel filling the stage;
@@ -35,8 +39,8 @@
  */
 
 /* The stage is inset by the HUD, the status bar and the sidebar. Same
-   numbers as #spatial-sidebar's top/bottom/width, so the two shells
-   frame their content identically. */
+   numbers as chrome.css gives #spatial-sidebar for top/bottom/width, so
+   the two shells frame their content identically. */
 body.solo {
   --stage-left: 236px;
 }
@@ -103,7 +107,7 @@ body.solo.side-hidden {
    booting. #solo-panel's `animation: none` above is an ID selector and
    outranks all four, which would silently swallow the power-on, so the
    one animation this shell still wants has to be restated at ID
-   strength. The keyframes and timing are spatial.css's, unchanged. */
+   strength. The keyframes and timing are panel.css's, unchanged. */
 #solo-anchor.booting #solo-panel {
   animation: panel-boot 0.66s cubic-bezier(0.2, 0.98, 0.3, 1) both;
 }
@@ -293,7 +297,7 @@ body.solo #scene-vignette {
     animation: none;
   }
 
-  /* spatial.css turns panel-boot off here too, but at (0,3,0); the
+  /* panel.css turns panel-boot off here too, but at (0,3,0); the
      restated rule above outranks it and has to opt out itself. */
   #solo-anchor.booting #solo-panel {
     animation: none;

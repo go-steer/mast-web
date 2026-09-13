@@ -31,14 +31,28 @@ make dev
 
 The static dev server starts on `http://localhost:8000`. Browse there.
 
+## Pick a shell
+
+`/` is a chooser, not a shell. It sends you to **solo** — one terminal at a time, with a
+tab strip — unless you say otherwise. **Spatial** puts several terminals in a 3D room.
+Both are the same terminal in different furniture; nothing is only in one of them.
+
+- `?shell=spatial` on the URL for a one-off. A deep link does not change your default —
+  sending someone a link should not re-home them.
+- The `room ↗` / `solo ↗` link in the HUD strip switches, and that one sticks.
+- `/shell` from the prompt lists both and records a choice.
+
 ## Connect
 
-On first run, mast-web prompts for:
+Add the backend from the sidebar's attach form, or type `/attach http://localhost:7777`:
 
 - **Backend endpoint:** `http://localhost:7777`
 - **Auth token:** the token from the `core-agent` startup banner
 
-After saving, the chat surface connects and you can submit prompts.
+The daemon appears as a sidebar row with its sessions under it; click one to open a
+terminal and submit prompts. Behind
+`mast-web-server --mode=proxy` there is no step here at all — the endpoint is discovered
+at boot.
 
 ## Where to next
 

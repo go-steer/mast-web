@@ -81,6 +81,7 @@ function fakeRegistry(daemons) {
 describe('MastShell', () => {
   let term;
   let mounted;
+  let navigated;
 
   function mount(over) {
     term = over && 'terminal' in over ? over.terminal : stubTerminal();
@@ -90,6 +91,8 @@ describe('MastShell', () => {
       openSession: (over && over.openSession) || (() => {}),
       themeSelect: over && over.themeSelect,
       shortcuts: over && over.shortcuts,
+      shell: over && over.shell,
+      navigate: (over && over.navigate) || ((href) => navigated.push(href)),
     });
     mounted.push(shell);
     return shell;
@@ -117,6 +120,7 @@ describe('MastShell', () => {
     document.body.removeAttribute('data-theme');
     localStorage.clear();
     mounted = [];
+    navigated = [];
     delete globalThis.MastShell;
     load('theme.js');
     load('shell.js');
@@ -136,6 +140,7 @@ describe('MastShell', () => {
         'attach',
         'batch',
         'layout',
+        'shell',
         'shortcuts',
         'theme',
       ]);
@@ -220,6 +225,62 @@ describe('MastShell', () => {
 
       await run(shell, 'shortcuts');
       expect(isOpen('shortcuts-modal')).toBe(true);
+    });
+  });
+
+  // `/` reads the same key this writes (web/shell-select.js), so these
+  // two halves are the whole of the v0.4 §1 precedence table that lives
+  // in a shell: the default and the deep link belong to that file.
+  describe('choosing a shell', () => {
+    it('/shell lists both, marking the one you are in', async () => {
+      const shell = mount({ shell: 'solo' });
+      const out = await run(shell, 'shell');
+      expect(out).toContain('> solo');
+      expect(out).toContain('  spatial');
+      expect(out).toContain('Stored preference: solo');
+      expect(navigated).toEqual([]);
+    });
+
+    it('/shell <id> records the preference and goes there', async () => {
+      const shell = mount({ shell: 'solo' });
+      expect(await run(shell, 'shell', ['spatial'])).toContain('Opening the spatial shell');
+      expect(localStorage.getItem('mast-web:shell')).toBe('spatial');
+      expect(navigated).toEqual(['spatial.html']);
+    });
+
+    it('/shell for the shell you are in records it without reloading', async () => {
+      const shell = mount({ shell: 'solo' });
+      expect(await run(shell, 'shell', ['solo'])).toContain('Already in the solo shell');
+      expect(localStorage.getItem('mast-web:shell')).toBe('solo');
+      // Re-entering the page you are on would throw away every open
+      // tab to arrive exactly where you already are.
+      expect(navigated).toEqual([]);
+    });
+
+    it('/shell refuses a name that is not a shell', async () => {
+      const shell = mount({ shell: 'solo' });
+      expect(await run(shell, 'shell', ['chat'])).toContain('Unknown shell "chat"');
+      expect(localStorage.getItem('mast-web:shell')).toBe(null);
+      expect(navigated).toEqual([]);
+    });
+
+    it('following the HUD link is what sets the preference', () => {
+      const link = document.createElement('a');
+      link.setAttribute('data-shell', 'spatial');
+      link.href = 'spatial.html';
+      document.body.appendChild(link);
+
+      const shell = mount({ shell: 'solo' });
+      link.click();
+      expect(localStorage.getItem('mast-web:shell')).toBe('spatial');
+
+      // And the listener goes with the shell — a torn-down shell that
+      // still rewrote the preference on click would be a ghost vote.
+      localStorage.clear();
+      shell.destroy();
+      mounted.length = 0;
+      link.click();
+      expect(localStorage.getItem('mast-web:shell')).toBe(null);
     });
   });
 

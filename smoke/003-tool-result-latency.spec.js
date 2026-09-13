@@ -20,14 +20,14 @@
 // the tool row + latency chip render without an operator prompt.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock } from './helpers.js';
+import { openSoloSession } from './helpers.js';
 
 test.describe('smoke: 003-tool-result-with-latency', () => {
   test('tool-call chip renders with latency chip from v1.2.0 sidecar', async ({ page }) => {
-    await connectToMock(page, '003-tool-result-with-latency');
+    const screen = await openSoloSession(page, '003-tool-result-with-latency');
 
     // Tool row rendered (auto-spawned observer turn's onToolCall).
-    const toolRow = page.locator('#output-area .message.tool-done').first();
+    const toolRow = screen.locator('.message.tool-done').first();
     await expect(toolRow).toBeVisible();
     await expect(toolRow.locator('.tool-name')).toContainText('bq_query');
 

@@ -121,21 +121,25 @@ window.MastDaemonSidebar = (function () {
     const noticeTimers = new Map();
     const NOTICE_MS = 8000;
 
-    function setNotice(endpoint, text) {
+    // `sticky` is for the one notice that does not stop being true while
+    // you look at it — see boot().
+    function setNotice(endpoint, text, sticky) {
       window.clearTimeout(noticeTimers.get(endpoint));
+      noticeTimers.delete(endpoint);
       if (!text) {
         notices.delete(endpoint);
-        noticeTimers.delete(endpoint);
       } else {
         notices.set(endpoint, text);
-        noticeTimers.set(
-          endpoint,
-          window.setTimeout(function () {
-            notices.delete(endpoint);
-            noticeTimers.delete(endpoint);
-            render();
-          }, NOTICE_MS)
-        );
+        if (!sticky) {
+          noticeTimers.set(
+            endpoint,
+            window.setTimeout(function () {
+              notices.delete(endpoint);
+              noticeTimers.delete(endpoint);
+              render();
+            }, NOTICE_MS)
+          );
+        }
       }
       render();
     }
@@ -174,6 +178,20 @@ window.MastDaemonSidebar = (function () {
         registered.push(row.endpoint);
         refresh(add(row.endpoint, row.token, { derived: found.derived }));
       });
+      // A 401 from GET /config is the one discovery failure that names
+      // its own fix: the deployment does authenticate, and this
+      // document's session with it has expired. Every list below is
+      // about to fail the same way, and four rows reading "unauthorized"
+      // do not add up to "reload the page" — the document could not have
+      // been served at all without a fresh sign-in, so reloading is the
+      // recovery. index.html used to say this from the setup modal;
+      // #61 retired that shell, and the sentence moved here.
+      const site = registry.site && registry.site();
+      if (site && site.unauthenticated) {
+        registered.forEach(function (endpoint) {
+          setNotice(endpoint, 'Your session with this server expired — reload the page.', true);
+        });
+      }
       return registered;
     }
 

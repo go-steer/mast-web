@@ -389,7 +389,7 @@ func TestWithAuth_SubresourcesAreServedUnauthenticated(t *testing.T) {
 	// ends up serving an IdP's HTML with a JavaScript Content-Type.
 	for _, dest := range []string{"script", "style", "font", "image"} {
 		t.Run(dest, func(t *testing.T) {
-			r := httptest.NewRequest("GET", "/app.js", nil)
+			r := httptest.NewRequest("GET", "/solo.js", nil)
 			r.Header.Set("Sec-Fetch-Dest", dest)
 			w := serveWithAuth(headerAuth{header: "X-Test-User"}, r)
 			if w.Code != http.StatusOK {
@@ -422,7 +422,7 @@ func TestWithAuth_ConfigIsNotAnonymous(t *testing.T) {
 	// and a stranger has no business reading it. The subresource branch
 	// makes this worth a test of its own: /config is neither a document
 	// nor under the API prefix, so without naming it explicitly it would
-	// fall through to the anonymous passthrough that serves app.js.
+	// fall through to the anonymous passthrough that serves solo.js.
 	//
 	// Fetched, not navigated: the failure has to be JSON, since the SPA
 	// reads it with fetch() and would otherwise JSON.parse a login page.
@@ -470,7 +470,7 @@ func TestIsAPIPath(t *testing.T) {
 		// Must not match a sibling path that merely shares a prefix.
 		{"/attachment", "/attach", false},
 		{"/", "/attach", false},
-		{"/app.js", "/attach", false},
+		{"/solo.js", "/attach", false},
 		{"/attach/sessions", "", false},
 	}
 	for _, tc := range tests {

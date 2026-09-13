@@ -49,7 +49,7 @@ before editing one:
   `TestMock_FixturesDeclareTheEventsTheyEmit` checks every fixture.
 
 `001`'s `features` map is deliberately minimal — only the flags the
-gates actually read. `web/app.js` treats an absent key as on, so
+gates actually read. The shells treat an absent key as on, so
 spelling out every flag would silently change smoke-suite behaviour
 (`observer_mode` above all) in exchange for nothing.
 

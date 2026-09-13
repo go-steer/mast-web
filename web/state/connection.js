@@ -27,8 +27,9 @@
 // re-touching this file.
 //
 // One instance per connection, not one per page: a room with four
-// terminals has four of these. `createConnection()` is the factory;
-// `MastState.connection` is the classic shell's single instance.
+// terminals has four of these. `createConnection()` is the factory and
+// the only export — see the note in state/session.js about the shared
+// instance that app.js held.
 //
 // This shape is already exactly what terminal.js had grown informally
 // in its own closure — connState / running / prompter / activeTurn —
@@ -54,7 +55,8 @@ window.MastState.createConnection = (function () {
     client: null,
     prompter: null,
     // isRunning is transient turn state — no one subscribes to it,
-    // but living here keeps app.js from carrying orphaned globals.
+    // but living here keeps the terminal from carrying an orphaned
+    // closure variable beside the state it belongs with.
     isRunning: false,
     // Active turn dispatch handle used by runPrompt to route SSE
     // events back to the render callbacks. Null when idle. Same
@@ -140,6 +142,3 @@ window.MastState.createConnection = (function () {
 
   return createConnection;
 })();
-
-// The classic shell's instance — see the note in state/session.js.
-window.MastState.connection = window.MastState.createConnection();

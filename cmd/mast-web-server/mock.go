@@ -122,7 +122,7 @@ func (h *mockHandler) turnRequests(w http.ResponseWriter, r *http.Request) {
 
 // mockSession is the canned session the SPA auto-selects on connect.
 // Kept minimal — just enough to open an SSE stream. Always first in
-// mockSessions so single-session consumers (smoke tests, index.html's
+// mockSessions so single-session consumers (smoke tests, a shell's
 // auto-select) keep landing on it.
 var mockSession = map[string]any{
 	"app":             "mast-web-mock",

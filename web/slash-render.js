@@ -51,7 +51,7 @@
 //   validate(value, schema) — the small validator. Returns
 //                             {ok, errors[]}.
 //   escapeHTML         — exported for consumers that need it (e.g.
-//                        addSystemMessageHTML in app.js).
+//                        addSystemMessageHTML in terminal.js).
 //   renderList(title, groups, opts)
 //     — the catalog list every client-side built-in renders into:
 //       /tools, /subagents, /mcp. Lifted out of app.js so the
@@ -397,7 +397,7 @@ window.SlashRender = (function () {
   //
   // Shared by the client-side built-ins that print a roster — /tools,
   // /subagents, /mcp. Lifted out of app.js's renderListHTML so the
-  // shells that survive v0.4 render the same thing rather than growing
+  // shells that survived v0.4 render the same thing rather than growing
   // a second copy of it.
   //
   // `groups` is [{header?, items: [{name, tags?, description?}]}].

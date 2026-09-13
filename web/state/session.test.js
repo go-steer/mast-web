@@ -28,7 +28,7 @@ const srcSession = readFileSync(join(here, 'session.js'), 'utf8');
 function loadSessionStore() {
   new Function('window', srcSubs)(globalThis);
   new Function('window', srcSession)(globalThis);
-  return globalThis.MastState.session;
+  return globalThis.MastState.createSession();
 }
 
 describe('state/session', () => {
@@ -310,9 +310,9 @@ describe('state/session', () => {
   });
 });
 
-// v0.4: the module exports a factory, and MastState.session is just the
-// classic shell's instance of it. A room full of terminals needs each
-// one to hold its own.
+// v0.4: the module exports a factory and nothing else. A room full of
+// terminals needs each one to hold its own state, and the shared
+// instance the classic shell reached for went with it in #61.
 describe('state/session — factory', () => {
   let createSession;
   beforeEach(() => {
@@ -362,11 +362,11 @@ describe('state/session — factory', () => {
     expect(hitsB).toBe(0);
   });
 
-  it('MastState.session is a live instance of the factory', () => {
-    const shared = globalThis.MastState.session;
-    shared.setCurrentModel('sonnet');
-    expect(shared.get().currentModel).toBe('sonnet');
-    expect(createSession().get().currentModel).toBe('');
+  // The factory is the whole export surface. A stray singleton here is
+  // how a shell accidentally shares one session's state with another,
+  // which is the bug the factory exists to make impossible.
+  it('exports no shared instance', () => {
+    expect(globalThis.MastState.session).toBeUndefined();
   });
 
   // ─── whoami (PR 2 / #59) ───────────────────────────────────────────

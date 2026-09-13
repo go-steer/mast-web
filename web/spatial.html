@@ -4,13 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mast-web // spatial</title>
-    <!-- Same policy as index.html, for the same reason: this page holds
+    <!-- Same policy as solo.html, for the same reason: this page holds
          agent credentials in localStorage, so any injected script is a
          credential-exfiltration path. Everything it loads is same-origin
          (see web/vendor/), so script-src can be a flat 'self'. Kept
          verbatim rather than factored out — the two shells are separate
          entry points and a policy that drifts silently is worse than one
-         that is duplicated visibly. -->
+         that is duplicated visibly. (index.html runs a stricter one; it
+         is a redirect and has no network to reach.) -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
@@ -76,8 +77,11 @@
       <!-- The same terminals, one at a time, at full size. Paired with
            solo.html's "room ↗" so the two shells are each other's way
            out; without it the flat one is reachable only by typing the
-           URL. -->
-      <a class="hud-btn" href="solo.html" title="One terminal, full size">solo &#8599;</a>
+           URL. data-shell records the choice, so `/` follows you
+           (v0.4 plan §1). -->
+      <a class="hud-btn" href="solo.html" data-shell="solo" title="One terminal, full size"
+        >solo &#8599;</a
+      >
     </header>
 
     <!-- Agent / session picker. Every row is one attach-protocol
@@ -133,33 +137,32 @@
     </footer>
 
     <!-- Markdown + syntax highlighting, vendored at exact versions and
-         shared byte-for-byte with index.html. See web/vendor/README.md
+         shared byte-for-byte with solo.html. See web/vendor/README.md
          for provenance; the short version is that this tree is
          go:embed-ed into the server binary, so a CDN dependency breaks
          rendering in air-gapped deploys. -->
     <script src="vendor/marked-12.0.2.min.js"></script>
     <script src="vendor/marked-highlight-2.2.4.umd.js"></script>
     <script src="vendor/highlight-11.12.0.min.js"></script>
-    <!-- attach-core: the same wire layer index.html loads, in the same
+    <!-- attach-core: the same wire layer solo.html loads, in the same
          order. -->
     <script src="attach-core/errors.js"></script>
     <script src="attach-core/protocol.js"></script>
     <script src="attach-core/replay.js"></script>
     <script src="attach-core/prompter.js"></script>
     <script src="attach-core/client.js"></script>
-    <!-- state/: the same stores index.html loads. They were singletons
-         through v0.3.0, which is why this shell went without them and
-         grew its own copies instead; they are factories now, and every
-         terminal in the room holds its own pair. -->
+    <!-- state/: they were singletons through v0.3.0 — one per document,
+         for the one session the classic shell could hold — which is why
+         this shell went without them and grew its own copies instead.
+         They are factories now, and every terminal in the room holds
+         its own pair. -->
     <script src="state/subscriptions.js"></script>
     <script src="state/session.js"></script>
     <script src="state/connection.js"></script>
     <script src="state/daemons.js"></script>
     <script src="slash-render.js"></script>
     <script src="terminal.js"></script>
-    <!-- Shared with solo.html: the daemon sidebar and the theme list.
-         index.html is frozen and keeps its own copy of the theme list
-         in app.js. -->
+    <!-- Shared with solo.html: the daemon sidebar and the theme list. -->
     <script src="theme.js"></script>
     <script src="daemon-sidebar.js"></script>
     <script src="shell.js"></script>

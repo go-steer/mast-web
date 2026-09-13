@@ -29,10 +29,10 @@
 // What lives here is the tab model and the wiring, which is the only
 // part that differs.
 //
-// With #60 that list is the whole of the classic shell's feature set:
-// terminal.js answers every slash command app.js did, shell.js answers
-// the ones that act on the window, and what remains in app.js is
-// index.html's own markup. index.html is next to go (#61).
+// With #60 that list covered the whole of the classic shell's feature
+// set — terminal.js answers every slash command app.js did and shell.js
+// answers the ones that act on the window — so #61 deleted app.js and
+// index.html. `/` is a redirect now; this shell is where it lands.
 (function () {
   'use strict';
 
@@ -420,6 +420,7 @@
   // the palette opened over another have to reach the same place.
 
   const shell = window.MastShell.create({
+    shell: 'solo',
     registry: agents.registry,
     themeSelect: document.getElementById('hud-theme'),
     activeTerminal: function () {

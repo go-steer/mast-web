@@ -6,7 +6,7 @@ Previously loaded from `cdn.jsdelivr.net` at runtime; vendored because:
 1. **Air-gapped / single-binary deploys.** `internal/webui` `go:embed`s this tree into
    `mast-web-server`, and the README advertises air-gapped and `--ui` single-binary
    shapes. A CDN `<script>` tag means markdown + highlighting silently break with no
-   network — `web/app.js:1665-1666` guards on `typeof marked/hljs`, so the failure is
+   network — `web/terminal.js:85-86` guards on `typeof marked/hljs`, so the failure is
    invisible.
 2. **Supply chain.** Agent tokens live in `localStorage` on this origin, so any script
    the page loads can exfiltrate them. Removing the third-party origin entirely is a
@@ -27,17 +27,18 @@ retains its upstream license banner.
 
 ## Note on the highlight.js source URL
 
-It is deliberately **not** `npm/highlight.js@11/lib/common.min.js`, which is what
-`index.html` used before. That path is a CommonJS module whose first statement is
+It is deliberately **not** `npm/highlight.js@11/lib/common.min.js`, which is what the
+classic shell loaded before. That path is a CommonJS module whose first statement is
 `require("./core")` — in a browser it throws immediately, `window.hljs` is never defined,
-and `app.js:1666`'s `typeof hljs !== 'undefined'` guard silently skips highlighting. Syntax
+and the renderer's `typeof hljs !== 'undefined'` guard silently skips highlighting. Syntax
 highlighting never actually worked. The browser bundle lives in the separate
 `highlightjs/cdn-release` repo, which is what we vendor.
 
 ## Refreshing
 
 Bump the version in the URL, re-download, rename to match the new version, and update both
-this table and the `<script>` tags in `web/index.html`. Verify the file is a browser bundle
+this table and the `<script>` tags in `web/solo.html` and `web/spatial.html`. Verify the
+file is a browser bundle
 before committing:
 
 ```sh

@@ -33,16 +33,22 @@
 // wake. Counting only injects would have called that green.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock, openSpatialSession, resetTurnRequests, turnRequests } from './helpers.js';
+import {
+  openSoloSession,
+  openSpatialSession,
+  resetTurnRequests,
+  turnRequests,
+} from './helpers.js';
 
 test.describe('smoke: 008-one-turn-per-prompt', () => {
-  test('the classic shell asks for exactly one turn', async ({ page }) => {
-    await connectToMock(page);
+  test('the solo shell asks for exactly one turn', async ({ page }) => {
+    const screen = await openSoloSession(page);
     await resetTurnRequests(page);
 
-    await page.fill('#prompt-input', 'one turn please');
-    await page.click('#send-btn');
-    await expect(page.locator('#output-area .message.user')).toHaveCount(1);
+    const input = page.locator('#solo-body .term:visible .term-prompt');
+    await input.fill('one turn please');
+    await input.press('Enter');
+    await expect(screen.locator('.message.user')).toHaveCount(1);
 
     expect(await turnRequests(page)).toEqual({ inject: 1 });
   });

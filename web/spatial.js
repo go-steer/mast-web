@@ -1297,6 +1297,7 @@
   // what every one of those means here.
 
   const shell = window.MastShell.create({
+    shell: 'spatial',
     registry: agents.registry,
     themeSelect: document.getElementById('hud-theme'),
     activeTerminal: function () {

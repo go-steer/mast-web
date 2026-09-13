@@ -36,7 +36,7 @@
 // shipped with no title at all (falls back to the hostname).
 
 import { test, expect } from '@playwright/test';
-import { connectToMock, openSpatialSession } from './helpers.js';
+import { openSpatialSession } from './helpers.js';
 
 const FIXTURE = '007-grounding-google-search';
 
@@ -66,12 +66,13 @@ async function expectGroundingRendered(root) {
   await expect(root.locator('.md-content', { hasText: 'query:' })).toHaveCount(0);
 }
 
+// One shell, not two. Until #61 this ran against index.html as well,
+// because that shell had a renderer of its own to get wrong. The two
+// surviving shells mount the same terminal.js into different furniture,
+// and none of the furniture can affect how a grounding frame is parsed
+// — so a second run would only cost CI time. The shell-shaped parts of
+// the transcript are covered in 012, 013 and 014.
 test.describe('smoke: 010-grounding-citations', () => {
-  test('classic shell renders queries and sources as chrome', async ({ page }) => {
-    await connectToMock(page, FIXTURE);
-    await expectGroundingRendered(page.locator('#output-area'));
-  });
-
   test('spatial shell renders queries and sources as chrome', async ({ page }) => {
     const screen = await openSpatialSession(page, FIXTURE);
     await expectGroundingRendered(screen);

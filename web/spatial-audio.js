@@ -16,8 +16,8 @@
 // until it has been asked for, and a fleet console is exactly the kind
 // of thing that ends up on a shared desk.
 //
-// Loaded by spatial.html only; index.html does not know this file
-// exists, and spatial.js treats it as optional.
+// Loaded by spatial.html only — the room is the thing with a soundtrack
+// — and spatial.js treats it as optional.
 
 (function () {
   'use strict';

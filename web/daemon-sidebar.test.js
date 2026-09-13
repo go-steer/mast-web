@@ -171,4 +171,65 @@ describe('MastDaemonSidebar — the delete gesture', () => {
     delControl('s1').click();
     await vi.waitFor(() => expect(notice()).toBe(''));
   });
+
+  // index.html said this from the setup modal, and #61 deleted that
+  // document. Without it a signed-out browser gets a sidebar of rows
+  // reading "unauthorized" and no hint that reloading is the fix — the
+  // page could not have been served at all without a fresh sign-in.
+  describe('an expired session with the origin', () => {
+    function discoversWith(descriptor) {
+      globalThis.AttachClient = { discoverConfig: async () => descriptor };
+    }
+
+    const base = {
+      ok: false,
+      status: 401,
+      unauthenticated: true,
+      mode: '',
+      endpoint: '',
+      multiDaemon: false,
+      backends: [],
+      authMode: '',
+      authenticated: false,
+      identity: '',
+    };
+
+    async function boot() {
+      const registry = globalThis.MastState.createDaemons({ makeClient: makeStubClient });
+      const sidebar = globalThis.MastDaemonSidebar.create({
+        listEl,
+        registry,
+        confirm: () => true,
+      });
+      const registered = await sidebar.boot();
+      return { sidebar, registered };
+    }
+
+    it('says so on the row discovery produced', async () => {
+      discoversWith(base);
+      const { registered } = await boot();
+      expect(registered).toEqual(['/']);
+      expect(notice()).toContain('reload the page');
+    });
+
+    // Sticky: unlike a failed delete, this does not stop being true
+    // while you look at it.
+    it('does not time out', async () => {
+      vi.useFakeTimers();
+      try {
+        discoversWith(base);
+        await boot();
+        vi.advanceTimersByTime(60000);
+        expect(notice()).toContain('reload the page');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stays quiet when the origin is happy', async () => {
+      discoversWith({ ...base, ok: true, status: 200, unauthenticated: false, mode: 'mock' });
+      await boot();
+      expect(notice()).toBe('');
+    });
+  });
 });

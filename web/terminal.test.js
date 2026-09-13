@@ -285,6 +285,36 @@ describe('MastTerminal built-ins', () => {
       expect(text()).toContain('does not exist yet');
     });
 
+    // capabilities.agent used to be a sidebar slot in index.html. #61
+    // deleted that document, and the field came here — /model is
+    // already the question it answers.
+    it('/model names the agent behind the model', async () => {
+      const { term, text } = mount({ features: {} });
+      term.session.setCapabilities({
+        features: {},
+        agent: {
+          name: 'mast',
+          version: '0.1.0-dev',
+          description: 'Lean fork of core-agent, orchestration-first',
+          model: 'gemini-2.5-pro',
+          provider: 'vertex',
+        },
+      });
+      term.session.setCurrentModel('gemini-2.5-pro');
+      await term.submit('/model');
+      expect(text()).toContain('Agent: mast 0.1.0-dev (gemini-2.5-pro via vertex)');
+      expect(text()).toContain('Lean fork of core-agent');
+    });
+
+    // A backend that says nothing about itself gets no empty header
+    // line — the pre-#61 slot hid itself, and so does this.
+    it('/model says nothing about an agent the backend did not describe', async () => {
+      const { term, text } = mount({ features: {} });
+      term.session.setCurrentModel('mock-model-1.5');
+      await term.submit('/model');
+      expect(text()).not.toContain('Agent:');
+    });
+
     it('/export rejects a format it cannot produce', async () => {
       const { term, text } = mount({ features: {} });
       await term.submit('/export csv');

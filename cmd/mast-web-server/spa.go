@@ -21,20 +21,28 @@ import (
 	"strings"
 )
 
-// spaHandler serves the SPA from staticFS. Unknown paths without a
-// file extension fall back to index.html so a hypothetical SPA with
-// client-side routing still lands on the shell; known assets that
+// spaHandler serves the web tree from staticFS. There is no single
+// shell document to route to: since #61 the entry points are
+// solo.html and spatial.html, and web/index.html is a 37-line
+// redirect that picks between them. Unknown paths without a file
+// extension fall back to "/" — and so to that redirect — rather than
+// 404ing on what looks like a client-side route; known assets that
 // don't exist 404 cleanly through http.FileServer.
+//
+// "/" is served by http.FileServer's own index.html lookup rather than
+// by a rewrite here, because the tarball and static-host deployment
+// shapes have no Go server to rewrite with. The chooser has to be a
+// real file with that name for those to work at all.
 //
 // Also disables browser caching so a dev iterating on web/*.js with
 // --web-dir sees reloads pick up edits without a hard-reload dance.
 // Production containers ship a versioned tag so cache-busting isn't
 // needed at the CDN layer either.
 //
-// Security headers: web/index.html carries a <meta> CSP so the policy
-// travels with the tarball / static-host deployment shapes too, but
-// browsers ignore frame-ancestors (and sandbox / report-uri) in meta.
-// Those only bind as real headers, so anti-framing is set here.
+// Security headers: every document under web/ carries its own <meta>
+// CSP so the policy travels with the tarball / static-host shapes too,
+// but browsers ignore frame-ancestors (and sandbox / report-uri) in
+// meta. Those only bind as real headers, so anti-framing is set here.
 func spaHandler(staticFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(staticFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

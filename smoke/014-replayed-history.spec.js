@@ -39,7 +39,7 @@
 //     prompt there is, so it is drawn as the operator typed it.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock, openSpatialSession, openSoloSession } from './helpers.js';
+import { openSpatialSession, openSoloSession } from './helpers.js';
 
 const FIXTURE = '010-attach-mid-session';
 
@@ -118,28 +118,17 @@ async function expectShowEarlier(rows) {
 }
 
 test.describe('smoke: 014-replayed-history', () => {
-  test('classic shell draws the replayed transcript', async ({ page }) => {
-    await connectToMock(page, FIXTURE);
-    const rows = page.locator('#output-area');
-    await expectHistoryOnAttach(rows);
-    await expectWireTimestamps(rows);
-
-    // Below the boot banner — that is this view's furniture, not
-    // something the session said.
-    await expect(page.locator('#output-area > .boot-banner + .replay-history')).toHaveCount(1);
-  });
-
-  test('classic shell hands back older turns on request', async ({ page }) => {
-    await connectToMock(page, FIXTURE);
-    await expectShowEarlier(page.locator('#output-area'));
-  });
-
-  test('classic shell hands back older turns on scrolling to the top', async ({ page }) => {
+  // The scroll gesture ran against index.html until #61 deleted it.
+  // terminal.js has the same listener — and the same two guards, which
+  // are the only interesting part — so it moves here rather than going
+  // away. The solo shell because it is where `/` lands.
+  test('solo shell hands back older turns on scrolling to the top', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await connectToMock(page, FIXTURE);
-    const block = page.locator('#output-area .replay-history');
+    const screen = await openSoloSession(page, FIXTURE);
+    const out = screen.locator('.term-out');
+    const block = out.locator('.replay-history');
     const scrollTo = (top) =>
-      page.locator('#output-area').evaluate((el, y) => {
+      out.evaluate((el, y) => {
         el.scrollTop = y === 'bottom' ? el.scrollHeight : y;
         el.dispatchEvent(new Event('scroll'));
       }, top);
@@ -155,9 +144,7 @@ test.describe('smoke: 014-replayed-history', () => {
     // to travel to — arriving there is the same request as pressing the
     // button.
     await page.setViewportSize({ width: 1280, height: 320 });
-    await expect
-      .poll(() => page.locator('#output-area').evaluate((el) => el.scrollHeight > el.clientHeight))
-      .toBe(true);
+    await expect.poll(() => out.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
     // Settle at the bottom first, where a fresh attach leaves you: the
     // resize itself moves the transcript, and that move is not the
     // gesture either.

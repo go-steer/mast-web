@@ -161,7 +161,7 @@ describe('AttachCoreProtocol', () => {
       // A producer that predates a flag stays silent about it. Reading
       // that silence as "off" would switch off working features on
       // every older backend each time the spec grows one — and it is
-      // what the shells already assume (app.js reads absent as on).
+      // what the shells already assume: absent reads as on.
       expect(AttachCoreProtocol.hasFeature({ features: { pause: true } }, 'guardrails')).toBe(true);
       expect(AttachCoreProtocol.hasFeature({ protocol_version: '1.2.0' }, 'pause')).toBe(true);
       expect(AttachCoreProtocol.hasFeature(null, 'pause')).toBe(true);

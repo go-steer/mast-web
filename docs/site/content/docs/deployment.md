@@ -20,7 +20,8 @@ only real decision.
 
 ### Cross-origin is not a supported shape
 
-`--mode=static` points the SPA at a backend URL you type into the setup modal. Against the
+`--mode=static` points the SPA at a backend URL you type into the sidebar's attach form
+(or hand to `/attach`). Against the
 bundled mock that works. Against a real `core-agent` / `mast` backend it **cannot** work:
 neither backend emits any `Access-Control-Allow-*` header, and neither has an `OPTIONS`
 handler, so the browser blocks every response — including `GET /sessions`. Use a loopback
@@ -203,13 +204,10 @@ response for another.
 
 #### What the SPA does with it
 
-Every shell asks once at boot, before anything else. In **proxy mode** it attaches to
-`api_prefix` — so a hosted install has no first-run step at all: no setup modal in the
-classic shell, no `/attach` to type into the 3D shells' sidebar form, and the caller's
-name is on screen from the first request rather than after the first backend frame.
-The token box is hidden when `auth.mode` is anything but `none`, because the proxy
-strips `Authorization` and `X-Attach-Token` off everything it forwards and a token
-typed there would be scrubbed in flight.
+Both shells ask once at boot, before anything else. In **proxy mode** it attaches to
+`api_prefix` — so a hosted install has no first-run step at all: nothing to type into
+the sidebar's `/attach` form, and the caller's name is on screen from the first request
+rather than after the first backend frame.
 
 In **mock** and **static** mode nothing is discovered and nothing changes: mock already
 defaults to the origin root, and static reports no prefix on purpose — there the
@@ -220,7 +218,9 @@ The reverse also holds: a discovered endpoint is never written to `localStorage`
 is re-derived on every boot and a redeployment under a different prefix takes effect on
 reload rather than becoming a stale row with no way to edit it. A `404`, a login page,
 or a stalled request all fall back to today's behaviour — the SPA asks the operator.
-A `401` is the one answer with its own message: the session expired, reload to sign in.
+A `401` is the one answer with its own message: every sidebar row says the session
+expired and to reload, and that notice does not time out the way the transient ones do —
+the condition does not stop being true while you are reading it.
 
 ---
 

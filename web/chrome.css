@@ -418,6 +418,69 @@ body.side-hidden #app-sidebar {
   color: var(--accent);
 }
 
+/* The rest of the bar is context for the front terminal, not the
+   headline, so it stays at --text-dim and lets those two carry the
+   accent. Only the two counted facts light up. */
+#status-focus {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.status-focus-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The one dot on the bar, and it belongs to the terminal in front.
+   Same four states, same colours and same halo as the sidebar's
+   per-daemon dot — a dot that means "up" in one place and something
+   else six pixels lower would be worse than no dot. */
+.status-conn {
+  font-size: 7px;
+  line-height: 1;
+  color: var(--text-dim);
+  flex: none;
+}
+
+.status-conn[data-state='connected'] {
+  color: var(--green);
+  text-shadow: 0 0 7px var(--green);
+}
+
+.status-conn[data-state='connecting'] {
+  color: var(--yellow);
+}
+
+.status-conn[data-state='terminal'] {
+  color: var(--red);
+}
+
+/* A turn in flight somewhere in the window. Accent rather than green:
+   green is "the wire is up", which is a different question and is
+   already answered one slot along. */
+.status-live {
+  color: var(--accent);
+}
+
+.status-bad {
+  color: var(--red);
+}
+
+/* Dimmer than the rest of the bar until it is worth reading. Cost is
+   the number you want to be able to find without it being the number
+   you keep noticing. */
+#status-cost {
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+#status-clock {
+  font-variant-numeric: tabular-nums;
+}
+
 .hud-btn {
   font-family: inherit;
   font-size: 10px;

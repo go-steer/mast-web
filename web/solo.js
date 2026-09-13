@@ -42,11 +42,8 @@
   const body = document.getElementById('solo-body');
   const empty = document.getElementById('solo-empty');
   const tabStrip = document.getElementById('solo-tabs');
-  const hudCount = document.getElementById('hud-count');
   const hudIdentity = document.getElementById('hud-identity');
   const hudIdentitySep = document.getElementById('hud-identity-sep');
-  const statusFocus = document.getElementById('status-focus');
-  const statusClock = document.getElementById('status-clock');
   const daemonList = document.getElementById('daemon-list');
 
   // The same four slots the room hands its panels, in the same order,
@@ -86,8 +83,6 @@
     panel.classList.toggle('panel-dead', !!t && t.dead);
     panel.classList.toggle('panel-busy', !!t && t.term.state.running);
     empty.hidden = !!t;
-    statusFocus.textContent = 'active: ' + (t ? t.title : '—');
-    hudCount.textContent = tabs.size === 1 ? '1 session' : tabs.size + ' sessions';
     // The identity belongs to the active tab, not to the shell: tabs
     // can sit on different daemons, and the operator is not
     // necessarily the same principal on each.
@@ -141,6 +136,11 @@
     paintFrame();
     renderTabs();
     agents.render();
+    // render(), not sync(): repaint runs from a terminal's onChange, and
+    // re-subscribing from inside a notification is how a subscriber list
+    // gets edited while it is being walked. sync() belongs at the two
+    // places the set of tabs actually changes.
+    status.render();
   }
 
   // ─── Tabs ──────────────────────────────────────────────────────────
@@ -230,6 +230,7 @@
       closing: false,
     };
     tabs.set(key, t);
+    status.sync();
 
     term.el.hidden = true;
     body.appendChild(term.el);
@@ -269,6 +270,7 @@
     const at = order.indexOf(t);
     t.term.destroy();
     tabs.delete(t.key);
+    status.sync();
     if (selected === t) {
       selected = null;
       const next = order[at + 1] || order[at - 1] || null;
@@ -414,6 +416,31 @@
     },
   });
 
+  // ─── Status bar ────────────────────────────────────────────────────
+  // Window-level state along the bottom edge: agents attached, tabs
+  // open, what they have cost between them, and which one is in front.
+  // It reads the tab's own title rather than the session id, because
+  // that is the string the tab strip two feet above it is showing.
+
+  const status = window.MastStatusBar.create({
+    el: document.getElementById('app-status'),
+    registry: agents.registry,
+    terminals: function () {
+      return Array.from(tabs.values()).map(function (t) {
+        return t.term;
+      });
+    },
+    activeTerminal: function () {
+      return selected ? selected.term : null;
+    },
+    label: function (term) {
+      const t = Array.from(tabs.values()).find(function (x) {
+        return x.term === term;
+      });
+      return t ? t.title : '—';
+    },
+  });
+
   // ─── Shell ─────────────────────────────────────────────────────────
   // The window's own commands and overlays. It is handed the tab in
   // front rather than a fixed terminal: /theme typed in one tab and
@@ -492,10 +519,6 @@
     }
   });
 
-  window.setInterval(function () {
-    statusClock.textContent = new Date().toLocaleTimeString('en-GB');
-  }, 1000);
-
   window.addEventListener('resize', function () {
     if (selected) selected.term.reflow();
   });
@@ -548,5 +571,6 @@
     },
     refreshAll: agents.refreshAll,
     stage: stage,
+    status: status,
   };
 })();

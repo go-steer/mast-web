@@ -37,8 +37,10 @@
       <span class="hud-brand">⟨m⟩ast</span>
       <span class="hud-sep">//</span>
       <span class="hud-item">SOLO_SHELL v0.1</span>
-      <span class="hud-sep">|</span>
-      <span class="hud-item" id="hud-count">0 sessions</span>
+      <!-- The open-tab count used to sit here. It is in the status bar
+           now, next to how many of them are mid-turn and what they have
+           cost — one readout in one place beats the same number twice
+           at opposite edges of the window. -->
       <!-- Who the active session's backend resolved this caller to.
            Hidden until /whoami answers: an empty identity slot reads
            as "signed out", which is the one thing it never means. -->
@@ -114,17 +116,11 @@
     <div id="scene-scanlines" aria-hidden="true"></div>
     <div id="scene-vignette" aria-hidden="true"></div>
 
-    <footer id="app-status">
-      <span class="status-item" id="status-focus">active: —</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">alt+1…9: tab</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">alt+[ / ]: step</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">alt+w: close</span>
-      <span class="hud-spacer"></span>
-      <span class="status-item" id="status-clock">--:--:--</span>
-    </footer>
+    <!-- Filled by status-bar.js, which builds its own slots — see the
+         note there. It used to be three keyboard hints and a clock; the
+         keys are in the sidebar hint above and in the shortcuts overlay,
+         and a status bar should be reporting state. -->
+    <footer id="app-status"></footer>
 
     <!-- Markdown + syntax highlighting, vendored at exact versions and
          shared byte-for-byte with the other shells. See
@@ -149,6 +145,7 @@
     <script src="terminal.js"></script>
     <script src="theme.js"></script>
     <script src="daemon-sidebar.js"></script>
+    <script src="status-bar.js"></script>
     <script src="shell.js"></script>
     <script src="solo.js"></script>
   </body>

@@ -42,12 +42,9 @@
   const world = document.getElementById('scene-world');
   const viewport = document.getElementById('scene-viewport');
   const floor = document.getElementById('grid-floor');
-  const hudPanels = document.getElementById('hud-panels');
   const hudCamera = document.getElementById('hud-camera');
   const hudIdentity = document.getElementById('hud-identity');
   const hudIdentitySep = document.getElementById('hud-identity-sep');
-  const statusFocus = document.getElementById('status-focus');
-  const statusClock = document.getElementById('status-clock');
   const daemonList = document.getElementById('daemon-list');
   const sidebar = document.getElementById('app-sidebar');
   // Up here with the rest of the lookups rather than down in the radar
@@ -446,7 +443,7 @@
     active = p;
     if (!p) {
       document.body.classList.remove('has-active');
-      statusFocus.textContent = 'active: —';
+      status.render();
       updateIdentity();
       updateSidebar();
       saveWorkspace();
@@ -461,7 +458,9 @@
     settle(p, fromX);
     updateCast(p);
     document.body.classList.add('has-active');
-    statusFocus.textContent = 'active: ' + p.title;
+    // Which panel is in front is the one thing the status bar cannot
+    // hear from a terminal — no store changes when focus moves.
+    status.render();
     updateIdentity();
     sound('focus');
     // The size change animates; pin the transcript to the bottom once
@@ -484,7 +483,7 @@
     if (active === p) {
       active = null;
       document.body.classList.remove('has-active');
-      statusFocus.textContent = 'active: —';
+      status.render();
       updateIdentity();
     }
     place(p);
@@ -692,7 +691,9 @@
     place(p);
     updateCast(p);
     panels.set(key, p);
-    updateCount();
+    // sync(), not render(): the bar subscribes per terminal, and this
+    // is one it has never seen.
+    status.sync();
 
     const buttons = controls.querySelectorAll('.panel-ctl');
     buttons[0].addEventListener('click', function (e) {
@@ -782,21 +783,15 @@
     if (active === p) {
       active = null;
       document.body.classList.remove('has-active');
-      statusFocus.textContent = 'active: —';
     }
     panels.delete(p.key);
-    updateCount();
+    status.sync();
     updateIdentity();
     updateSidebar();
     saveWorkspace();
     window.setTimeout(function () {
       p.el.remove();
     }, 320);
-  }
-
-  function updateCount() {
-    const n = panels.size;
-    hudPanels.textContent = n + (n === 1 ? ' terminal' : ' terminals');
   }
 
   // The identity belongs to the focused panel, not to the room: panels
@@ -1290,6 +1285,34 @@
     agents.render();
   }
 
+  // ─── Status bar ───────────────────────────────────────────────────
+  // Window-level state along the bottom edge: agents attached, panels
+  // open, what they have cost between them, and which one is at the
+  // stage centre. Shared with solo.html, which is the point — the room
+  // and the flat shell hold the same fleet and owe the same answers.
+  //
+  // It reads the panel's title rather than the session id, because
+  // that is the string on the panel's own title bar.
+
+  const status = window.MastStatusBar.create({
+    el: document.getElementById('app-status'),
+    registry: agents.registry,
+    terminals: function () {
+      return Array.from(panels.values()).map(function (p) {
+        return p.term;
+      });
+    },
+    activeTerminal: function () {
+      return active ? active.term : null;
+    },
+    label: function (term) {
+      const p = Array.from(panels.values()).find(function (x) {
+        return x.term === term;
+      });
+      return p ? p.title : '—';
+    },
+  });
+
   // ─── Shell ────────────────────────────────────────────────────────
   // The window's own commands and overlays — palette, session picker,
   // shortcuts, batch runner. It is handed the panel at the stage centre
@@ -1383,10 +1406,6 @@
     agents.refresh(d);
   });
 
-  window.setInterval(function () {
-    statusClock.textContent = new Date().toLocaleTimeString('en-GB');
-  }, 1000);
-
   window.addEventListener('resize', function () {
     applyCamera();
     if (active) {
@@ -1431,7 +1450,6 @@
 
   restoreCamera();
   applyCamera();
-  updateCount();
   // Panels come back from inside the module's refresh, via
   // onRefreshed → restoreInto, as soon as a daemon reports which
   // sessions still exist.
@@ -1459,6 +1477,7 @@
     },
     registry: agents.registry,
     shell: shell,
+    status: status,
     open: openTerminal,
     openAll: openAll,
     activate: activate,

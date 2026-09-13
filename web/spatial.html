@@ -46,7 +46,7 @@
     <div id="scene-scanlines" aria-hidden="true"></div>
     <div id="scene-vignette" aria-hidden="true"></div>
 
-    <header id="spatial-hud">
+    <header id="app-hud">
       <button type="button" class="hud-btn hud-toggle" id="btn-sidebar" title="Toggle agent list">
         ☰
       </button>
@@ -90,7 +90,7 @@
 
     <!-- Agent / session picker. Every row is one attach-protocol
          session; clicking one opens (or re-centers) its terminal. -->
-    <aside id="spatial-sidebar" aria-label="Agents and sessions">
+    <aside id="app-sidebar" aria-label="Agents and sessions">
       <div class="side-head">
         <span class="side-title">AGENTS</span>
         <button type="button" class="side-icon" id="btn-refresh" title="Re-list sessions">↻</button>
@@ -122,7 +122,7 @@
       <div class="radar-eye"></div>
     </div>
 
-    <footer id="spatial-status">
+    <footer id="app-status">
       <span class="status-item" id="status-focus">active: —</span>
       <span class="hud-sep">|</span>
       <span class="status-item">click panel: focus</span>

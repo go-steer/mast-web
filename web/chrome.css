@@ -55,10 +55,12 @@ body.solo {
 }
 
 /* ─── Sidebar ────────────────────────────────────────────────────────
-   The agent list. Sits over the scene rather than in it — a picker
-   that drifted in 3D would be a cruel joke. */
+   The agent list. In the room it sits over the scene rather than in it
+   — a picker that drifted in 3D would be a cruel joke — and in solo it
+   is simply the left column. Same 236px either way; solo.css insets
+   #solo-stage by it. */
 
-#spatial-sidebar {
+#app-sidebar {
   position: absolute;
   left: 0;
   top: 34px;
@@ -79,8 +81,11 @@ body.solo {
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-body.spatial.side-hidden #spatial-sidebar,
-body.solo.side-hidden #spatial-sidebar {
+/* Was an enumeration of the two shells when this rule lived in
+   spatial.css and had to name the bodies it meant. It doesn't any
+   more — .side-hidden is on <body> or it isn't, and both shells put it
+   there the same way (solo.js:446, spatial.js:1349). */
+body.side-hidden #app-sidebar {
   transform: translateX(-101%);
 }
 
@@ -353,8 +358,8 @@ body.solo.side-hidden #spatial-sidebar {
 
 /* ─── HUD + status bar ───────────────────────────────────────────── */
 
-#spatial-hud,
-#spatial-status {
+#app-hud,
+#app-status {
   position: absolute;
   left: 0;
   right: 0;
@@ -369,13 +374,13 @@ body.solo.side-hidden #spatial-sidebar {
   color: var(--text-dim);
 }
 
-#spatial-hud {
+#app-hud {
   top: 0;
   border-bottom: 1px solid var(--frame);
   box-shadow: 0 6px 22px -18px var(--glow);
 }
 
-#spatial-status {
+#app-status {
   bottom: 0;
   border-top: 1px solid var(--frame);
   box-shadow: 0 -6px 22px -18px var(--glow);
@@ -387,7 +392,7 @@ body.solo.side-hidden #spatial-sidebar {
    Themes that don't have one leave --brand-image at `none`, which makes
    background-clip a no-op and falls back to a plain accent-colored
    word. */
-#spatial-hud .hud-brand {
+#app-hud .hud-brand {
   font-size: 13px;
   background-image: var(--brand-image);
   background-clip: text;
@@ -455,7 +460,7 @@ body.solo.side-hidden #spatial-sidebar {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #spatial-sidebar {
+  #app-sidebar {
     transition: none;
   }
 }

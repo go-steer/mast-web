@@ -52,7 +52,7 @@ test.describe('smoke: 018-shell-entry', () => {
   test('?shell= wins, and does not re-home the person who followed it', async ({ page }) => {
     await page.goto('/?shell=spatial');
     await expect(page).toHaveURL(/\/spatial\.html$/);
-    await expect(page.locator('#spatial-hud')).toBeVisible();
+    await expect(page.locator('#app-hud')).toBeVisible();
 
     // Sending someone a link to the room is not a decision about where
     // they work. Nothing was written, so `/` still means solo.

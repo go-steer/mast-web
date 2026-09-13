@@ -49,7 +49,7 @@
   const statusFocus = document.getElementById('status-focus');
   const statusClock = document.getElementById('status-clock');
   const daemonList = document.getElementById('daemon-list');
-  const sidebar = document.getElementById('spatial-sidebar');
+  const sidebar = document.getElementById('app-sidebar');
   // Up here with the rest of the lookups rather than down in the radar
   // section: applyCamera() writes the heading, and it runs during init
   // before that section's declarations would have been evaluated.

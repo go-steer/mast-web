@@ -39,7 +39,7 @@
  */
 
 /* The stage is inset by the HUD, the status bar and the sidebar. Same
-   numbers as chrome.css gives #spatial-sidebar for top/bottom/width, so
+   numbers as chrome.css gives #app-sidebar for top/bottom/width, so
    the two shells frame their content identically. */
 body.solo {
   --stage-left: 236px;

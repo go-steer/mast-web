@@ -339,21 +339,142 @@ body.side-hidden #app-sidebar {
 }
 
 /* ─── Batch drawer ───────────────────────────────────────────────────
-   shell.js builds the panel; styles.css styles its insides. Only the
-   outer frame differs here, and it has to: the base rule is still
-   shaped for the classic shell, where #batch-panel was a flex child of
-   the document and `border-top` put it under the transcript. Neither
-   surviving shell has that column — the room and the tab strip fill
-   the viewport — so it becomes a drawer pinned to the bottom edge, over
-   everything except the modals (z-index 100) it can be opened from. */
+   shell.js builds it; both shells can open it. It lived in two sheets
+   until now — the insides in styles.css, an outer-frame override here —
+   because the base rule was shaped for the classic shell, where
+   #batch-panel was a flex child of the document and `border-top` put it
+   under the transcript. Neither surviving shell has that column, so the
+   override turned it into a pinned drawer and the two rules disagreed
+   about what it was. With the classic shell gone (#61) there is nothing
+   left to disagree with: the frame is folded into the base rule and the
+   whole thing is here, with the rest of the furniture.
+
+   Pinned to the bottom edge, over everything except the modals
+   (z-index 100) it can be opened from. */
 #batch-panel {
+  display: none;
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 60;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow: hidden;
+  background: var(--bg-surface);
   border-top: 1px solid var(--accent);
   box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+}
+
+#batch-panel.open {
+  display: flex;
+}
+
+#batch-panel .batch-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+#batch-panel .batch-header h3 {
+  font-size: 13px;
+  color: var(--accent);
+}
+
+#batch-input {
+  width: 100%;
+  min-height: 100px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+  margin: 8px 16px;
+  outline: none;
+}
+
+#batch-results {
+  overflow: auto;
+  flex: 1;
+  padding: 0 16px 8px;
+}
+
+#batch-progress {
+  padding: 4px 16px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+#batch-progress-text {
+  margin-bottom: 4px;
+}
+
+#batch-progress-bar {
+  height: 3px;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#batch-progress-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  transition: width 200ms ease-out;
+}
+
+#batch-results table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+#batch-results th,
+#batch-results td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+#batch-results th {
+  color: var(--text-dim);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#batch-results th:hover {
+  color: var(--accent);
+}
+
+.batch-actions {
+  padding: 8px 16px;
+  display: flex;
+  gap: 8px;
+}
+
+.batch-actions button {
+  padding: 4px 12px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.batch-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ─── HUD + status bar ───────────────────────────────────────────── */
@@ -408,6 +529,11 @@ body.side-hidden #app-sidebar {
   flex: 1;
 }
 
+/* styles.css also carried a `.status-item { display: flex }` — the
+   classic shell's status bar, left behind when that shell went (#61)
+   and inherited by accident when this one took the class name over. It
+   put a flex gap either side of the "· N down" suffix, which already
+   has its own spaces. Deleted there; a status slot is a run of text. */
 .hud-item,
 .status-item {
   white-space: nowrap;

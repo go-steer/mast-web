@@ -37,11 +37,16 @@ test.describe('smoke: 018-shell-entry', () => {
 
   // replace(), not assign(): a chooser left in history is a back button
   // that bounces straight forward again.
+  //
+  // Needs a real page ahead of `/` for back to have anywhere to go —
+  // every context starts on a blank tab, and landing there would pass
+  // this test for the wrong reason.
   test('the chooser leaves no history entry to go back to', async ({ page }) => {
+    await page.goto('/spatial.html');
     await page.goto('/');
     await expect(page).toHaveURL(/\/solo\.html$/);
     await page.goBack();
-    await expect(page).toHaveURL(/\/solo\.html$/);
+    await expect(page).toHaveURL(/\/spatial\.html$/);
   });
 
   test('?shell= wins, and does not re-home the person who followed it', async ({ page }) => {

@@ -928,9 +928,10 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
 }
 
 /* ─── Terminal (terminal.js) ─────────────────────────────────────────
-   The panel-scale restatement of index.html's #screen / #input-area /
-   #status-bar. Those are ID-scoped in styles.css and inherently
-   single-instance; these are classes, so N of them coexist. */
+   The panel-scale restatement of the classic shell's screen, input bar
+   and status bar. Those were ID-scoped and inherently single-instance,
+   which is why they went with index.html in #61; these are classes, so
+   N of them coexist. */
 
 .term {
   flex: 1;
@@ -1005,7 +1006,24 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
   overflow: auto;
 }
 
-/* Permission request card. app.js puts this in a modal; a workspace
+/* "You are watching, not driving." Sticky rather than scrolled with
+   the transcript: the classic shell appended it as an ordinary system
+   row and it left the screen after a page of output, which is about
+   when it starts mattering. Yellow because it is a caveat, not a
+   failure — the stream is working exactly as intended. */
+.term .term-observer {
+  position: sticky;
+  top: -8px; /* cancels .term-out's padding, so it sits flush */
+  z-index: 2;
+  margin: -8px -11px 4px;
+  padding: 4px 11px;
+  border-bottom: 1px solid var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 14%, var(--bg));
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* Permission request card. app.js put this in a modal; a workspace
    answers it inline, in the panel that raised it — see terminal.js.
    Bordered in the panel's own hue so a request reads as belonging to
    one terminal even when the room is full of them. */

@@ -69,19 +69,19 @@ func TestSPAHandler_FallsBackToIndexForUnknownRoutes(t *testing.T) {
 func TestSPAHandler_ServesNamedAssets(t *testing.T) {
 	fs := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<html>root</html>")},
-		"app.js":     &fstest.MapFile{Data: []byte("console.log('hi');")},
+		"solo.js":    &fstest.MapFile{Data: []byte("console.log('hi');")},
 	}
 	srv := httptest.NewServer(spaHandler(fs))
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/app.js")
+	resp, err := http.Get(srv.URL + "/solo.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "console.log") {
-		t.Fatalf("want app.js body, got %q", string(body))
+		t.Fatalf("want solo.js body, got %q", string(body))
 	}
 }
 

@@ -41,7 +41,7 @@
 //            has to hit turn 3 without restamping turn 2.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock, openSpatialSession } from './helpers.js';
+import { openSpatialSession } from './helpers.js';
 
 const FIXTURE = '008-usage-before-turn-complete';
 
@@ -60,12 +60,10 @@ async function expectPerTurnCosts(root) {
   await expect(root.locator('.turn-footer', { hasText: '$0.000923' })).toHaveCount(1);
 }
 
+// One shell, for the reason given in 010: the classic half of this pair
+// tested a second renderer that #61 deleted, and the two that survive
+// share terminal.js.
 test.describe('smoke: 011-turn-cost-ordering', () => {
-  test('classic shell footers claim the cost that arrived early', async ({ page }) => {
-    await connectToMock(page, FIXTURE);
-    await expectPerTurnCosts(page.locator('#output-area'));
-  });
-
   test('spatial shell footers claim the cost that arrived early', async ({ page }) => {
     const screen = await openSpatialSession(page, FIXTURE);
     await expectPerTurnCosts(screen);

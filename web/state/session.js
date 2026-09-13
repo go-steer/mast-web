@@ -35,8 +35,9 @@
 //
 // This was a singleton through v0.3.0, which was the right shape for a
 // shell with one session on screen and the wrong shape for a room with
-// four. `createSession()` is the factory; `MastState.session` is one
-// instance of it, the one the classic shell holds. Each terminal in
+// four. `createSession()` is the factory, and it is the only export:
+// the shared `MastState.session` instance existed for app.js, which
+// predated the factory, and went with it in #61. Each terminal in
 // spatial.html / solo.html holds its own.
 //
 // That is what makes per-terminal state observable from outside the
@@ -407,7 +408,3 @@ window.MastState.createSession = (function () {
 
   return createSession;
 })();
-
-// The classic shell's instance. app.js reaches for MastState.session
-// directly and predates the factory; it goes away with index.html.
-window.MastState.session = window.MastState.createSession();

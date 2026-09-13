@@ -21,21 +21,25 @@
 // fixture is agent-authored, so nothing exercised the author field
 // until the rig ran against a real core-agent. The wire shape here is
 // copied from one.
+//
+// 007 is the spatial twin. This half ran against index.html until #61
+// deleted it, and now runs against the solo shell — the two surviving
+// shells mount the same terminal.js, so between them the renderer is
+// covered in both the room and the flat frame.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock } from './helpers.js';
+import { openSoloSession } from './helpers.js';
 
 test.describe('smoke: 006-prompt-echo-user-authored', () => {
   test('the model reply renders and the prompt echo does not', async ({ page }) => {
-    await connectToMock(page, '006-prompt-echo-user-authored');
+    const screen = await openSoloSession(page, '006-prompt-echo-user-authored');
 
-    const output = page.locator('#output-area');
-    await expect(output).toContainText('Quite a lot, actually.');
+    await expect(screen).toContainText('Quite a lot, actually.');
 
     // The user-authored frame carries "[Inbox]" — a marker no
     // agent-authored frame in any fixture emits, so its absence is
     // specific to this filter rather than to the transcript being
     // empty. The assertion above proves the stream was consumed.
-    await expect(output).not.toContainText('[Inbox]');
+    await expect(screen).not.toContainText('[Inbox]');
   });
 });

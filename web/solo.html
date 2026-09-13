@@ -4,9 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mast-web // solo</title>
-    <!-- Same policy as index.html and spatial.html, for the same
-         reason: this page holds agent credentials in localStorage, so
-         any injected script is a credential-exfiltration path.
+    <!-- Same policy as spatial.html, for the same reason: this page
+         holds agent credentials in localStorage, so any injected
+         script is a credential-exfiltration path. (index.html runs a
+         stricter one — it is a redirect with no network to reach.)
          Everything it loads is same-origin (see web/vendor/), so
          script-src can be a flat 'self'. Kept verbatim rather than
          factored out — each shell is a separate entry point and a
@@ -45,7 +46,16 @@
       <!-- Options are filled in by theme.js, against the same storage
            key the other shells use. -->
       <select class="hud-btn" id="hud-theme" title="Theme" aria-label="Theme"></select>
-      <a class="hud-btn" id="btn-room" href="spatial.html" title="Open the 3D workspace">room ↗</a>
+      <!-- data-shell is what makes the trip stick: shell.js records it
+           so `/` opens the room next time (v0.4 plan §1). -->
+      <a
+        class="hud-btn"
+        id="btn-room"
+        href="spatial.html"
+        data-shell="spatial"
+        title="Open the 3D workspace"
+        >room ↗</a
+      >
     </header>
 
     <!-- Agent / session picker. Same markup and same module as
@@ -127,8 +137,8 @@
     <script src="attach-core/replay.js"></script>
     <script src="attach-core/prompter.js"></script>
     <script src="attach-core/client.js"></script>
-    <!-- state/: per-terminal store instances, same files index.html
-         loads. See the note in spatial.html. -->
+    <!-- state/: per-terminal store instances. See the note in
+         spatial.html. -->
     <script src="state/subscriptions.js"></script>
     <script src="state/session.js"></script>
     <script src="state/connection.js"></script>

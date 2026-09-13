@@ -38,7 +38,7 @@
 // transcript that reads reply/reply/footer/footer.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock, openSpatialSession, openSoloSession } from './helpers.js';
+import { openSpatialSession, openSoloSession } from './helpers.js';
 
 const FIXTURE = '009-turn-complete-before-final-frame';
 
@@ -80,11 +80,6 @@ async function expectFooterUnderItsReply(rows) {
 }
 
 test.describe('smoke: 013-turn-footer-order', () => {
-  test('classic shell stamps the footer after the reply', async ({ page }) => {
-    await connectToMock(page, FIXTURE);
-    await expectFooterUnderItsReply(page.locator('#output-area'));
-  });
-
   test('spatial shell stamps the footer after the reply', async ({ page }) => {
     const screen = await openSpatialSession(page, FIXTURE);
     await expectFooterUnderItsReply(screen.locator('.term-out'));

@@ -4,286 +4,44 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mast-web</title>
-    <!-- Everything the page loads is same-origin (see web/vendor/), so the
-         policy can be flat 'self'. This matters more than usual here: agent
-         credentials live in localStorage on this origin in non-hosted mode,
-         so any injected script is a credential-exfiltration path. Declared
-         as a meta tag rather than a server header because the SPA also ships
-         as a tarball / static-host bundle with no Go server in the loop.
-         'unsafe-inline' for style-src only — the app sets el.style.* in
-         several render paths; no inline <script> is used.
+    <!-- This document used to be the console. As of v0.4 it is a
+         doormat: shell-select.js reads ?shell=, then the stored
+         preference, then defaults to solo, and replaces this page with
+         one of the two real entry points.
 
-         connect-src stays open to http:/https: because --mode=static lets
-         the operator point the SPA at an arbitrary backend URL; the
-         load-bearing directive here is script-src 'self'.
+         The file keeps the name because `/` has to answer. A static
+         host serving the tarball has no Go server to rewrite with, and
+         a directory without an index is a listing or a 403 — neither of
+         which is a console.
 
-         frame-ancestors is deliberately absent: browsers ignore it (and
-         sandbox / report-uri) in a meta tag. Anti-framing is set as a real
-         header by cmd/mast-web-server/spa.go; operators self-hosting the
-         tarball must set it at their own web server. -->
+         Same CSP as the shells, minus what a page with no backend needs:
+         no connect-src beyond 'self', no fonts, no images. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'"
     />
-    <link rel="stylesheet" href="styles.css" />
-    <link rel="stylesheet" href="vendor/highlight-github-dark-11.12.0.min.css" />
+    <script src="shell-select.js"></script>
   </head>
   <body>
-    <div id="sidebar">
-      <div class="sidebar-logo" aria-label="mast">
-        <span class="logo-mark">⟨m⟩</span><span class="logo-name">ast</span
-        ><span class="logo-cursor"></span>
-      </div>
-
-      <div class="sidebar-section" id="section-backend">
-        <h3>Backend</h3>
-        <div id="backend-info">Not connected</div>
-        <div id="agent-info" hidden></div>
-      </div>
-
-      <div class="sidebar-section" id="section-model">
-        <h3>Model</h3>
-        <select id="model-select"></select>
-      </div>
-
-      <div class="sidebar-section" id="section-sessions">
-        <h3>Sessions</h3>
-        <div id="session-list"></div>
-        <button class="sidebar-btn" id="new-session-btn">New Session</button>
-      </div>
-
-      <div class="sidebar-section" id="section-mcp">
-        <h3>MCP Servers</h3>
-        <div id="server-list"></div>
-      </div>
-
-      <div class="sidebar-section" id="section-specialists">
-        <h3>Specialists</h3>
-        <div id="specialist-list"></div>
-      </div>
-
-      <div class="sidebar-section" id="section-identity">
-        <h3>Identity</h3>
-        <div id="identity-info">Not connected</div>
-      </div>
-
-      <div class="sidebar-section" id="section-actions">
-        <h3>Actions</h3>
-        <button class="sidebar-btn" id="export-btn">Export Session</button>
-      </div>
-    </div>
-
-    <div id="main">
-      <!-- HUD strip — the "who am I talking to" line. Identity only;
-           live telemetry (turns / cost / elapsed) stays on #status-bar
-           at the bottom so the two never fight for the same facts.
-           Values are written by app.js (renderHUD). -->
-      <div id="chat-header">
-        <span class="hud-brand">⟨m⟩ast</span>
-        <span class="hud-sep">│</span>
-        <span class="hud-item">
-          <span class="hud-key">AGENT:</span> <span class="hud-val" id="hud-agent">—</span>
-        </span>
-        <span class="hud-sep">│</span>
-        <span class="hud-item">
-          <span class="hud-key">STATUS:</span>
-          <span class="hud-val" id="hud-status">OFFLINE</span>
-          <span class="hud-dot" id="hud-dot"></span>
-        </span>
-        <span class="hud-sep">│</span>
-        <span class="hud-item">
-          <span class="hud-key">CONTEXT:</span> <span class="hud-val" id="hud-context">[none]</span>
-        </span>
-        <span class="hud-item hud-right" id="hud-activity">IDLE</span>
-      </div>
-
-      <!-- Framed "screen". #screen owns the border + glow + scanline
-           overlay; #output-area is the scrolling transcript inside it. -->
-      <div id="screen">
-        <div id="output-area">
-          <pre class="boot-banner" aria-label="mast-web">
-<span class="boot-art">█▀▄▀█ ▄▀█ █▀ ▀█▀
-█ ▀ █ █▀█ ▄█  █ </span>  <span class="boot-tag">terminal for the agentic era</span>
-
-<span class="boot-dim">attach-protocol client · type a prompt · /help for commands · ctrl+/ for keys</span></pre>
-        </div>
-      </div>
-
-      <div id="batch-panel">
-        <div class="batch-header">
-          <h3>Batch Run</h3>
-          <button
-            id="batch-close"
-            style="
-              background: none;
-              border: none;
-              color: var(--text-dim);
-              cursor: pointer;
-              font-size: 18px;
-            "
-          >
-            &times;
-          </button>
-        </div>
-        <textarea id="batch-input" placeholder="Enter prompts, one per line..."></textarea>
-        <div class="batch-actions">
-          <button id="batch-run-btn">Run Batch</button>
-          <button id="batch-stop-btn" hidden>Stop</button>
-          <button id="batch-export-btn">Export CSV</button>
-        </div>
-        <div id="batch-progress" hidden>
-          <div id="batch-progress-text"></div>
-          <div id="batch-progress-bar"><span></span></div>
-        </div>
-        <div id="batch-results"></div>
-      </div>
-
-      <!-- Prompt line. The glowing shell is the focal point: a shell
-           prefix ([session] ~>), the textarea, and ghost bracket
-           buttons. #prompt-caret is a blinking block shown only while
-           the field is empty (app.js toggles .has-text on the shell). -->
-      <div id="input-area">
-        <div id="prompt-shell">
-          <span id="prompt-prefix" aria-hidden="true">[mast]&nbsp;~&gt;</span>
-          <span id="prompt-caret" aria-hidden="true"></span>
-          <textarea id="prompt-input" placeholder="ask, instruct, or /command…" rows="1"></textarea>
-          <button id="send-btn">SEND</button>
-          <button id="stop-btn" title="Cancel the current turn" hidden>STOP</button>
-        </div>
-      </div>
-
-      <div id="status-bar">
-        <span class="status-item" id="status-connection">⬤ disconnected</span>
-        <span class="status-item" id="status-model">Model: —</span>
-        <span class="status-item" id="status-turns">Turns: 0</span>
-        <span class="status-item" id="status-cost">$0.00</span>
-        <!-- "t+" rather than a stopwatch emoji: the mono stack has no
-             glyph for ⏱ and renders it as a tofu box. -->
-        <span class="status-item" id="status-elapsed"
-          >t+ <span id="status-elapsed-value">—</span></span
-        >
-        <span class="status-item powered-by" id="status-agent"> attach protocol </span>
-      </div>
-    </div>
-
-    <!-- Permission-prompt modal — appears when /perms/stream delivers
-         a prompt frame. Contents populated by app.js at open time.
-         Hidden by default via .modal-overlay CSS; toggled visible by
-         adding the .open class (matches the setup modal pattern). -->
-    <div class="modal-overlay" id="perms-modal">
-      <div class="modal">
-        <h2 id="perms-modal-title">Permission requested</h2>
-        <div id="perms-modal-body" style="font-size: 12px; margin-bottom: 12px"></div>
-        <label
-          for="perms-modal-scope"
-          style="display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 8px"
-        >
-          <input type="checkbox" id="perms-modal-scope" style="margin-right: 4px" />
-          Allow for the rest of this session (skip prompts for this same tool)
-        </label>
-        <div class="btn-row">
-          <button class="btn-primary" id="perms-modal-allow">Allow</button>
-          <button id="perms-modal-deny">Deny</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- First-run setup modal -->
-    <div class="modal-overlay" id="setup-modal">
-      <div class="modal">
-        <h2>mast-web Setup</h2>
-        <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px">
-          Connect to a running <code>core-agent</code> or <code>mast</code> backend with
-          <code>--attach-listen</code> enabled, or to the smoke-test mock (<code>make smoke</code>).
-          Use <code>/</code> (a single slash) for same-origin — this is the supported path, and it
-          also avoids cross-subdomain auth issues (Cloud Workstations, Codespaces, gitpod, etc.).
-        </p>
-        <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px">
-          <strong>A full cross-origin URL only works against the mock.</strong> Real
-          <code>core-agent</code> / <code>mast</code> backends deliberately send no
-          <code>Access-Control-Allow-*</code> headers, so the browser blocks every response —
-          including <code>GET /sessions</code>. Point this at a loopback backend, or serve the SPA
-          same-origin behind <code>mast-web-server --mode=proxy</code>.
-        </p>
-        <label for="setup-endpoint">Backend endpoint</label>
-        <input id="setup-endpoint" placeholder="/  or  http://localhost:7778" value="/" />
-        <label for="setup-token">Auth token</label>
-        <input
-          id="setup-token"
-          type="password"
-          placeholder="bearer token from --attach-token-env"
-        />
-        <label for="setup-token-source">
-          <small style="color: var(--text-dim)">
-            The backend prints this on startup when <code>--attach-token-env</code> is set. Leave
-            blank for unauthenticated dev backends (including the smoke-test mock).
-          </small>
-        </label>
-        <div class="btn-row">
-          <button class="btn-primary" id="setup-save">Connect</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Keyboard-shortcuts overlay (Ctrl+/ or Cmd+/). Populated + shown
-         by web/app.js's shortcuts wiring; hidden by default. -->
-    <div class="modal-overlay" id="shortcuts-modal">
-      <div class="modal">
-        <h2>Keyboard shortcuts</h2>
-        <table id="shortcuts-table" style="font-size: 12px; width: 100%; margin-top: 8px">
-          <tbody></tbody>
-        </table>
-        <div class="btn-row" style="margin-top: 12px">
-          <button class="btn-primary" id="shortcuts-close">Close</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Command palette (Ctrl+P / Cmd+P). Fuzzy-matches slash commands. -->
-    <div class="modal-overlay" id="palette-modal">
-      <div class="modal palette">
-        <input id="palette-input" placeholder="Type to search commands…" autocomplete="off" />
-        <div id="palette-list"></div>
-      </div>
-    </div>
-
-    <!-- Session picker (Ctrl+K / Cmd+K). Fuzzy-matches sessions across
-         all daemons. -->
-    <div class="modal-overlay" id="picker-modal">
-      <div class="modal palette">
-        <input id="picker-input" placeholder="Type to search sessions…" autocomplete="off" />
-        <div id="picker-list"></div>
-      </div>
-    </div>
-
-    <!-- Markdown + syntax highlighting. Vendored at exact versions rather
-         than loaded from a CDN: this tree is go:embed-ed into the server
-         binary, so a network dependency would silently break rendering in
-         air-gapped / --ui deploys, and a third-party origin on a page that
-         holds credentials is an avoidable exfiltration path. Provenance +
-         refresh procedure in web/vendor/README.md. -->
-    <script src="vendor/marked-12.0.2.min.js"></script>
-    <script src="vendor/marked-highlight-2.2.4.umd.js"></script>
-    <script src="vendor/highlight-11.12.0.min.js"></script>
-    <!-- attach-core: wire-layer modules. Load order matters — errors
-         + protocol + replay export helpers that client.js reads at
-         IIFE-init. prompter is independent and can load in any order
-         after errors (uses no protocol/replay symbols directly). -->
-    <script src="attach-core/errors.js"></script>
-    <script src="attach-core/protocol.js"></script>
-    <script src="attach-core/replay.js"></script>
-    <script src="attach-core/prompter.js"></script>
-    <script src="attach-core/client.js"></script>
-    <!-- state: observable stores. subscriptions.js is the primitive
-         everything else depends on. session / connection / daemons
-         each set window.MastState.<name> at IIFE-init. -->
-    <script src="state/subscriptions.js"></script>
-    <script src="state/session.js"></script>
-    <script src="state/connection.js"></script>
-    <script src="state/daemons.js"></script>
-    <!-- slash-render: dispatch skeleton for server-side slash
-         responses. Reserved _render / _schema convention. -->
-    <script src="slash-render.js"></script>
-    <script src="app.js"></script>
+    <!-- Visible only if the redirect did not happen: scripting off, or
+         shell-select.js failed to load. Both shells still work when
+         reached directly, so the honest fallback is to say so and point
+         at them rather than to fail blank. -->
+    <main
+      style="
+        font:
+          14px ui-monospace,
+          monospace;
+        padding: 2rem;
+        line-height: 1.6;
+      "
+    >
+      <h1 style="font-size: 1rem">mast-web</h1>
+      <p>Pick a shell:</p>
+      <ul>
+        <li><a href="solo.html">solo</a> — one terminal, full size</li>
+        <li><a href="spatial.html">spatial</a> — a room of terminals</li>
+      </ul>
+    </main>
   </body>
 </html>

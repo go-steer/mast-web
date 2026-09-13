@@ -28,7 +28,7 @@ package main
 // is anonymous: the SPA can only be running if its document request
 // already cleared auth. See withAuth.
 //
-// Preferred over injecting a window.__CONFIG__ into index.html: that
+// Preferred over injecting a window.__CONFIG__ into the shell: that
 // would make spaHandler stateful and fight its no-store header, and it
 // would break the tarball / static-host deployment shape, where the SPA
 // is served by something that is not this binary.

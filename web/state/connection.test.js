@@ -27,7 +27,7 @@ const srcConn = readFileSync(join(here, 'connection.js'), 'utf8');
 function loadConnectionStore() {
   new Function('window', srcSubs)(globalThis);
   new Function('window', srcConn)(globalThis);
-  return globalThis.MastState.connection;
+  return globalThis.MastState.createConnection();
 }
 
 describe('state/connection', () => {
@@ -86,7 +86,8 @@ describe('state/connection', () => {
 });
 
 // v0.4: four terminals in a room are four connections. The singleton
-// that shipped through v0.3.0 could only ever describe one of them.
+// that shipped through v0.3.0 could only ever describe one of them, and
+// #61 removed it along with the shell that reached for it.
 describe('state/connection — factory', () => {
   let createConnection;
   beforeEach(() => {
@@ -125,5 +126,9 @@ describe('state/connection — factory', () => {
     b.setState('connecting');
     expect(hitsA).toBe(0);
     expect(hitsB).toBe(1);
+  });
+
+  it('exports no shared instance', () => {
+    expect(globalThis.MastState.connection).toBeUndefined();
   });
 });

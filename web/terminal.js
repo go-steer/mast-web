@@ -14,16 +14,16 @@
 
 // MastTerminal — a self-contained, multi-instantiable mast terminal.
 //
-// index.html's app.js is a singleton: one AttachClient, one
-// #output-area, one prompt, one status bar, all reached through
-// module-scope constants. That's the right shape for a single-session
-// SPA and the wrong shape for a workspace where four sessions are on
-// screen at once.
+// The classic shell — index.html and its app.js, deleted in #61 — was a
+// singleton: one AttachClient, one #output-area, one prompt, one status
+// bar, all reached through module-scope constants. That's the right
+// shape for a single-session SPA and the wrong shape for a workspace
+// where four sessions are on screen at once.
 //
 // This is the same terminal with the singleton assumption removed.
-// Every renderer that app.js resolves against `outputArea` resolves
-// here against a per-instance element, and every piece of turn state
-// lives with the instance instead of at module scope.
+// Every renderer that resolved against a module-scope `outputArea`
+// resolves here against a per-instance element, and every piece of turn
+// state lives with the instance instead of at module scope.
 //
 // Where that state lives, as of v0.4: session identity and per-session
 // totals go in a state/session.js instance, connection and turn state
@@ -56,7 +56,7 @@
 // Genuinely not this file's job, because they belong to the shell
 // around the terminals rather than to any one of them: the sidebar
 // (including session delete) and the shortcuts / palette / picker
-// modals. shell.js and spatial.js own those, the same way app.js does
+// modals. shell.js and spatial.js own those, the same way app.js did
 // for the classic shell.
 //
 // With PR 3b that closes the parity list app.js had over a panel
@@ -282,7 +282,7 @@ window.MastTerminal = (function () {
     // core-tui#275/#276.
     const shellCommands = Array.isArray(cfg.commands) ? cfg.commands : [];
 
-    // Everything app.js keeps in module scope lives here instead — but
+    // Everything app.js kept in module scope lives here instead — but
     // in the shared stores rather than in this closure, one instance of
     // each per terminal. Through v0.3.0 both stores were singletons,
     // which is why this file grew its own informal copy of them; they
@@ -310,6 +310,10 @@ window.MastTerminal = (function () {
       // Set once a usage-update has carried turns_total — see the
       // usage-update case for why the local count defers to it.
       serverCountsTurns: false,
+      // The "you are watching, not driving" notice, while the session
+      // says so. Held rather than re-queried because /clear empties the
+      // transcript it lives in.
+      observerBanner: null,
       destroyed: false,
     };
 
@@ -493,9 +497,50 @@ window.MastTerminal = (function () {
       return div;
     }
 
+    // ── Observer mode ────────────────────────────────────────────────
+    //
+    // features.observer_mode says this panel is watching a session that
+    // something else is driving. Worth saying out loud, because a
+    // transcript that moves on its own looks exactly like one you are
+    // driving, and the difference decides whether typing accomplishes
+    // anything.
+    //
+    // Two variants, per features.live_agent:
+    //   read-only (!live_agent) — the agent is autonomous, and a prompt
+    //     from here is a no-op or an indefinite queue.
+    //   read-write (live_agent) — your prompts do drive it, but so can
+    //     everyone else attached, and they see what you send.
+    //
+    // Pinned to the top of the transcript rather than appended as a
+    // system row. app.js appended, so the notice scrolled away with the
+    // second screenful — which is around when an operator starts
+    // wondering why nothing is responding.
+    function isObserverCaps(caps) {
+      return !!(caps && caps.features && caps.features.observer_mode === true);
+    }
+
+    function applyObserverMode(features) {
+      const isObserver = !!(features && features.observer_mode === true);
+      if (!isObserver) {
+        if (ui.observerBanner) {
+          ui.observerBanner.remove();
+          ui.observerBanner = null;
+        }
+        return;
+      }
+      if (!ui.observerBanner) {
+        ui.observerBanner = mk('div', 'term-observer');
+        out.insertBefore(ui.observerBanner, out.firstChild);
+      }
+      ui.observerBanner.textContent =
+        features.live_agent === true
+          ? 'Live session — your messages drive the agent, and everyone attached sees them.'
+          : 'Attached as observer — the agent runs autonomously; events stream below.';
+    }
+
     // ── Permission prompts ───────────────────────────────────────────
     //
-    // app.js answers these in a global modal. A workspace can't reuse
+    // app.js answered these in a global modal. A workspace can't reuse
     // that: four panels can be prompted at once, and one modal has no
     // way to say which session it speaks for — nor to hold the second
     // request while the first is open. So the request renders inline,
@@ -1128,6 +1173,31 @@ window.MastTerminal = (function () {
       switch (ev.type) {
         case 'capabilities':
           session.setCapabilities(ev.data);
+          applyObserverMode((ev.data || {}).features);
+          // Attaching to a session someone else is driving means the
+          // usage-update that priced the last turn happened before we
+          // got here. GET /usage still carries it as last_turn, and
+          // that is what the first observer footer needs:
+          // turn-complete.cost_usd is optional on the wire, so without
+          // this a real turn stamps at $0. Ported from app.js, which
+          // took it from coretuiremote's LastTurn fallback. Best
+          // effort — a pre-v1.3.0 server 404s here, and a missing
+          // snapshot only means waiting for the next usage-update.
+          if (isObserverCaps(ev.data)) {
+            client.getUsage().then(
+              (u) => {
+                if (ui.destroyed || !u || !u.last_turn || typeof u.last_turn !== 'object') return;
+                const lt = {
+                  tokensIn: u.last_turn.tokens_in || 0,
+                  tokensOut: u.last_turn.tokens_out || 0,
+                  costUSD: u.last_turn.cost_usd || 0,
+                };
+                ui.pendingLastTurn = lt;
+                backfillTurnFooter(ui.lastFooter, lt);
+              },
+              () => {}
+            );
+          }
           // Enrich in the background with the resolved identity. The
           // frame carries caller_id, which is what the token presented;
           // /whoami is what the backend made of it, and it's the only
@@ -1211,7 +1281,7 @@ window.MastTerminal = (function () {
 
         case 'inbox':
           // Nothing in this terminal renders the inbox yet (app.js
-          // tracks queued/dequeued for a toast it doesn't draw either),
+          // tracked queued/dequeued for a toast it never drew either),
           // but either state says a prompt is on its way through: the
           // next turn is starting, so the previous one is over whatever
           // is still in flight for it.
@@ -1260,7 +1330,7 @@ window.MastTerminal = (function () {
           // …and the first live frame is what says the history ends
           // here, whatever the settle timer thinks.
           drawHistory();
-          // Suppress the prompt echo, same as app.js: a real backend
+          // Suppress the prompt echo, as app.js did: a real backend
           // replays the prompt the model received as a user-authored
           // frame ahead of the reply — [Inbox] wrapper and all — so
           // rendering it puts the operator's own message inside the
@@ -1364,8 +1434,8 @@ window.MastTerminal = (function () {
           },
         };
         connection.setActiveTurn(turn);
-        // /inject only, no wake — see app.js's copy of this for the
-        // measurement showing any second wake runs a second turn.
+        // /inject only, no wake: measured against the mock when app.js
+        // still existed, any second wake runs a second turn.
         Promise.resolve()
           .then(() => client.inject(text))
           .catch((e) => turn.finish(null, e));
@@ -1376,10 +1446,11 @@ window.MastTerminal = (function () {
     //
     // Only the generic path: whatever the agent advertises in its
     // capabilities frame is POSTed to /sessions/{sid}/slash/<name> and
-    // rendered through SlashRender. app.js additionally carries bespoke
-    // client-side handlers (/attach, /sessions, /model, …); those are
-    // still to port, and the workspace-scoped ones among them belong to
-    // the HUD rather than to any one panel.
+    // rendered through SlashRender. The bespoke client-side handlers
+    // app.js also carried (/sessions, /model, …) are the next section
+    // down; the workspace-scoped ones among them (/attach, /theme, …)
+    // went to shell.js, because they belong to the window rather than
+    // to any one panel.
     //
     // What this replaces is worse than a missing feature: a leading "/"
     // used to fall through to client.inject(), so typing /tools sent the
@@ -1410,10 +1481,11 @@ window.MastTerminal = (function () {
     // REST endpoint the slash channel doesn't expose, or reads nothing
     // at all. Ported from app.js by PR 2 (#59) and PR 3 (#60) — the
     // classic shell's whole client-side command set had to exist
-    // somewhere else before index.html can be deleted.
+    // somewhere else before index.html could be deleted, which #61
+    // then did.
     //
     // Built-ins win over an advertised name of the same spelling, which
-    // is what app.js does and what core-tui settled on. The list of
+    // is what app.js did and what core-tui settled on. The list of
     // built-in NAMES is its own thing, not a subset of some other
     // predicate — core-tui#289's sibling lesson, and the reason /quit
     // there once got shipped to the agent as prose.
@@ -1763,12 +1835,33 @@ window.MastTerminal = (function () {
     // current model is server-driven via status-update. app.js shipped
     // a `/model <name>` that could only ever throw; saying so up front
     // is the honest version of the same non-capability.
+    //
+    // It also answers who is running it. `capabilities.agent` (protocol
+    // §2.1) names the agent, its version and the model/provider it is
+    // configured with; the classic shell painted that into a sidebar
+    // slot, and a terminal has no sidebar slot. /model is the question
+    // it belongs to — the model is the agent's, not the session's — so
+    // retiring index.html moves the field here rather than dropping it.
     function cmdModel() {
       const model = sess().currentModel;
-      addSystemMessage(
-        (model ? 'Model: ' + model : 'The backend has not reported a model for this session yet.') +
-          '\nSwitching models needs a server-side endpoint that does not exist yet.'
+      const agent = (sess().capabilities || {}).agent;
+      const lines = [];
+      if (agent && typeof agent === 'object' && agent.name) {
+        const via = [agent.model, agent.provider ? 'via ' + agent.provider : '']
+          .filter(Boolean)
+          .join(' ');
+        lines.push(
+          'Agent: ' +
+            [agent.name, agent.version].filter(Boolean).join(' ') +
+            (via ? ' (' + via + ')' : '')
+        );
+        if (agent.description) lines.push(agent.description);
+      }
+      lines.push(
+        model ? 'Model: ' + model : 'The backend has not reported a model for this session yet.'
       );
+      lines.push('Switching models needs a server-side endpoint that does not exist yet.');
+      addSystemMessage(lines.join('\n'));
     }
 
     // /guardrails [reset [watchdog|cost_ceiling|all] [budget]]
@@ -1893,6 +1986,12 @@ window.MastTerminal = (function () {
       replayView.body = null;
       replayView.more = null;
       out.removeEventListener('scroll', onHistoryScroll);
+      // The observer notice is not transcript — it is a standing fact
+      // about the session, and clearing the screen does not make you
+      // the one driving it. Redrawn rather than kept, since the node
+      // just left the document.
+      ui.observerBanner = null;
+      applyObserverMode((sess().capabilities || {}).features);
     }
 
     function cmdHelp() {
@@ -2052,7 +2151,7 @@ window.MastTerminal = (function () {
       const args = parts.slice(1);
 
       // Built-ins win over an advertised name of the same spelling —
-      // what app.js does, and what core-tui settled on. An agent that
+      // what app.js did, and what core-tui settled on. An agent that
       // advertises /tools gets shadowed rather than silently changing
       // what /tools means from one backend to the next.
       const builtin = findCommand(name);

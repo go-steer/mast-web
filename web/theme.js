@@ -19,12 +19,11 @@
 // choice is one localStorage key so a theme picked in one shell is the
 // theme the next one opens with.
 //
-// The list is still duplicated *once* — app.js carries its own copy for
-// index.html's /theme command, because index.html is frozen and has no
-// way to gain a <script> tag for this file. Every other shell shares
-// this one, so the duplication is a single known pair rather than a
-// copy per page. Adding a theme means editing styles.css, this list,
-// and app.js's THEMES.
+// The list below is the only copy. app.js carried a second one for the
+// classic shell's /theme command, frozen because that page could not
+// gain a <script> tag for this file; #61 deleted the page and the
+// duplicate with it. Adding a theme is now two edits: a palette block
+// in styles.css and an entry here.
 window.MastTheme = (function () {
   'use strict';
 

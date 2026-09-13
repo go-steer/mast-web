@@ -23,8 +23,8 @@
 // own the theme of the page it is drawn on, and four panels each owning
 // it would be four answers to one question.
 //
-// Both surviving shells mount one of these. The classic shell grew its
-// own copies of all of it inside app.js, keyed to that page's markup —
+// Both surviving shells mount one of these. The classic shell had grown
+// its own copies of all of it inside app.js, keyed to that page's markup —
 // which is why the overlays here build their own DOM rather than
 // reaching for ids: solo.html and spatial.html should not have to carry
 // four modals in their markup to gain a palette, and a shell that
@@ -49,9 +49,9 @@ window.MastShell = (function () {
   //
   // Orthogonal to the theme: /theme is colour, /layout is arrangement,
   // and they compose. Two transcript layouts, applied as a body
-  // attribute the same way themes are, and persisted under the key
-  // app.js already uses so a choice made in the classic shell survives
-  // the walk over here — and survives app.js being deleted.
+  // attribute the same way themes are, and persisted under the key the
+  // classic shell already used, so a layout chosen there survived the
+  // walk over here — and survived app.js being deleted.
   //
   // `log` is the attribute-less default because the console restyle
   // made it the house style; `chat` is the opt-in. The rules live in
@@ -92,6 +92,52 @@ window.MastShell = (function () {
       return localStorage.getItem(LAYOUT_KEY) || 'log';
     } catch {
       return 'log';
+    }
+  }
+
+  // ─── Which shell ───────────────────────────────────────────────────
+  //
+  // The document at `/` reads this key and sends the operator to one of
+  // the two shells (web/shell-select.js, v0.4 plan §1). Nothing here
+  // switches shells by itself — a shell is a document, so switching is
+  // a navigation — but the HUD link that performs it should leave a
+  // record, or "remember where I work" would mean "retype ?shell= every
+  // morning".
+  //
+  // Written on the way out rather than on arrival. Storing it at mount
+  // would make the last page you happened to land on the preference,
+  // including one reached from a link someone sent you.
+
+  const SHELL_KEY = 'mast-web:shell';
+
+  const SHELLS = [
+    { id: 'solo', href: 'solo.html', label: 'Solo — one terminal, full size' },
+    { id: 'spatial', href: 'spatial.html', label: 'Spatial — a room of terminals' },
+  ];
+
+  function shellByID(id) {
+    return (
+      SHELLS.filter(function (s) {
+        return s.id === id;
+      })[0] || null
+    );
+  }
+
+  function rememberShell(id) {
+    if (!shellByID(id)) return null;
+    try {
+      localStorage.setItem(SHELL_KEY, id);
+    } catch {
+      /* blocked storage — the navigation still happens */
+    }
+    return id;
+  }
+
+  function preferredShell() {
+    try {
+      return localStorage.getItem(SHELL_KEY) || 'solo';
+    } catch {
+      return 'solo';
     }
   }
 
@@ -150,6 +196,20 @@ window.MastShell = (function () {
     // The HUD's theme <select>, if this shell has one. /theme has to
     // move it or the two disagree about what the page is wearing.
     const themeSelect = cfg.themeSelect || null;
+    // cfg.shell — which of SHELLS this page is, so /shell can mark the
+    // current row and skip a navigation to where we already are. A
+    // shell that does not say is simply never the current one, which is
+    // harmless: the list still lists and the links still work.
+    //
+    // cfg.navigate exists because jsdom has no navigation and
+    // window.location is unforgeable, so /shell would otherwise be the
+    // one command no unit test can reach past its first line.
+    const navigate =
+      typeof cfg.navigate === 'function'
+        ? cfg.navigate
+        : function (href) {
+            window.location.assign(href);
+          };
 
     const isMac =
       typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
@@ -648,13 +708,48 @@ window.MastShell = (function () {
       io.print(toggleBatch() ? 'Batch runner open.' : 'Batch runner closed.');
     }
 
+    // /shell — the same choice the HUD link makes, from the prompt.
+    // Navigating away is the whole command: a shell is a document, and
+    // the sessions come back because they are on the server, not in
+    // this page. Which is also why the preference is written before the
+    // navigation rather than after it — there is no after.
+    function cmdShell(args, io) {
+      const here = cfg.shell || '';
+      if (args.length === 0) {
+        io.print(
+          listRegistry(
+            'Shells',
+            SHELLS,
+            here,
+            'Usage: /shell <id>\nStored preference: ' +
+              preferredShell() +
+              ' — this is where / lands you.'
+          )
+        );
+        return;
+      }
+      const id = args[0].toLowerCase();
+      const target = shellByID(id);
+      if (!target) {
+        io.print('Unknown shell "' + id + '". /shell with no arguments lists them.');
+        return;
+      }
+      rememberShell(id);
+      if (id === here) {
+        io.print('Already in the ' + id + ' shell. / will land here from now on.');
+        return;
+      }
+      io.print('Opening the ' + id + ' shell…');
+      navigate(target.href);
+    }
+
     function cmdShortcuts(args, io) {
       openShortcuts();
       io.print('Keyboard reference: ' + MOD + '+/ opens this any time.');
     }
 
     // Offline to a command, `true` here, means "does not need a
-    // backend". All five of these act on the window, so none of them
+    // backend". All six of these act on the window, so none of them
     // do — /attach included, which is how you get a backend in the
     // first place and would be useless if it needed one.
     const commands = [
@@ -692,6 +787,13 @@ window.MastShell = (function () {
         help: 'Keyboard reference for this shell',
         offline: true,
         run: cmdShortcuts,
+      },
+      {
+        name: 'shell',
+        usage: '/shell [id]',
+        help: 'Switch shells, and remember which one / opens',
+        offline: true,
+        run: cmdShell,
       },
     ];
 
@@ -762,6 +864,19 @@ window.MastShell = (function () {
 
     document.addEventListener('keydown', onKeydown, true);
 
+    // The HUD's link to the other shell is a plain <a href> — it should
+    // keep working with scripting off, and a click handler that
+    // navigates is a worse anchor than an anchor. All this adds is the
+    // memory: the link carries data-shell, and following it records
+    // where you went.
+    const switchLinks = Array.from(document.querySelectorAll('[data-shell]'));
+    function onSwitchClick(e) {
+      rememberShell(e.currentTarget.getAttribute('data-shell'));
+    }
+    switchLinks.forEach(function (a) {
+      a.addEventListener('click', onSwitchClick);
+    });
+
     // The stored layout is applied here rather than by each shell: it
     // is this module's setting, and a shell that forgot the call would
     // silently lose the operator's choice on reload.
@@ -778,6 +893,9 @@ window.MastShell = (function () {
       bindings: BINDINGS,
       destroy: function () {
         document.removeEventListener('keydown', onKeydown, true);
+        switchLinks.forEach(function (a) {
+          a.removeEventListener('click', onSwitchClick);
+        });
         overlays.forEach(function (w) {
           w.remove();
         });
@@ -791,5 +909,8 @@ window.MastShell = (function () {
     LAYOUTS: LAYOUTS,
     applyLayout: applyLayout,
     currentLayout: currentLayout,
+    SHELLS: SHELLS,
+    rememberShell: rememberShell,
+    preferredShell: preferredShell,
   };
 })();

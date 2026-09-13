@@ -15,13 +15,14 @@
 // Smoke: 007-spatial-prompt-echo — 006 again, but through the spatial
 // shell's renderer.
 //
-// The two shells share the wire layer and nothing else: spatial.html
-// loads terminal.js instead of app.js, so every render-side filter has
-// to be written twice. 006's filter landed in app.js and the spatial
-// copy went missing, which a live core-agent found before CI did — the
+// There used to be two renderers: index.html loaded app.js and the
+// spatial shell loaded terminal.js, so every render-side filter had to
+// be written twice. 006's filter landed in app.js and the spatial copy
+// went missing, which a live core-agent found before CI did — the
 // operator's own prompt rendered inside the AGENT bubble, [Inbox]
-// wrapper and all. This is the paired guard: whichever shell loses the
-// filter next, one of the two specs goes red.
+// wrapper and all. #61 deleted app.js and the duplication with it, so
+// this pair is now the same code in two frames; kept as a pair because
+// 006 is how we would find out if that ever stopped being true.
 
 import { test, expect } from '@playwright/test';
 import { openSpatialSession } from './helpers.js';

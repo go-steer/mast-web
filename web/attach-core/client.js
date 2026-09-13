@@ -14,7 +14,8 @@
 
 // attach-core/client — JavaScript consumer of mast / core-agent's
 // attach protocol (HTTP/SSE per spec v1.7.0). Replaces the phase-A
-// mock `mast` object in app.js with a real backend connection.
+// mock `mast` object the phase-A shell carried with a real backend
+// connection.
 //
 // Version note: v1.3.0 was consumed 2026-07-17 by the digest-`savings`
 // sidecar. v1.4.0 (core-agent#344 + core-tui#68, both merged
@@ -39,7 +40,7 @@
 // advertised it since core-agent#670 without a bump, which the §2.1
 // additive rule permits.
 //
-// Depends on sibling modules (loaded ahead of this file in index.html):
+// Depends on sibling modules (loaded ahead of this file by each shell):
 //   attach-core/errors.js    — PermanentStreamError, BackendDrainingError
 //   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
 //   attach-core/replay.js    — ReplayFilter (attach cutoff)
@@ -104,8 +105,8 @@
 window.AttachClient = (function () {
   'use strict';
 
-  // Dependencies loaded from sibling modules; index.html loads
-  // errors.js + protocol.js + replay.js before this file.
+  // Dependencies loaded from sibling modules; solo.html and
+  // spatial.html load errors.js + protocol.js + replay.js first.
   const PermanentStreamError =
     (window.AttachCoreErrors && window.AttachCoreErrors.PermanentStreamError) || null;
   const BackendDrainingError =

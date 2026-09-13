@@ -16,14 +16,13 @@
   --slate: #555759;
   --plum: #402b56;
   --bg: #202124; /* charcoal — chat area */
-  --bg-surface: #0a1418; /* sidebar / input panel */
+  --bg-surface: #0a1418; /* panes and bars sitting on top of --bg */
   --bg-elevated: #0f1f25; /* inputs, buttons, code blocks */
   --border: var(--gopher-blue);
   --border-soft: var(--deep-teal); /* internal dividers where strong blue would be too noisy */
   --text: var(--cool-gray);
   --text-dim: #8a9499;
   --accent: var(--gopher-blue);
-  --accent-hover: var(--light-blue);
   --green: var(--aqua);
   --red: var(--fuchsia);
   --yellow: var(--brand-yellow);
@@ -34,7 +33,6 @@
      --light-blue directly paints pale cyan on every background, including
      the near-white ones. Every theme sets --blue. */
   --blue: var(--light-blue);
-  --sidebar-w: 280px;
 
   /* Terminal chrome (see "Terminal chrome" section below). Glow and
      frame colors are derived from --accent per-theme on `body`, so a
@@ -114,7 +112,8 @@
    only — layout, typography, spacing, everything else stays the
    same. Ported concept from cogo-wasm2's theme picker.
 
-   Persistence + /theme slash command wiring live in web/app.js. */
+   Persistence lives in web/theme.js; the /theme command that drives it
+   is registered in web/shell.js. */
 
 body[data-theme='solarized-dark'] {
   --bg: #002b36;
@@ -125,7 +124,6 @@ body[data-theme='solarized-dark'] {
   --border: #268bd2;
   --border-soft: #586e75;
   --accent: #268bd2;
-  --accent-hover: #2aa198;
   --green: #859900;
   --red: #dc322f;
   --yellow: #b58900;
@@ -141,7 +139,6 @@ body[data-theme='solarized-light'] {
   --border: #268bd2;
   --border-soft: #93a1a1;
   --accent: #268bd2;
-  --accent-hover: #2aa198;
   --green: #859900;
   --red: #dc322f;
   --yellow: #b58900;
@@ -167,7 +164,6 @@ body[data-theme='high-contrast'] {
   --border: #fff;
   --border-soft: #888;
   --accent: #0ff;
-  --accent-hover: #7ff;
   --green: #0f0;
   --red: #f33;
   --yellow: #ff0;
@@ -186,7 +182,6 @@ body[data-theme='mono'] {
   --border: #4a4a4a;
   --border-soft: #333;
   --accent: #d4d4d4;
-  --accent-hover: #fff;
   --green: #7a7a7a;
 
   /* Lighter than --green even though mono flattens the palette: --blue is
@@ -206,7 +201,6 @@ body[data-theme='paper'] {
   --border: #005c8a;
   --border-soft: #b3b3b3;
   --accent: #005c8a;
-  --accent-hover: #007eaf;
   --green: #2b7a2b;
   --red: #b0263a;
   --yellow: #8a6a00;
@@ -230,7 +224,6 @@ body[data-theme='grayscale-dark'] {
   --text: #e8eaed; /* Grey 200 */
   --text-dim: #9aa0a6; /* Grey 500 */
   --accent: #bdc1c6; /* Grey 400 — the room stays grey … */
-  --accent-hover: #e8eaed;
   --green: #81c995;
   --red: #f28b82;
   --yellow: #fdd663;
@@ -270,7 +263,6 @@ body[data-theme='grayscale-light'] {
   --text: #202124;
   --text-dim: #5f6368;
   --accent: #5f6368; /* Grey 700 */
-  --accent-hover: #202124;
   --green: #188038;
   --red: #d50000;
   --yellow: #dc6d00;
@@ -297,7 +289,6 @@ body[data-theme='cloud-light'] {
   --text: #212226; /* Google Grey 1000; the brand avoids pure black */
   --text-dim: #5f6368;
   --accent: #3186ff; /* Google Blue 500 */
-  --accent-hover: #1967d2;
 
   /* Brand Green/Red/Yellow 500 (#00af57 / #fc413d / #fec700) are fill
      colours — as text on white they run 2.5–3.5:1 and fail WCAG AA.
@@ -349,7 +340,6 @@ body[data-theme='pantheon-light'] {
   --text: #202124; /* Grey 900 */
   --text-dim: #5f6368; /* Grey 700 */
   --accent: #1a73e8; /* Blue 600 — primary / focus */
-  --accent-hover: #1967d2; /* Blue 700 — active state */
   --green: #188038;
   --red: #d50000;
   --yellow: #dc6d00;
@@ -383,7 +373,6 @@ body[data-theme='pantheon-dark'] {
   /* 300-level everything: the console drops high-saturation colour in
      dark mode because it goes harsh against the greys. */
   --accent: #8ab4f8; /* Blue 300 */
-  --accent-hover: #aecbfa;
   --green: #81c995;
   --red: #f28b82;
   --yellow: #fdd663;
@@ -653,552 +642,26 @@ body {
   --grid-line: var(--accent);
 }
 
-/* Layout */
-#sidebar {
-  width: var(--sidebar-w);
-  min-width: var(--sidebar-w);
-  background: var(--bg-surface);
-
-  /* Same bezel vocabulary as #screen: a frame-toned edge with the
-     glow bleeding into the transcript rather than a flat 2px slab. */
-  border-right: 1px solid var(--frame);
-  box-shadow: 6px 0 26px -18px var(--glow);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-
-  /* Scanlines at the same 3px pitch as #screen. Painted as a
-     background image rather than an overlay pseudo-element so it
-     costs nothing and doesn't fight the scroll container. */
-  background-image: repeating-linear-gradient(to bottom, var(--scan) 0 1px, transparent 1px 3px);
-}
-
-#sidebar::-webkit-scrollbar {
-  width: 8px;
-}
-
-#sidebar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-#sidebar::-webkit-scrollbar-thumb {
-  background: var(--accent);
-  border-radius: 4px;
-  box-shadow: 0 0 10px var(--glow);
-}
-
-#main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 10px;
-  padding: 10px 12px 0;
-  position: relative;
-}
-
-/* Turn-activity sweep — a hairline that travels the top edge of the
-   main pane while a turn is in flight. Ambient "the machine is
-   working" signal that doesn't cost transcript space. */
-#main::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  background-size: 40% 100%;
-  background-repeat: no-repeat;
-  opacity: 0;
-  pointer-events: none;
-  z-index: 5;
-}
-
-body.turn-active #main::before {
-  opacity: 1;
-  animation: sweep 1.8s linear infinite;
-}
-
-@keyframes sweep {
-  from {
-    background-position: -40% 0;
-  }
-
-  to {
-    background-position: 140% 0;
-  }
-}
-
-/* Sidebar */
-.sidebar-section {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--frame);
-}
-
-/* No trailing rule over the empty tail of the sidebar. */
-.sidebar-section:last-child {
-  border-bottom: none;
-}
-
-/* Section headers read as labeled rails — "┌─ SESSIONS ─────────" —
-   so the sidebar scans like a set of terminal panes rather than a
-   stack of captions. The ::after hairline is the same trick the
-   transcript's .turn-footer uses. */
-.sidebar-section h3 {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--accent);
-  margin-bottom: 9px;
-  font-weight: 600;
-  text-shadow: 0 0 9px var(--glow);
-}
-
-.sidebar-section h3::before {
-  content: '┌─';
-  letter-spacing: 0;
-  opacity: 0.75;
-}
-
-.sidebar-section h3::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border-soft);
-  opacity: 0.5;
-}
-
-.sidebar-logo {
-  padding: 16px 14px;
-  border-bottom: 1px solid var(--frame);
-  box-shadow: inset 0 -14px 22px -20px var(--accent);
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  display: flex;
-  align-items: center;
-  gap: 0;
-}
-
-/* mast logo: ⟨m⟩ast — the angle brackets evoke the mast/spar visual
-   without leaning on any specific glyph. Cursor blink ports from the
-   cogo-wasm2 lineage (acknowledged in docs/web-design.md). Colors go
-   through the themed accent vars so every theme gets a coherent
-   wordmark + halo. */
-.sidebar-logo .logo-mark {
-  color: var(--accent);
-  text-shadow: 0 0 14px var(--glow);
-}
-
-.sidebar-logo .logo-name {
-  color: var(--blue);
-  text-shadow: 0 0 14px var(--glow);
-}
-
-.sidebar-logo .logo-cursor {
-  display: inline-block;
-  width: 10px;
-  height: 18px;
-  margin-left: 6px;
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--glow);
-  vertical-align: middle;
-  animation: cursor-blink 1.1s steps(2, start) infinite;
-}
-
+/* The blinking block cursor. Defined here rather than in either shell
+   because both of them want it: solo.css:198 and spatial.css:883 blink
+   the prompt caret, spatial.css:1147 the boot-sequence one. Keyframes
+   are global, so one copy in the shared sheet is the whole of it. */
 @keyframes cursor-blink {
   to {
     visibility: hidden;
   }
 }
 
-/* Right-aligned status bar tagline (replaces cogo-wasm2's "Powered by Go" mark). */
-.powered-by {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-dim);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-/* Connection-state indicator on the status bar. Color follows the
-   global accent variables so theming flows through. */
-#status-connection {
-  color: var(--text-dim);
-}
-
-#status-connection.connected {
-  color: var(--green);
-}
-
-#status-connection.connecting {
-  color: var(--yellow);
-}
-
-#status-connection.disconnected {
-  color: var(--red);
-}
-
-/* Cost indicator: highlight in yellow as we approach the per-turn or
-   session ceiling. JS toggles .warn/.danger based on backend telemetry. */
-#status-cost {
-  color: var(--text-dim);
-}
-
-#status-cost.warn {
-  color: var(--yellow);
-}
-
-#status-cost.danger {
-  color: var(--red);
-}
-
-#model-select {
-  width: 100%;
-  background: var(--bg-elevated);
-  color: var(--text);
-  border: 1px solid var(--frame);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-#model-select:hover {
-  border-color: var(--accent);
-}
-
-#model-select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 18px -6px var(--glow);
-}
-
-/* Endpoint + identity read as terminal output lines, not form text. */
-#backend-info {
-  font-size: 11px;
-  color: var(--blue);
-  word-break: break-all;
-}
-
-#backend-info::before {
-  content: '▸ ';
-  color: var(--text-dim);
-}
-
-#agent-info {
-  margin-top: 7px;
-  font-size: 12px;
-  color: var(--text);
-}
-
-/* Row shared by sessions, MCP servers and specialists. The left rail
-   is the "you are here" channel: transparent at rest, soft on hover,
-   hot accent + halo on the active session. */
-.server-item {
-  padding: 5px 6px 5px 8px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  border-left: 2px solid transparent;
-  border-radius: 0 3px 3px 0;
-  transition:
-    background 0.12s ease,
-    border-color 0.12s ease;
-}
-
-.server-item:hover {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  border-left-color: var(--border-soft);
-}
-
-/* Halo hangs off the rail rather than washing the row — an inset
-   glow here drowns the label on high-contrast, the one theme that
-   exists to keep it readable. */
-.server-item.active {
-  background: color-mix(in srgb, var(--accent) 13%, transparent);
-  border-left-color: var(--accent);
-  box-shadow: -2px 0 12px -4px var(--glow);
-}
-
-.server-item .name {
-  color: var(--blue);
-  font-weight: 600;
-}
-
-.server-item.active .name {
-  color: var(--accent);
-  text-shadow: 0 0 9px var(--glow);
-}
-
-/* Free-text row detail (specialist descriptions, model/mode tags).
-   Distinct from .status so the bracket chip below doesn't wrap a
-   sentence or a model name. */
-.server-item .item-desc,
-.server-item .item-tags {
-  font-size: 10px;
-  color: var(--text-dim);
-}
-
-.server-item .item-tags {
-  font-style: italic;
-}
-
-/* State chips wear brackets, matching the transcript's [COPY]/[RETRY]
-   action chips and the reference terminal's [ACTIONS] rail. */
-.server-item .status,
-.daemon-header .status {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  color: var(--text-dim);
-}
-
-.server-item .status::before,
-.daemon-header .status::before {
-  content: '[';
-  opacity: 0.55;
-}
-
-.server-item .status::after,
-.daemon-header .status::after {
-  content: ']';
-  opacity: 0.55;
-}
-
-.server-item .status.connected,
-.daemon-header .status.connected {
-  color: var(--green);
-}
-
-.server-item .status.error,
-.daemon-header .status.error,
-.daemon-header .status.disconnected {
-  color: var(--red);
-}
-
-.server-item .status.connecting,
-.daemon-header .status.connecting {
-  color: var(--yellow);
-  animation: thinking-pulse 1.4s ease-in-out infinite;
-}
-
-/* Idle status — server-side eviction has moved the session out of the
-   in-memory registry. Still selectable; lazy-resumes on attach. */
-.server-item .status.idle,
-.daemon-header .status.idle {
-  color: var(--text-dim);
-  font-style: italic;
-}
-
-.server-item .remove-btn {
-  background: none;
-  border: none;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 0 4px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-/* Destructive control stays out of the way until the row is engaged
-   — same reveal-on-hover rule as the transcript's message actions. */
-.server-item:hover .remove-btn,
-.server-item .remove-btn:focus-visible {
-  opacity: 1;
-}
-
-.server-item .remove-btn:hover {
-  color: var(--red);
-}
-
-/* Multi-daemon sidebar grouping (v0.3.0 PR 2). Each daemon renders
-   as a group with a header (alias + state badge + × remove) and a
-   nested list of its sessions. The active daemon's header shows an
-   "active" pill; non-active daemons show a "peer" pill so the
-   provenance of each session row is unambiguous. */
-.daemon-group {
-  border-top: 1px dashed var(--frame);
-  padding-top: 7px;
-  margin-top: 7px;
-}
-
-.daemon-group:first-child {
-  border-top: none;
-  margin-top: 0;
-  padding-top: 0;
-}
-
-/* Mirrors the chat HUD strip: uppercase key, hot alias, state lamp. */
-.daemon-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  padding: 2px 0 4px 8px;
-  color: var(--text-dim);
-}
-
-.daemon-header .daemon-alias {
-  color: var(--yellow);
-  font-weight: 600;
-  flex: 1;
-  letter-spacing: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.daemon-header .daemon-peer-badge {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-dim);
-  padding: 1px 5px;
-  border: 1px solid var(--frame);
-  border-radius: 3px;
-}
-
-.daemon-header .daemon-peer-badge.active {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 55%, transparent);
-  box-shadow: 0 0 14px -6px var(--green);
-}
-
-.daemon-header .remove-btn {
-  background: none;
-  border: none;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 0 4px;
-}
-
-.daemon-header .remove-btn:hover {
-  color: var(--red);
-}
-
-/* Sidebar buttons are bracket chips — same grammar as the prompt
-   bar's SEND/STOP and the transcript's [COPY]/[RETRY]. */
-#add-server-btn,
-.sidebar-btn {
-  display: block;
-  width: 100%;
-  margin-top: 10px;
-  padding: 6px;
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--frame);
-  border-radius: 4px;
-  font-family: inherit;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  cursor: pointer;
-  text-align: center;
-  transition:
-    color 0.12s ease,
-    border-color 0.12s ease,
-    background 0.12s ease,
-    box-shadow 0.12s ease;
-}
-
-#add-server-btn::before,
-.sidebar-btn::before {
-  content: '[ ';
-  opacity: 0.5;
-}
-
-#add-server-btn::after,
-.sidebar-btn::after {
-  content: ' ]';
-  opacity: 0.5;
-}
-
-#add-server-btn:hover,
-.sidebar-btn:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: 0 0 18px -6px var(--glow);
-}
-
-#identity-info {
-  font-size: 11px;
-  color: var(--blue);
-  word-break: break-word;
-}
-
-.tool-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text);
-  padding: 4px 0;
-  cursor: pointer;
-  user-select: none;
-}
-
-.tool-toggle input[type='checkbox'] {
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border: 1px solid var(--gopher-blue);
-  border-radius: 3px;
-  background: var(--bg-elevated);
-  cursor: pointer;
-  position: relative;
-  flex-shrink: 0;
-}
-
-.tool-toggle input[type='checkbox']:checked {
-  background: var(--gopher-blue);
-}
-
-.tool-toggle input[type='checkbox']:checked::after {
-  content: '';
-  position: absolute;
-  left: 3px;
-  top: 0;
-  width: 4px;
-  height: 8px;
-  border: solid var(--bg);
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-
 /* ─── Terminal chrome ────────────────────────────────────────────────
-   The chat pane is dressed as a CRT: a HUD strip on top, a framed
-   "screen" holding the transcript, and a glowing prompt line beneath.
-   Everything is derived from --accent / --frame / --glow so all six
-   themes inherit the treatment. Reference: terminal-image.jpeg. */
+   What's left in this file is the transcript itself — the rows, their
+   headers, tool calls, turn footers, replayed history — plus the
+   modals and the HUD strip's type. The furniture around it belongs to
+   whichever shell is mounting it: solo.css frames one terminal,
+   spatial.css arranges several in a room. #61 deleted the third shell
+   and its chrome with it.
 
-/* HUD strip — pipe-delimited identity line above the transcript. */
-#chat-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 7px 14px;
-  border: 1px solid var(--frame);
-  border-radius: 6px;
-  background: var(--bg-surface);
-  box-shadow: 0 0 12px -4px var(--glow);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-}
+   Everything here is derived from --accent / --frame / --glow so all
+   themes inherit the treatment. Reference: terminal-image.jpeg. */
 
 .hud-brand {
   color: var(--accent);
@@ -1216,151 +679,6 @@ body.turn-active #main::before {
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.hud-key {
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 11px;
-}
-
-.hud-val {
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#hud-agent {
-  color: var(--yellow);
-  font-weight: 600;
-}
-
-#hud-context {
-  color: var(--blue);
-}
-
-#hud-status {
-  color: var(--text-dim);
-  letter-spacing: 0.06em;
-  font-weight: 600;
-}
-
-/* Status lamp — color tracks the connection class app.js sets on
-   #chat-header, so the dot and the word never disagree. */
-.hud-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
-  flex-shrink: 0;
-}
-
-#chat-header.connected #hud-status {
-  color: var(--green);
-}
-
-#chat-header.connected .hud-dot {
-  background: var(--green);
-  box-shadow: 0 0 8px var(--green);
-}
-
-#chat-header.connecting #hud-status {
-  color: var(--yellow);
-}
-
-#chat-header.connecting .hud-dot {
-  background: var(--yellow);
-  animation: thinking-pulse 1.4s ease-in-out infinite;
-}
-
-#chat-header.disconnected #hud-status {
-  color: var(--red);
-}
-
-#chat-header.disconnected .hud-dot {
-  background: var(--red);
-}
-
-.hud-right {
-  margin-left: auto;
-  color: var(--text-dim);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-}
-
-body.turn-active .hud-right {
-  color: var(--yellow);
-  animation: thinking-pulse 1.4s ease-in-out infinite;
-}
-
-/* The screen — frame + halo + scanline overlay around the transcript. */
-#screen {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  position: relative;
-  border: 1px solid var(--frame);
-  border-radius: 6px;
-  background: var(--bg);
-  box-shadow:
-    0 0 22px -8px var(--glow),
-    inset 0 0 40px -30px var(--accent);
-  overflow: hidden;
-}
-
-/* Scanlines. Deliberately near-threshold (2.5% white on 3px pitch):
-   it should read as texture, never as banding over body text. */
-#screen::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    to bottom,
-    var(--scan) 0,
-    var(--scan) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-  z-index: 2;
-}
-
-/* Output pane */
-#output-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 14px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  position: relative;
-  z-index: 1;
-}
-
-/* Boot banner — replaces the plain welcome line on load and after
-   /clear. Sized down so it never dominates a short transcript. */
-.boot-banner {
-  margin: 2px 0 10px;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.15;
-  white-space: pre;
-  overflow-x: auto;
-}
-
-.boot-art {
-  color: var(--accent);
-  text-shadow: 0 0 14px var(--glow);
-}
-
-.boot-tag {
-  color: var(--green);
-  letter-spacing: 0.1em;
-}
-
-.boot-dim {
-  color: var(--text-dim);
 }
 
 /* Transcript rows read as a log, not a chat: every row is left-aligned
@@ -1410,8 +728,7 @@ body.turn-active .hud-right {
    the attribute-less default (the rules above). 'chat' is the opt-in
    that restores right-aligned tinted user bubbles, tinted with the
    theme's own --blue via color-mix so it stays correct across all six
-   themes without a hardcoded rgba each. Wiring lives in web/shell.js
-   (and, until #61 retires it, web/app.js). */
+   themes without a hardcoded rgba each. Wiring lives in web/shell.js. */
 body[data-layout='chat'] .message.user {
   align-self: flex-end;
   max-width: 80%;
@@ -1596,10 +913,10 @@ body[data-layout='chat'] .message.user {
 
 /* Built-in command output (vs. plain connection/status notices, which
    keep the muted italic default above) — /mcp, /tools, /subagents,
-   /stats, /help, /guardrails, /whoami. Marked via addSystemMessage's
-   cmdOutput flag / addSystemMessageHTML in app.js so it reads as
-   structured data rather than a transient notice. Framed like a
-   nested pane so it sits inside the console vocabulary. */
+   /help, /guardrails, /whoami. Marked via addSystemMessageHTML in
+   web/terminal.js so it reads as structured data rather than a
+   transient notice. Framed like a nested pane so it sits inside the
+   console vocabulary. */
 .message.system.cmd-output {
   color: var(--text);
   font-size: 12px;
@@ -1620,7 +937,8 @@ body[data-layout='chat'] .message.user {
    plain-text run-on line, so a bulleted name + tags sits on its own
    line with the description indented below it (mirrors core-tui's
    renderToolList / MCP-server renderer). Both shells use these: the
-   renderer moved out of app.js in PR 2 (#59) so it would outlive it. */
+   renderer was moved out of app.js in PR 2 (#59) so it would outlive
+   it, and in #61 it did. */
 .message.system .list-title {
   font-weight: 600;
   color: var(--accent);
@@ -2043,34 +1361,6 @@ body[data-layout='chat'] .message.user {
   }
 }
 
-.collapsible-header {
-  cursor: pointer;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.collapsible-header::before {
-  content: '\25b6';
-  font-size: 8px;
-}
-
-.collapsible-header.open::before {
-  content: '\25bc';
-}
-
-.collapsible-content {
-  display: none;
-  margin-top: 8px;
-  max-height: 300px;
-  overflow: auto;
-}
-
-.collapsible-content.open {
-  display: block;
-}
-
 .json-viewer {
   background: var(--bg-elevated);
   padding: 8px;
@@ -2080,197 +1370,14 @@ body[data-layout='chat'] .message.user {
   overflow-x: auto;
 }
 
-/* Input area — one glowing prompt bar; the buttons live inside it as
-   ghost chips so nothing competes with the bar for attention. */
-#input-area {
-  padding: 0 0 10px;
-  display: flex;
-}
-
-#prompt-shell {
-  flex: 1;
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 9px 14px;
-  background: var(--bg-surface);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  box-shadow: 0 0 18px -6px var(--glow);
-  transition:
-    box-shadow 160ms ease,
-    border-color 160ms ease;
-}
-
-#prompt-shell:focus-within {
-  border-color: var(--accent-hover);
-  box-shadow:
-    0 0 26px -6px var(--glow),
-    inset 0 0 26px -20px var(--accent);
-}
-
-#prompt-prefix {
-  color: var(--green);
-  font-size: 13px;
-  line-height: 24px;
-  flex-shrink: 0;
-  white-space: nowrap;
-  max-width: 34%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#prompt-input {
-  flex: 1;
-  background: transparent;
-  color: var(--text);
-  border: none;
-  padding: 0;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 24px;
-  resize: none;
-  min-height: 24px;
-  max-height: 200px;
-  outline: none;
-  caret-color: var(--accent);
-}
-
-#prompt-input::placeholder {
-  color: var(--text-dim);
-}
-
-/* Idle block cursor, sitting where the real caret will land. Shown
-   only while the field is empty and unfocused — once the operator
-   types, the text caret takes over and two cursors would be
-   confusing. Hidden with visibility (not display) so the slot stays
-   reserved and the placeholder doesn't jump on focus. */
-#prompt-caret {
-  width: 9px;
-  height: 16px;
-  margin-bottom: 4px;
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--glow);
-  flex-shrink: 0;
-  animation: cursor-blink 1.1s steps(2, start) infinite;
-}
-
-#prompt-shell.has-text #prompt-caret,
-#prompt-shell:focus-within #prompt-caret {
-  visibility: hidden;
-  animation: none;
-}
-
-#send-btn,
-#stop-btn {
-  background: none;
-  border: 1px solid var(--border-soft);
-  border-radius: 4px;
-  padding: 3px 12px;
-  font-family: inherit;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  line-height: 18px;
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition:
-    color 120ms ease,
-    border-color 120ms ease;
-}
-
-#send-btn {
-  color: var(--accent);
-}
-
-#send-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  box-shadow: 0 0 12px -4px var(--glow);
-}
-
-#send-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-/* Stop button — cancels the in-flight turn. Only visible when a
-   turn is running (JS toggles hidden). Distinct color from Send so
-   operators don't misclick. */
-#stop-btn {
-  color: var(--red);
-}
-
-#stop-btn:hover:not(:disabled) {
-  border-color: var(--red);
-  box-shadow: 0 0 12px -4px var(--red);
-}
-
-#stop-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Status bar */
-#status-bar {
-  height: 26px;
-  flex-shrink: 0;
-  background: var(--bg-elevated);
-  border-top: 1px solid var(--frame);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  margin: 0 -12px;
-  font-size: 11px;
-  color: var(--blue);
-  gap: 16px;
-}
-
 .status-item {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-#status-bar .status-item:not(.powered-by) {
-  color: var(--blue);
-}
-
-#status-elapsed {
-  padding: 2px 8px;
-  border-radius: 10px;
-  border: 1px solid var(--border-soft);
-  background: rgba(0, 0, 0, 0.18);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-#status-elapsed.active {
-  color: var(--yellow) !important;
-  border-color: var(--yellow);
-  animation: elapsed-pulse 1.6s ease-in-out infinite;
-}
-
-#status-elapsed-value {
-  min-width: 38px;
-  text-align: right;
-  display: inline-block;
-}
-
-@keyframes elapsed-pulse {
-  0%,
-  100% {
-    background: rgba(253, 221, 0, 0.05);
-  }
-
-  50% {
-    background: rgba(253, 221, 0, 0.18);
-  }
-}
-
-/* Batch panel */
+/* Batch panel — built by shell.js, so it lives in the shared sheet
+   rather than in either shell's. */
 #batch-panel {
   display: none;
   background: var(--bg-surface);
@@ -2463,11 +1570,6 @@ body[data-layout='chat'] .message.user {
   border: none;
 }
 
-.modal .btn-secondary {
-  background: var(--bg-elevated);
-  color: var(--text);
-}
-
 /* Command palette + session picker — wider modal, no vertical
    padding on the inner list (rows own their own padding). */
 .modal.palette {
@@ -2532,17 +1634,11 @@ kbd {
   color: var(--brand-yellow);
 }
 
-/* Ctrl+B toggles this on <body> — shrinks the sidebar to a thin
-   collapsed strip. Not fully hidden (operator retains a visual
-   handle to re-expand). */
-body.sidebar-collapsed #sidebar {
-  width: 24px;
-  min-width: 24px;
-  overflow: hidden;
-}
-
-/* Scrollbar — the transcript's is a bright accent bar (the reference
-   terminal's most recognizable detail); everything else stays subtle. */
+/* Scrollbars stay subtle everywhere. The accent-lit transcript bar
+   that used to override this belonged to #output-area, which was
+   index.html's single scroll region; a shell with one terminal per
+   pane has no such singular thing to light up, and solo.css /
+   spatial.css style their own .term-out if they want to. */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -2559,20 +1655,6 @@ body.sidebar-collapsed #sidebar {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
-}
-
-#output-area::-webkit-scrollbar {
-  width: 8px;
-}
-
-#output-area::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-#output-area::-webkit-scrollbar-thumb {
-  background: var(--accent);
-  border-radius: 4px;
-  box-shadow: 0 0 10px var(--glow);
 }
 
 /* ─── Slash-response renderers (v0.3.0 PR 4) ─────────────────────

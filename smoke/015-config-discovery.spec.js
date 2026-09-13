@@ -23,6 +23,15 @@
 // rewritten back onto the mock's own routes, so what is under test is
 // the client's half: does it ask, does it believe the answer, does it
 // stop asking the human.
+//
+// Half of this spec used to be about index.html's setup modal: whether
+// discovery suppressed it, whether it hid the token box, what it said
+// on a 401. #61 deleted that document, and the shells that survive have
+// no modal to suppress — they have a sidebar with an attach form in it,
+// which is always there and is not a question being asked. So the
+// assertions moved to the two things the sidebar does with a
+// descriptor: which endpoint it offers, and what it says when the
+// origin will not answer.
 
 import { test, expect } from '@playwright/test';
 
@@ -66,81 +75,6 @@ async function fakeDeployment(page, config, status = 200) {
 }
 
 test.describe('smoke: 015-config-discovery', () => {
-  test('classic shell attaches to the advertised prefix without asking', async ({ page }) => {
-    await fakeDeployment(page, HOSTED);
-    await page.goto('/');
-
-    await expect(page.locator('#status-connection')).toHaveClass(/\bconnected\b/);
-    // The whole point: nobody had to type `/attach`.
-    await expect(page.locator('#setup-modal')).not.toHaveClass(/open/);
-    await expect(page.locator('#backend-info')).toHaveText(PREFIX);
-    // The BFF named the caller on the first request the SPA made, well
-    // before any backend could.
-    await expect(page.locator('#identity-info')).toHaveText('alice@example.com');
-  });
-
-  test('the discovered endpoint is not written back to storage', async ({ page }) => {
-    await fakeDeployment(page, HOSTED);
-    await page.goto('/');
-    await expect(page.locator('#status-connection')).toHaveClass(/\bconnected\b/);
-
-    // Persisting it would outrank the next boot's discovery — in a key
-    // the 3D shells read too, where a stale row has no setup modal to
-    // repair it.
-    const stored = await page.evaluate(() => localStorage.getItem('mast-web:daemons'));
-    expect(JSON.parse(stored || '[]')).toEqual([]);
-  });
-
-  test('an authenticating deployment hides the token box', async ({ page }) => {
-    await fakeDeployment(page, HOSTED);
-    await page.goto('/');
-    await expect(page.locator('#status-connection')).toHaveClass(/\bconnected\b/);
-
-    // The proxy strips Authorization / X-Attach-Token off everything it
-    // forwards, so a token typed here would be scrubbed in flight and
-    // the failure would read as a bad credential.
-    await expect(page.locator('#setup-token')).toBeHidden();
-    await expect(page.locator('label[for="setup-token"]')).toBeHidden();
-  });
-
-  test('static mode still asks — the operator picks the backend there', async ({ page }) => {
-    await fakeDeployment(page, {
-      mode: 'static',
-      api_prefix: '',
-      auth: { mode: 'none', authenticated: true },
-    });
-    await page.goto('/');
-
-    await expect(page.locator('#setup-modal')).toHaveClass(/open/);
-    await expect(page.locator('#setup-token')).toBeVisible();
-  });
-
-  test('a 401 reads as an expired session, not as a missing backend', async ({ page }) => {
-    await fakeDeployment(
-      page,
-      { error: 'unauthenticated', message: 'no verified caller identity on this request' },
-      401
-    );
-    await page.goto('/');
-
-    await expect(
-      page.locator('#output-area .message.system', { hasText: 'session with this server' })
-    ).toBeVisible();
-    await expect(page.locator('#output-area .message.system').first()).toContainText('Reload');
-    // Nothing to attach to, so the modal is still the fallback.
-    await expect(page.locator('#setup-modal')).toHaveClass(/open/);
-  });
-
-  test('a deployment that does not describe itself behaves exactly as before', async ({ page }) => {
-    await fakeDeployment(page, {}, 404);
-    await page.goto('/');
-
-    await expect(page.locator('#setup-modal')).toHaveClass(/open/);
-    await expect(page.locator('#setup-endpoint')).toHaveValue('/');
-    await page.click('#setup-save');
-    await expect(page.locator('#status-connection')).toHaveClass(/\bconnected\b/);
-  });
-
   test('spatial shell lists the advertised prefix instead of guessing same-origin', async ({
     page,
   }) => {
@@ -172,6 +106,60 @@ test.describe('smoke: 015-config-discovery', () => {
     await expect(page.locator('#add-endpoint')).toHaveValue(PREFIX);
 
     await row.click();
+    await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
+  });
+
+  test('the discovered endpoint is not written back to storage', async ({ page }) => {
+    await fakeDeployment(page, HOSTED);
+    await page.goto('/solo.html');
+    await expect(page.locator('.side-session').first()).toBeVisible();
+
+    // Persisting it would outrank the next boot's discovery — in a key
+    // both shells read, where a stale row has nothing left to repair it
+    // now that the setup modal is gone.
+    const stored = await page.evaluate(() => localStorage.getItem('mast-web:daemons'));
+    expect(JSON.parse(stored || '[]')).toEqual([]);
+  });
+
+  test('static mode leaves the operator the same-origin row', async ({ page }) => {
+    await fakeDeployment(page, {
+      mode: 'static',
+      api_prefix: '',
+      auth: { mode: 'none', authenticated: true },
+    });
+    await page.goto('/solo.html');
+
+    // static reports no prefix on purpose: there the operator picks the
+    // backend, and the client overriding that would be inventing a
+    // policy the server deliberately declined to state. So the attach
+    // form keeps the markup's `/` and the sidebar tries it.
+    await expect(page.locator('#add-endpoint')).toHaveValue('/');
+    await expect(page.locator('.side-session').first()).toBeVisible();
+  });
+
+  test('a 401 reads as an expired session, not as a missing backend', async ({ page }) => {
+    await fakeDeployment(
+      page,
+      { error: 'unauthenticated', message: 'no verified caller identity on this request' },
+      401
+    );
+    await page.goto('/solo.html');
+
+    // The document could not have been served at all without a fresh
+    // sign-in, so reloading is the recovery — and saying so is the one
+    // thing a row full of "unauthorized" cannot.
+    await expect(page.locator('.side-error')).toContainText('expired');
+    await expect(page.locator('.side-error')).toContainText('reload');
+  });
+
+  test('a deployment that does not describe itself behaves exactly as before', async ({ page }) => {
+    await fakeDeployment(page, {}, 404);
+    await page.goto('/solo.html');
+
+    // A 404 here is a fine answer: it means nobody is describing this
+    // deployment, and same-origin is the guess that was always made.
+    await expect(page.locator('#add-endpoint')).toHaveValue('/');
+    await page.locator('.side-session').first().click();
     await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
   });
 

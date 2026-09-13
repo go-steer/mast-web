@@ -14,43 +14,52 @@
 
 // Smoke: 001-happy-turn — the canonical happy path. Fixture streams
 // capabilities → status → stream-chunk × N → turn-complete →
-// usage-update. The SPA auto-spawns an observer turn on the first
+// usage-update. The client auto-spawns an observer turn on the first
 // stream-chunk (v0.3.0 PR 3) so all events render even without an
 // operator prompt.
+//
+// Ran against index.html until #61 deleted it. Everything below the
+// shell is the same terminal.js either way; what moved is where the
+// numbers are painted — a per-terminal status row instead of a
+// page-wide status bar, because a shell with four transcripts open
+// cannot have one.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock } from './helpers.js';
+import { openSoloSession } from './helpers.js';
 
 test.describe('smoke: 001-happy-turn', () => {
   test('assistant text renders + per-turn footer stamps', async ({ page }) => {
-    await connectToMock(page, '001-happy-turn');
+    const screen = await openSoloSession(page, '001-happy-turn');
 
     // Assistant text streamed into a .message.assistant row via the
     // auto-spawned observer turn.
-    await expect(page.locator('#output-area .message.assistant').first()).toBeVisible();
+    await expect(screen.locator('.message.assistant').first()).toBeVisible();
 
     // Per-turn footer stamped from turn-complete (latency + tokens).
     // Only present if the observer turn's finish path ran.
-    await expect(page.locator('#output-area .turn-footer').first()).toBeVisible();
+    await expect(screen.locator('.turn-footer').first()).toBeVisible();
 
-    // Status-bar reflections of the stream.
-    await expect(page.locator('#status-model')).toContainText('gemini-2.5-flash');
-    await expect(page.locator('#status-turns')).toContainText('1');
+    // The terminal's own status row reflects the stream: model from
+    // status-update, T<n> from the turn that just closed.
+    const status = page.locator('#solo-body .term:visible .term-status');
+    await expect(status).toContainText('gemini-2.5-flash');
+    await expect(status).toContainText('T1');
   });
 
   // Guard for the vendored browser bundles (web/vendor/). Two ways this
   // has silently broken before and would again without an assertion:
-  // app.js:1666 gates highlighting behind `typeof hljs !== 'undefined'`,
+  // terminal.js gates highlighting behind `typeof hljs !== 'undefined'`,
   // so a bundle that fails to evaluate disables syntax highlighting with
-  // no error anywhere; and the CSP added to index.html would block the
-  // scripts outright if a future edit reintroduced a cross-origin src.
+  // no error anywhere; and the CSP in each shell's <head> would block
+  // the scripts outright if a future edit reintroduced a cross-origin
+  // src.
   test('vendored markdown + highlight bundles evaluate under the CSP', async ({ page }) => {
     const violations = [];
     page.on('console', (msg) => {
       if (/Content Security Policy/i.test(msg.text())) violations.push(msg.text());
     });
 
-    await connectToMock(page, '001-happy-turn');
+    await openSoloSession(page, '001-happy-turn');
 
     const globals = await page.evaluate(() => ({
       marked: typeof globalThis.marked,

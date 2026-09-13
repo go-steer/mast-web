@@ -13,39 +13,39 @@
 // limitations under the License.
 
 // Smoke: 005-capabilities-forward-compat — the v1.4.0 manifest
-// showcase. Backend advertises features / slash_commands / agent /
-// caller_id. SPA should:
-//   - populate the agent identity slot from capabilities.agent
-//   - populate the caller identity slot from capabilities.caller_id
-//   - hide the MCP sidebar section (features.mcp: false)
-//   - list /federate under server-advertised in /help output
+// showcase. The backend advertises features / slash_commands / agent /
+// caller_id, and the client has to do something with each.
 //
-// This is the most substantive PR 4b integration test — v0.3.0's
-// PR 1 state refactor sits between the SSE dispatcher and the UI,
-// so if the mirror-var wiring regressed, most of these assertions
-// would fail.
+// This spec used to check four sidebar slots in index.html. Three of
+// those questions are now asked in the vocabulary the surviving shells
+// have, and asked in 016 against this same fixture: features.mcp:false
+// hides /mcp from /help and from dispatch, features.specialists:true
+// leaves /specialists, and slash_commands shows up under "Advertised by
+// this agent". What is left here is the pair 016 does not cover — who
+// the backend says it is, and who it says you are.
 
 import { test, expect } from '@playwright/test';
-import { connectToMock } from './helpers.js';
+import { openSoloSession } from './helpers.js';
 
 test.describe('smoke: 005-capabilities-forward-compat', () => {
-  test('renders v1.4.0 capability-manifest fields', async ({ page }) => {
-    await connectToMock(page, '005-capabilities-forward-compat');
+  test('the manifest names the agent and the caller', async ({ page }) => {
+    const screen = await openSoloSession(page, '005-capabilities-forward-compat');
 
-    // Agent identity slot populated from capabilities.agent = {name: "mast", ...}.
-    await expect(page.locator('#agent-info')).toContainText('mast');
+    // capabilities.agent — name, version, and the model/provider it is
+    // configured with. index.html painted this into a sidebar slot; a
+    // terminal has no sidebar slot, so it answers /model, which is
+    // already the question it belongs to (#61).
+    const input = page.locator('#solo-body .term:visible .term-prompt');
+    await input.fill('/model');
+    await input.press('Enter');
+    const out = screen.locator('.message.system').last();
+    await expect(out).toContainText('Agent: mast 0.1.0-dev (gemini-2.5-pro via vertex)');
+    await expect(out).toContainText('Lean fork of core-agent');
 
-    // Caller identity — capabilities.caller_id = "alice@example.com".
-    // The SPA also fires a background /whoami; either source shows the identity.
-    await expect(page.locator('#identity-info')).toContainText(/alice|smoke/);
-
-    // MCP section is feature-gated (features.mcp: false). Should be hidden.
-    await expect(page.locator('#section-mcp')).toBeHidden();
-
-    // Specialists section is NOT gated (features.specialists: true).
-    await expect(page.locator('#section-specialists')).toBeVisible();
-
-    // Sessions section stays visible (features.multi_session: true).
-    await expect(page.locator('#section-sessions')).toBeVisible();
+    // The caller. capabilities.caller_id is "alice@example.com"; the
+    // terminal also fires a background /whoami, and the mock answers
+    // that for its own smoke identity — either source filling the slot
+    // is the thing under test, not which one won.
+    await expect(page.locator('#hud-identity')).toHaveText(/alice|smoke/);
   });
 });

@@ -26,6 +26,21 @@
  * Loaded by both shells, after styles.css (palette, themes, transcript
  * primitives) and before panel.css. The room's own additions —
  * #hud-camera, the audio toggle, the radar — stay in spatial.css.
+ *
+ * One colour rule, and it is the whole of #62(e): --accent means "this
+ * one is live". The selected session, the terminal in front, a turn in
+ * flight, a toggle that is on, the control under the pointer. Nothing
+ * else. Every button, heading and label here used to be accent at rest,
+ * and a HUD where every control is lit has no way left to say which one
+ * matters — so they are --text now and they light on hover.
+ *
+ * That demotion also happens to raise contrast in all ten themes, because
+ * --accent is a hue and --text is the one colour a palette is obliged to
+ * make readable. Worst pairs against --bg-surface, before → after:
+ * solarized-light 3.00 → 4.39, cloud-light 3.51 → 15.89, solarized-dark
+ * 3.53 → 4.86, pantheon-light 4.51 → 16.10. No theme moves the other way.
+ * The two solarized numbers are still the palette's own ceiling — those
+ * themes are low-contrast by design and fixing that is not this PR's job.
  */
 
 /* ─── The room both shells stand in ──────────────────────────────────
@@ -95,11 +110,14 @@ body.side-hidden #app-sidebar {
   gap: 6px;
 }
 
+/* A heading, not a live thing. The weight and the letterspacing are
+   already doing the work; the accent on top of them was the sidebar
+   shouting its own name louder than any row in it. */
 .side-title {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.18em;
-  color: var(--accent);
+  color: var(--text);
 }
 
 .side-head .side-icon {
@@ -204,9 +222,15 @@ body.side-hidden #app-sidebar {
   cursor: pointer;
 }
 
+/* A neutral tint, not an accent one. Hover was accent at 12% and the
+   selected row is accent at 16%: four percent of the same hue is not a
+   difference you can see, so running the pointer down the list made
+   every row look like the one you had picked. The pointer says "here",
+   the accent says "this one" — they are different statements and they
+   get different colours. */
 .side-session:hover,
 .side-session:focus-visible {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
   outline: none;
 }
 
@@ -380,7 +404,7 @@ body.side-hidden #app-sidebar {
 
 #batch-panel .batch-header h3 {
   font-size: 13px;
-  color: var(--accent);
+  color: var(--text);
 }
 
 #batch-input {
@@ -539,19 +563,17 @@ body.side-hidden #app-sidebar {
   white-space: nowrap;
 }
 
-#status-focus,
-#status-clock {
-  color: var(--accent);
-}
-
-/* The rest of the bar is context for the front terminal, not the
-   headline, so it stays at --text-dim and lets those two carry the
-   accent. Only the two counted facts light up. */
+/* The only accent on the bar, and the terminal in front is the only
+   thing on it that qualifies: everything else is a count or a total,
+   true of the window rather than live. The clock used to share this
+   rule, which made the least important thing down here one of the two
+   brightest. */
 #status-focus {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
+  color: var(--accent);
 }
 
 .status-focus-text {
@@ -603,10 +625,18 @@ body.side-hidden #app-sidebar {
   font-variant-numeric: tabular-nums;
 }
 
+/* Inherits the bar's --text-dim. A clock is the thing you glance at,
+   not the thing you look for. */
 #status-clock {
   font-variant-numeric: tabular-nums;
 }
 
+/* Furniture until you reach for it. These were accent at rest — every
+   one of them, in both shells: the sidebar toggle, the theme picker,
+   tile, reset view, the shell link, attach, the audio toggle. Eight lit
+   controls across a strip whose whole job is to let one thing stand
+   out. The border already says "pressable"; the colour is free to mean
+   something else. */
 .hud-btn {
   font-family: inherit;
   font-size: 10px;
@@ -616,15 +646,32 @@ body.side-hidden #app-sidebar {
   border: 1px solid var(--frame);
   border-radius: 3px;
   background: transparent;
-  color: var(--accent);
+  color: var(--text);
   cursor: pointer;
+  transition:
+    color 0.12s linear,
+    background-color 0.12s linear,
+    box-shadow 0.12s linear;
 }
 
 .hud-btn:hover,
 .hud-btn:focus-visible {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--accent);
   box-shadow: 0 0 12px -3px var(--glow);
   outline: none;
+}
+
+/* On is a state, so it gets the accent and keeps it when the pointer
+   leaves. The tint is the heavier one — hover is 10% neutral, this is
+   16% accent — because "you are touching this" and "this is switched
+   on" were 14% and 16% of the same hue and told you nothing apart.
+   Room audio is the only toggle wearing it today; the next one gets it
+   for free. */
+.hud-btn[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  box-shadow: 0 0 12px -3px var(--glow);
 }
 
 .hud-toggle {

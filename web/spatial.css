@@ -304,16 +304,23 @@ body.spatial.has-active .panel-anchor:not(.active):has(.panel-busy) {
 
 /* Muted is the resting state, so it is the one that has to look
    deliberate rather than broken: dimmed and un-framed, versus lit and
-   haloed when the room has a voice. */
+   haloed when the room has a voice. Only the off state is here now —
+   chrome.css grew a generic .hud-btn[aria-pressed='true'] in #62(e),
+   because "switched on" is not a fact about the room. */
 #btn-audio[aria-pressed='false'] {
   border-color: color-mix(in srgb, var(--frame) 55%, transparent);
   color: var(--text-dim);
   opacity: 0.7;
 }
 
-#btn-audio[aria-pressed='true'] {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  box-shadow: 0 0 12px -3px var(--glow);
+/* The id in the rule above outranks .hud-btn:hover, so without this the
+   muted toggle is the one control on the strip that does not answer the
+   pointer — which on a button whose resting state is deliberately dim
+   reads as disabled rather than off. */
+#btn-audio[aria-pressed='false']:hover,
+#btn-audio[aria-pressed='false']:focus-visible {
+  color: var(--accent);
+  opacity: 1;
 }
 
 /* ─── Radar ──────────────────────────────────────────────────────────

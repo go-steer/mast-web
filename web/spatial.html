@@ -16,12 +16,16 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https:; base-uri 'none'; object-src 'none'; form-action 'none'"
     />
-    <!-- styles.css supplies the palette, all six themes, and every
-         transcript primitive (.message / .md-content / .tool-row /
-         .turn-footer); spatial.css only adds the 3D scene and the
-         per-panel terminal chrome on top. -->
+    <!-- The same four sheets solo.html loads, with the room in place of
+         the flattening. Order is the cascade: styles.css is the palette,
+         every theme and every transcript primitive (.message /
+         .md-content / .tool-row / .turn-footer); chrome.css is the HUD /
+         status bar / sidebar; panel.css is a terminal; spatial.css puts
+         several of them in a 3D scene. -->
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="vendor/highlight-github-dark-11.12.0.min.css" />
+    <link rel="stylesheet" href="chrome.css" />
+    <link rel="stylesheet" href="panel.css" />
     <link rel="stylesheet" href="spatial.css" />
   </head>
   <body class="spatial">
@@ -42,7 +46,7 @@
     <div id="scene-scanlines" aria-hidden="true"></div>
     <div id="scene-vignette" aria-hidden="true"></div>
 
-    <header id="spatial-hud">
+    <header id="app-hud">
       <button type="button" class="hud-btn hud-toggle" id="btn-sidebar" title="Toggle agent list">
         ☰
       </button>
@@ -50,8 +54,12 @@
       <span class="hud-sep">//</span>
       <span class="hud-item">SPATIAL_SHELL v0.2</span>
       <span class="hud-sep">|</span>
-      <span class="hud-item" id="hud-panels">0 terminals</span>
-      <span class="hud-sep">|</span>
+      <!-- The panel count used to sit here. It is in the status bar
+           now, next to how many of them are mid-turn and what they have
+           cost — one readout in one place beats the same number twice
+           at opposite edges of the window. The camera stays: it is the
+           one thing up here that is about the room and not the
+           sessions. -->
       <span class="hud-item" id="hud-camera">yaw 0° pitch 0°</span>
       <!-- Who the focused panel's backend resolved this caller to.
            Hidden until /whoami answers: an empty identity slot reads
@@ -86,7 +94,7 @@
 
     <!-- Agent / session picker. Every row is one attach-protocol
          session; clicking one opens (or re-centers) its terminal. -->
-    <aside id="spatial-sidebar" aria-label="Agents and sessions">
+    <aside id="app-sidebar" aria-label="Agents and sessions">
       <div class="side-head">
         <span class="side-title">AGENTS</span>
         <button type="button" class="side-icon" id="btn-refresh" title="Re-list sessions">↻</button>
@@ -118,23 +126,11 @@
       <div class="radar-eye"></div>
     </div>
 
-    <footer id="spatial-status">
-      <span class="status-item" id="status-focus">active: —</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">click panel: focus</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">drag bar: move</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">drag floor: orbit</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">wasd: fly</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">esc: send back</span>
-      <span class="hud-sep">|</span>
-      <span class="status-item">o: open all</span>
-      <span class="hud-spacer"></span>
-      <span class="status-item" id="status-clock">--:--:--</span>
-    </footer>
+    <!-- Filled by status-bar.js, which builds its own slots — see the
+         note there. It used to be six keyboard hints and a clock; the
+         keys are in the sidebar hint above and in the shortcuts overlay,
+         and a status bar should be reporting state. -->
+    <footer id="app-status"></footer>
 
     <!-- Markdown + syntax highlighting, vendored at exact versions and
          shared byte-for-byte with solo.html. See web/vendor/README.md
@@ -165,6 +161,7 @@
     <!-- Shared with solo.html: the daemon sidebar and the theme list. -->
     <script src="theme.js"></script>
     <script src="daemon-sidebar.js"></script>
+    <script src="status-bar.js"></script>
     <script src="shell.js"></script>
     <!-- Spatial-only, and optional: spatial.js calls it through a guard,
          so a browser without Web Audio just gets a silent room. -->

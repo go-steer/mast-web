@@ -26,7 +26,7 @@
 //      drawer is the sharp case — styles.css gives #batch-panel a
 //      `border-top` and expects the classic shell's document flow,
 //      which these shells do not have, so it needs a rule of its own in
-//      spatial.css and would otherwise render in the wrong place or not
+//      chrome.css and would otherwise render in the wrong place or not
 //      at all.
 //
 //   2. Escape. spatial.js parks the centred panel on Escape and
@@ -160,7 +160,7 @@ test.describe('smoke: 017-shell-commands', () => {
     const drawer = page.locator('#batch-panel');
     await expect(drawer).toBeVisible();
     // styles.css alone would have put this in the document flow of a
-    // shell that has none; spatial.css pins it to the bottom edge.
+    // shell that has none; chrome.css pins it to the bottom edge.
     await expect(drawer).toHaveCSS('position', 'fixed');
     const box = await drawer.boundingBox();
     const viewport = page.viewportSize();

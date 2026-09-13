@@ -41,7 +41,7 @@ test.describe('smoke: 004-observer-mode', () => {
     await expect(banner).toContainText('runs autonomously');
     // Pinned, not appended: app.js appended, so the one notice that
     // explains why the prompt does what it does scrolled away with the
-    // second screenful. The sticky rule is one line of spatial.css and
+    // second screenful. The sticky rule is one line of panel.css and
     // fails silently.
     await expect(banner).toHaveCSS('position', 'sticky');
 

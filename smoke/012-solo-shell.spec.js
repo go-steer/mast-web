@@ -66,7 +66,9 @@ test.describe('smoke: 012-solo-shell', () => {
 
     await expect(screen.locator('.message.assistant')).toContainText('Hello world');
     await expect(page.locator('.solo-tab')).toHaveCount(1);
-    await expect(page.locator('#hud-count')).toHaveText('1 session');
+    // toContainText, not toHaveText: the slot grows a "· N running"
+    // suffix whenever a turn is in flight.
+    await expect(page.locator('#status-fleet')).toContainText('1 terminal');
     await expect(page.locator('#status-focus')).toContainText('smoke-session');
   });
 
@@ -146,7 +148,9 @@ test.describe('smoke: 012-solo-shell', () => {
     // mounted is a session still holding an SSE connection open.
     await expect(page.locator('.solo-tab')).toHaveCount(3);
     await expect(page.locator('.term[data-session="smoke-session"]')).toHaveCount(0);
-    await expect(page.locator('#hud-count')).toHaveText('3 sessions');
+    // toContainText, not toHaveText: the slot grows a "· N running"
+    // suffix whenever a turn is in flight.
+    await expect(page.locator('#status-fleet')).toContainText('3 terminals');
 
     // The neighbour takes over rather than the frame going empty.
     await expect(page.locator('#solo-body .term:visible')).toHaveAttribute(
@@ -181,6 +185,6 @@ test.describe('smoke: 012-solo-shell', () => {
 
     await expect(page.locator('#solo-empty')).toBeVisible();
     await expect(page.locator('.solo-tab')).toHaveCount(0);
-    await expect(page.locator('#hud-count')).toHaveText('0 sessions');
+    await expect(page.locator('#status-fleet')).toHaveText('0 terminals');
   });
 });

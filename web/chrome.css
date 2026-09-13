@@ -1,0 +1,702 @@
+/* Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* chrome.css — the furniture both shells wear.
+ *
+ * The HUD strip along the top, the status bar along the bottom, the
+ * agent sidebar down the left, the two atmosphere overlays and the
+ * batch drawer. None of it knows whether it is framing one terminal or
+ * a room full of them, which is exactly why it is here: through v0.3
+ * this lived in spatial.css and solo.html loaded that whole sheet to
+ * reach it, so the default shell was styled as an override of the
+ * secondary one. #62 split it.
+ *
+ * Loaded by both shells, after styles.css (palette, themes, transcript
+ * primitives) and before panel.css. The room's own additions —
+ * #hud-camera, the audio toggle, the radar — stay in spatial.css.
+ *
+ * One colour rule, and it is the whole of #62(e): --accent means "this
+ * one is live". The selected session, the terminal in front, a turn in
+ * flight, a toggle that is on, the control under the pointer. Nothing
+ * else. Every button, heading and label here used to be accent at rest,
+ * and a HUD where every control is lit has no way left to say which one
+ * matters — so they are --text now and they light on hover.
+ *
+ * That demotion also happens to raise contrast in all ten themes, because
+ * --accent is a hue and --text is the one colour a palette is obliged to
+ * make readable. Worst pairs against --bg-surface, before → after:
+ * solarized-light 3.00 → 4.39, cloud-light 3.51 → 15.89, solarized-dark
+ * 3.53 → 4.86, pantheon-light 4.51 → 16.10. No theme moves the other way.
+ * The two solarized numbers are still the palette's own ceiling — those
+ * themes are low-contrast by design and fixing that is not this PR's job.
+ */
+
+/* ─── The room both shells stand in ──────────────────────────────────
+   Named for the 3D one because that is where the lighting was designed,
+   but solo wears all of it: the same backdrop gradient, the same
+   damage vocabulary. What it doesn't have is a camera — see solo.css
+   for what it flattens and spatial.css for what it flattens away. */
+body.spatial,
+body.solo {
+  /* What a terminal wears once its session is gone: half the theme's
+     red, half its dimmest text. A dead terminal should read as drained
+     rather than as an alert — the alert already happened, this is the
+     aftermath. Room-level rather than per-.panel because it depends on
+     nothing per-panel, and because the radar blip has to reach it too. */
+  --hue-dead: color-mix(in srgb, var(--red) 42%, var(--text-dim));
+
+  display: block;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(
+    ellipse at 50% 62%,
+    var(--room-core) 0%,
+    var(--room-mid) 60%,
+    var(--room-edge) 100%
+  );
+  cursor: default;
+}
+
+/* ─── Sidebar ────────────────────────────────────────────────────────
+   The agent list. In the room it sits over the scene rather than in it
+   — a picker that drifted in 3D would be a cruel joke — and in solo it
+   is simply the left column. Same 236px either way; solo.css insets
+   #solo-stage by it. */
+
+#app-sidebar {
+  position: absolute;
+  left: 0;
+  top: 34px;
+  bottom: 26px;
+  width: 236px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 11px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  backdrop-filter: blur(4px);
+  border-right: 1px solid var(--frame);
+  box-shadow: 8px 0 26px -22px var(--glow);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Was an enumeration of the two shells when this rule lived in
+   spatial.css and had to name the bodies it meant. It doesn't any
+   more — .side-hidden is on <body> or it isn't, and both shells put it
+   there the same way (solo.js:446, spatial.js:1349). */
+body.side-hidden #app-sidebar {
+  transform: translateX(-101%);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A heading, not a live thing. The weight and the letterspacing are
+   already doing the work; the accent on top of them was the sidebar
+   shouting its own name louder than any row in it. */
+.side-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--text);
+}
+
+.side-head .side-icon {
+  margin-left: auto;
+}
+
+.side-icon {
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.side-icon:hover,
+.side-icon:focus-visible {
+  color: var(--accent);
+  border-color: var(--frame);
+  outline: none;
+}
+
+.side-icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.side-icon:disabled:hover {
+  color: var(--text-dim);
+  border-color: transparent;
+}
+
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-daemon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--frame);
+  margin-bottom: 3px;
+}
+
+.side-daemon-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.side-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-dim);
+}
+
+.side-daemon[data-state='connected'] .side-dot {
+  background: var(--green);
+  box-shadow: 0 0 7px var(--green);
+}
+
+.side-daemon[data-state='connecting'] .side-dot {
+  background: var(--yellow);
+}
+
+.side-daemon[data-state='error'] .side-dot {
+  background: var(--red);
+}
+
+.side-session {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* A neutral tint, not an accent one. Hover was accent at 12% and the
+   selected row is accent at 16%: four percent of the same hue is not a
+   difference you can see, so running the pointer down the list made
+   every row look like the one you had picked. The pointer says "here",
+   the accent says "this one" — they are different statements and they
+   get different colours. */
+.side-session:hover,
+.side-session:focus-visible {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  outline: none;
+}
+
+.side-session.open {
+  border-left-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--text);
+}
+
+.side-session.active {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.side-session-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-session-meta {
+  font-size: 9px;
+  opacity: 0.62;
+  flex: none;
+}
+
+.side-session[data-status='idle'] .side-session-id {
+  opacity: 0.66;
+}
+
+/* Destructive, so it stays invisible until the row is under the
+   pointer — a delete control that is always lit next to every session
+   is a delete control somebody eventually hits by accident. Keyboard
+   focus reveals it too, or it would be unreachable without a mouse. */
+.side-session-del {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  border-radius: 2px;
+  color: var(--text-dim);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.side-session:hover .side-session-del,
+.side-session:focus-within .side-session-del,
+.side-session-del:focus-visible {
+  opacity: 1;
+}
+
+.side-session-del:hover {
+  color: var(--red);
+}
+
+.side-empty,
+.side-error {
+  padding: 2px 4px;
+  font-size: 10px;
+  font-style: italic;
+}
+
+.side-error {
+  color: var(--red);
+  font-style: normal;
+  word-break: break-word;
+}
+
+#add-daemon {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--frame);
+}
+
+.side-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+#add-daemon input {
+  background: var(--bg);
+  border: 1px solid var(--frame);
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  min-width: 0;
+}
+
+#add-daemon input:focus {
+  border-color: var(--accent);
+}
+
+.side-wide {
+  width: 100%;
+}
+
+.side-hint {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.5;
+  opacity: 0.66;
+}
+
+/* ─── Overlays ───────────────────────────────────────────────────── */
+
+#scene-scanlines,
+#scene-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#scene-scanlines {
+  background: repeating-linear-gradient(to bottom, var(--scan) 0 1px, transparent 1px 3px);
+  opacity: 0.9;
+}
+
+#scene-vignette {
+  background: radial-gradient(ellipse at 50% 48%, transparent 44%, var(--room-vignette) 100%);
+}
+
+/* ─── Batch drawer ───────────────────────────────────────────────────
+   shell.js builds it; both shells can open it. It lived in two sheets
+   until now — the insides in styles.css, an outer-frame override here —
+   because the base rule was shaped for the classic shell, where
+   #batch-panel was a flex child of the document and `border-top` put it
+   under the transcript. Neither surviving shell has that column, so the
+   override turned it into a pinned drawer and the two rules disagreed
+   about what it was. With the classic shell gone (#61) there is nothing
+   left to disagree with: the frame is folded into the base rule and the
+   whole thing is here, with the rest of the furniture.
+
+   Pinned to the bottom edge, over everything except the modals
+   (z-index 100) it can be opened from. */
+#batch-panel {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow: hidden;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--accent);
+  box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+}
+
+#batch-panel.open {
+  display: flex;
+}
+
+#batch-panel .batch-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+#batch-panel .batch-header h3 {
+  font-size: 13px;
+  color: var(--text);
+}
+
+#batch-input {
+  width: 100%;
+  min-height: 100px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+  margin: 8px 16px;
+  outline: none;
+}
+
+#batch-results {
+  overflow: auto;
+  flex: 1;
+  padding: 0 16px 8px;
+}
+
+#batch-progress {
+  padding: 4px 16px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+#batch-progress-text {
+  margin-bottom: 4px;
+}
+
+#batch-progress-bar {
+  height: 3px;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#batch-progress-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  transition: width 200ms ease-out;
+}
+
+#batch-results table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+#batch-results th,
+#batch-results td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+#batch-results th {
+  color: var(--text-dim);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#batch-results th:hover {
+  color: var(--accent);
+}
+
+.batch-actions {
+  padding: 8px 16px;
+  display: flex;
+  gap: 8px;
+}
+
+.batch-actions button {
+  padding: 4px 12px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.batch-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ─── HUD + status bar ───────────────────────────────────────────── */
+
+#app-hud,
+#app-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  backdrop-filter: blur(3px);
+  color: var(--text-dim);
+}
+
+#app-hud {
+  top: 0;
+  border-bottom: 1px solid var(--frame);
+  box-shadow: 0 6px 22px -18px var(--glow);
+}
+
+#app-status {
+  bottom: 0;
+  border-top: 1px solid var(--frame);
+  box-shadow: 0 -6px 22px -18px var(--glow);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+/* The wordmark is the one piece of chrome that carries the gradient.
+   Themes that don't have one leave --brand-image at `none`, which makes
+   background-clip a no-op and falls back to a plain accent-colored
+   word. */
+#app-hud .hud-brand {
+  font-size: 13px;
+  background-image: var(--brand-image);
+  background-clip: text;
+  color: var(--brand-color);
+}
+
+.hud-sep {
+  color: var(--border-soft);
+  opacity: 0.75;
+}
+
+.hud-spacer {
+  flex: 1;
+}
+
+/* styles.css also carried a `.status-item { display: flex }` — the
+   classic shell's status bar, left behind when that shell went (#61)
+   and inherited by accident when this one took the class name over. It
+   put a flex gap either side of the "· N down" suffix, which already
+   has its own spaces. Deleted there; a status slot is a run of text. */
+.hud-item,
+.status-item {
+  white-space: nowrap;
+}
+
+/* The only accent on the bar, and the terminal in front is the only
+   thing on it that qualifies: everything else is a count or a total,
+   true of the window rather than live. The clock used to share this
+   rule, which made the least important thing down here one of the two
+   brightest. */
+#status-focus {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--accent);
+}
+
+.status-focus-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The one dot on the bar, and it belongs to the terminal in front.
+   Same four states, same colours and same halo as the sidebar's
+   per-daemon dot — a dot that means "up" in one place and something
+   else six pixels lower would be worse than no dot. */
+.status-conn {
+  font-size: 7px;
+  line-height: 1;
+  color: var(--text-dim);
+  flex: none;
+}
+
+.status-conn[data-state='connected'] {
+  color: var(--green);
+  text-shadow: 0 0 7px var(--green);
+}
+
+.status-conn[data-state='connecting'] {
+  color: var(--yellow);
+}
+
+.status-conn[data-state='terminal'] {
+  color: var(--red);
+}
+
+/* A turn in flight somewhere in the window. Accent rather than green:
+   green is "the wire is up", which is a different question and is
+   already answered one slot along. */
+.status-live {
+  color: var(--accent);
+}
+
+.status-bad {
+  color: var(--red);
+}
+
+/* Dimmer than the rest of the bar until it is worth reading. Cost is
+   the number you want to be able to find without it being the number
+   you keep noticing. */
+#status-cost {
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inherits the bar's --text-dim. A clock is the thing you glance at,
+   not the thing you look for. */
+#status-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Furniture until you reach for it. These were accent at rest — every
+   one of them, in both shells: the sidebar toggle, the theme picker,
+   tile, reset view, the shell link, attach, the audio toggle. Eight lit
+   controls across a strip whose whole job is to let one thing stand
+   out. The border already says "pressable"; the colour is free to mean
+   something else. */
+.hud-btn {
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--frame);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    color 0.12s linear,
+    background-color 0.12s linear,
+    box-shadow 0.12s linear;
+}
+
+.hud-btn:hover,
+.hud-btn:focus-visible {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--accent);
+  box-shadow: 0 0 12px -3px var(--glow);
+  outline: none;
+}
+
+/* On is a state, so it gets the accent and keeps it when the pointer
+   leaves. The tint is the heavier one — hover is 10% neutral, this is
+   16% accent — because "you are touching this" and "this is switched
+   on" were 14% and 16% of the same hue and told you nothing apart.
+   Room audio is the only toggle wearing it today; the next one gets it
+   for free. */
+.hud-btn[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  box-shadow: 0 0 12px -3px var(--glow);
+}
+
+.hud-toggle {
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* The picker borrows .hud-btn wholesale; only the native select chrome
+   needs correcting. The dropdown itself is painted by the OS, so it
+   needs a real background or it renders white-on-white in some
+   browsers. */
+#hud-theme {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  max-width: 190px;
+}
+
+#hud-theme option {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app-sidebar {
+    transition: none;
+  }
+}

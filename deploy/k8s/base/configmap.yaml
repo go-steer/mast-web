@@ -1,0 +1,54 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Every knob here has a flag twin on mast-web-server; the env spelling
+# is what a ConfigMap can set. See `mast-web-server --help` or the
+# header comment in cmd/mast-web-server/main.go for the full list.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mast-web-config
+data:
+  LISTEN: ':8080'
+
+  # proxy, not static: the browser in this shape holds no agent
+  # credential at all. The agent credential lives in the pod, the human
+  # is authenticated at this edge, and the identity is forwarded to the
+  # backend as X-Asserted-Caller.
+  MODE: 'proxy'
+  API_PREFIX: '/attach'
+
+  # The one line an overlay is expected to reinterpret.
+  #
+  # `mast-web-backend` is a stable Service name, not a stable
+  # implementation: the kind overlay puts mast-web-server's own
+  # --mode=mock behind it, and a cluster with a real agent points the
+  # same name at core-agent. Keeping the name fixed here is what makes
+  # the GKE delta an overlay rather than a rewrite — nothing in the BFF
+  # Deployment, Service or probe config has to change to swap what is
+  # behind it.
+  BACKEND_URL: 'http://mast-web-backend'
+
+  # proxy-header is sound only when a fronting proxy strips
+  # client-supplied copies of AUTH_HEADER and this port is not directly
+  # reachable. In-cluster that means: no Ingress or Gateway route to
+  # this Service that bypasses the authenticating proxy. The server
+  # cannot check that from in-process, which is exactly why the kind job
+  # asserts the 401 from outside.
+  #
+  # A GKE overlay replaces these two with AUTH_MODE=iap-jwt plus
+  # IAP_AUDIENCE, where the assertion is a signed JWT and a
+  # client-supplied copy is not forgeable.
+  AUTH_MODE: 'proxy-header'
+  AUTH_HEADER: 'X-Auth-Request-Email'

@@ -1,0 +1,73 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Kind
+
+# Deploys the image into a throwaway Kubernetes cluster and checks the
+# anonymous surface from outside the pod.
+#
+# READ THIS BEFORE TRUSTING A GREEN RUN.
+#
+# The thing behind the BFF is mast-web-server's own --mode=mock — a
+# fixture replayer, not core-agent. So green here means the image boots
+# under a scheduler, kubelet's probes are satisfied, the manifests
+# agree with each other, an identity authenticated at the BFF's edge
+# survives a Service hop and changes the answer, and /healthz + /readyz
+# are still the only paths a stranger can reach.
+#
+# It does not mean a real agent accepts what we send it. Nothing in
+# this workflow has ever talked to one. The real-backend version is
+# tracked separately as #66 — "mock for now" is a scoping decision with
+# an issue behind it, not the permanent state of this job.
+#
+# Separate from CI for the same reason Smoke is: a docker build plus a
+# cluster boot is minutes of wall time, and it should not gate a merge
+# on the unit tests being green.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    name: cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # install_only: the cluster is created by dev/tools/kind-cluster,
+      # so the same command produces the same cluster locally and here.
+      # An action that pre-creates one would make CI the only place the
+      # real sequence runs.
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      # Everything — build, load, apply, wait, assert, dump on failure.
+      # Logic lives in dev/tools/, not in YAML, so a red run is
+      # reproducible with one command on a laptop.
+      - name: Deploy to kind and assert
+        run: dev/tools/kind-cluster

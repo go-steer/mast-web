@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Stand the deployment up in a throwaway kind cluster and assert the
+# anonymous surface from outside the pod.
+#
+# WHAT THIS COVERS, AND WHAT IT DOES NOT
+#
+# The backend here is mast-web-server's own --mode=mock, not a real
+# agent (see deploy/k8s/overlays/kind/mock-backend.yaml). So a green run
+# means: the image boots under a scheduler, the probes satisfy kubelet,
+# the manifests are internally consistent, an identity authenticated at
+# the BFF's edge crosses a Service boundary and changes what the backend
+# answers — and that the anonymous surface is still two health probes
+# and nothing else.
+#
+# It does NOT mean a real agent accepts what the proxy sends. That is
+# dev/tools/e2e-real-backend's job locally, and go-steer/mast-web#66 in
+# a cluster.
+#
+# The 401 assertions are the reason this exists at all. Every one of
+# them also holds in a Go test — but a Go test calls buildMux directly,
+# so it cannot see a probe path exempted by an Ingress, a Service
+# pointed at the wrong port, or a ConfigMap that forgot AUTH_MODE and
+# left the deployment wide open. Those are deployment-shaped bugs and
+# this is the deployment-shaped check.
+#
+# Usage:
+#     dev/tools/kind-cluster                 # build, apply, assert, destroy
+#     KEEP_RUNNING=1 dev/tools/kind-cluster  # leave the cluster + forward up
+#     REUSE_CLUSTER=1 dev/tools/kind-cluster # don't recreate an existing one
+#
+# Environment:
+#     KIND_CLUSTER   cluster name (default mast-web)
+#     IMAGE          image tag to build and load (default mast-web:kind)
+#     PORT           local port for the forward (default 18080)
+#     SKIP_BUILD     non-empty: assume IMAGE already exists
+#     KEEP_RUNNING   non-empty: don't delete the cluster on the way out
+#     REUSE_CLUSTER  non-empty: keep an existing cluster of that name
+#
+# Needs docker, kind and kubectl on PATH. Not part of `npm run ci`: it
+# wants a container runtime, which the unit-test presubmits do not.
+
+. "$(dirname "$0")/common.sh"
+
+ROOT="$(repo_root)"
+CLUSTER="${KIND_CLUSTER:-mast-web}"
+IMAGE="${IMAGE:-mast-web:kind}"
+PORT="${PORT:-18080}"
+NS="mast-web"
+OVERLAY="$ROOT/deploy/k8s/overlays/kind"
+BASE_URL="http://127.0.0.1:${PORT}"
+
+# The identity header the deployment is configured to trust
+# (deploy/k8s/base/configmap.yaml). curl plays the fronting proxy here,
+# which is also the point of the anonymous assertions: nothing but that
+# proxy is supposed to be able to set it.
+AUTH_HEADER="X-Auth-Request-Email"
+
+# smoke@example.com owns two of the mock's fixture sessions; nobody owns
+# anything as far as stranger@ is concerned. A caller the ACL knows and
+# one it doesn't, so a 200 with a session list can't be mistaken for a
+# fixed response.
+KNOWN_USER="smoke@example.com"
+STRANGER="stranger@example.com"
+
+for bin in docker kind kubectl; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "kind-cluster: $bin not found on PATH." >&2
+    echo "  docker:  https://docs.docker.com/engine/install/" >&2
+    echo "  kind:    go install sigs.k8s.io/kind@latest" >&2
+    echo "  kubectl: https://kubernetes.io/docs/tasks/tools/" >&2
+    exit 1
+  fi
+done
+
+FAILURES=0
+FORWARD_PID=""
+
+pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+fail() {
+  printf '  \033[31m✗\033[0m %s\n' "$1"
+  printf '      want: %s\n      got:  %s\n' "$2" "$3"
+  FAILURES=$((FAILURES + 1))
+}
+check() { # check <label> <want> <got>
+  if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1" "$2" "$3"; fi
+}
+check_contains() { # check_contains <label> <needle> <haystack>
+  if [[ "$3" == *"$2"* ]]; then pass "$1"; else fail "$1" "*$2*" "$3"; fi
+}
+check_not_contains() {
+  if [[ "$3" != *"$2"* ]]; then pass "$1"; else fail "$1" "NOT *$2*" "$3"; fi
+}
+section() { printf '\n\033[1m▸ %s\033[0m\n' "$1"; }
+
+status_of() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+as_user() { # as_user <identity> <curl args...>
+  local who="$1"; shift
+  curl -sS -H "${AUTH_HEADER}: ${who}" "$@"
+}
+
+# diagnose — everything you'd type by hand after a red run. Printed on
+# any failure, because a kind cluster that CI has already deleted cannot
+# be inspected afterwards.
+diagnose() {
+  section "cluster state"
+  kubectl -n "$NS" get pods,svc,endpoints -o wide || true
+  kubectl -n "$NS" describe pods || true
+  for c in mast-web mast-web-backend; do
+    printf '\n--- logs: %s ---\n' "$c"
+    kubectl -n "$NS" logs "deploy/$c" --tail=80 --all-containers || true
+  done
+}
+
+cleanup() {
+  [[ -n "$FORWARD_PID" ]] && kill "$FORWARD_PID" 2>/dev/null || true
+  wait 2>/dev/null || true
+  if [[ -z "${KEEP_RUNNING:-}" ]]; then
+    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+# ── build ────────────────────────────────────────────────────────────
+
+section "build $IMAGE"
+if [[ -n "${SKIP_BUILD:-}" ]]; then
+  echo "  SKIP_BUILD set — using the existing $IMAGE"
+else
+  # Plain `docker build`, not buildx multi-arch: kind runs one node on
+  # the host's architecture, so the other leg would be built and then
+  # thrown away. release.yml is where the multi-arch build belongs.
+  docker build -t "$IMAGE" "$ROOT"
+fi
+
+# ── cluster ──────────────────────────────────────────────────────────
+
+section "kind cluster $CLUSTER"
+if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+  if [[ -n "${REUSE_CLUSTER:-}" ]]; then
+    echo "  reusing the existing cluster"
+  else
+    echo "  deleting the existing cluster (REUSE_CLUSTER=1 to keep it)"
+    kind delete cluster --name "$CLUSTER"
+    kind create cluster --name "$CLUSTER"
+  fi
+else
+  kind create cluster --name "$CLUSTER"
+fi
+
+kind load docker-image "$IMAGE" --name "$CLUSTER"
+
+# ── apply ────────────────────────────────────────────────────────────
+
+section "apply $OVERLAY"
+kubectl apply -k "$OVERLAY"
+
+# The backend first: the BFF is ready whether or not it can reach one
+# (its /readyz is a process check), so waiting on the BFF alone would
+# let the assertions race the mock's first listen.
+for d in mast-web-backend mast-web; do
+  if ! kubectl -n "$NS" rollout status "deploy/$d" --timeout=180s; then
+    diagnose
+    exit 1
+  fi
+done
+
+kubectl -n "$NS" port-forward svc/mast-web "${PORT}:80" >/dev/null 2>&1 &
+FORWARD_PID=$!
+
+# port-forward returns before the tunnel is listening. /healthz is
+# anonymous in every mode, so "it answered 200" is a readiness signal
+# that doesn't depend on the auth configuration being right — which is
+# what the assertions below are there to decide.
+ready=""
+for _ in $(seq 1 100); do
+  if [[ "$(status_of "$BASE_URL/healthz" 2>/dev/null)" == "200" ]]; then ready=1; break; fi
+  sleep 0.2
+done
+if [[ -z "$ready" ]]; then
+  echo "kind-cluster: the forward never served $BASE_URL/healthz" >&2
+  diagnose
+  exit 1
+fi
+
+# Then wait for the hop, which is a separate fact. Both Deployments
+# report ready before the backend's Service name resolves — readiness is
+# a per-process check and CoreDNS is not in it — so the first proxied
+# request can spend a 5s dial timeout and come back 502 while everything
+# is in fact healthy. Observed on a cold kind cluster; asserting through
+# it without this wait fails once in a while and looks like a real bug.
+ready=""
+for _ in $(seq 1 60); do
+  if [[ "$(status_of -H "${AUTH_HEADER}: ${KNOWN_USER}" "$BASE_URL/attach/sessions")" == "200" ]]; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$ready" ]]; then
+  echo "kind-cluster: the BFF never reached the backend through $BASE_URL/attach" >&2
+  diagnose
+  exit 1
+fi
+
+# ── 1. the anonymous surface ─────────────────────────────────────────
+
+section "1. anonymous surface"
+
+check "GET /healthz is 200" "200" "$(status_of "$BASE_URL/healthz")"
+check "GET /readyz is 200"  "200" "$(status_of "$BASE_URL/readyz")"
+
+body="$(curl -sS "$BASE_URL/config")"
+check "GET /config is 401" "401" "$(status_of "$BASE_URL/config")"
+check_contains "…as JSON, not a login page" '"error":"unauthenticated"' "$body"
+# A 401 that still describes the deployment would defeat the point: the
+# body a stranger gets is not a map of where the credentialed proxy is.
+check_not_contains "naming no api prefix" 'api_prefix'   "$body"
+check_not_contains "naming no auth mode"  'proxy-header' "$body"
+
+check "GET /attach/sessions is 401" "401" "$(status_of "$BASE_URL/attach/sessions")"
+
+# Sec-Fetch-Dest is what makes this a *navigation* rather than a
+# subresource fetch — withAuth answers the two differently on purpose,
+# and curl's default looks like neither. Without the header this path
+# serves the SPA shell, which is correct and is not what's under test.
+check "a document navigation is 401" "401" \
+  "$(status_of -H 'Sec-Fetch-Dest: document' "$BASE_URL/")"
+
+# ── 2. an identity crosses the pod boundary ──────────────────────────
+
+section "2. identified caller"
+
+body="$(as_user "$KNOWN_USER" "$BASE_URL/config")"
+check "GET /config is 200" "200" "$(status_of -H "${AUTH_HEADER}: ${KNOWN_USER}" "$BASE_URL/config")"
+check_contains "reports proxy mode"   '"mode":"proxy"'   "$body"
+check_contains "echoes the caller"    "\"identity\":\"${KNOWN_USER}\"" "$body"
+
+# Two pods and a Service between the header and this answer. If the BFF
+# stopped asserting the identity outbound, the mock would see an
+# anonymous caller and this would not name anyone.
+body="$(as_user "$KNOWN_USER" "$BASE_URL/attach/whoami")"
+check_contains "the backend sees the same caller" "\"identity\":\"${KNOWN_USER}\"" "$body"
+
+body="$(as_user "$KNOWN_USER" "$BASE_URL/attach/sessions")"
+check "GET /attach/sessions is 200" "200" \
+  "$(status_of -H "${AUTH_HEADER}: ${KNOWN_USER}" "$BASE_URL/attach/sessions")"
+check_contains "…listing a session this caller owns" 'smoke-session' "$body"
+
+# The same request as a caller the backend's ACL has never heard of. A
+# proxy that dropped the identity, or a backend that ignored it, would
+# answer both of these identically.
+body="$(as_user "$STRANGER" "$BASE_URL/attach/sessions")"
+check_not_contains "a stranger is shown no session" 'smoke-session' "$body"
+
+# ── result ───────────────────────────────────────────────────────────
+
+if [[ "$FAILURES" -gt 0 ]]; then
+  printf '\n\033[31m%d assertion(s) failed\033[0m\n' "$FAILURES"
+  diagnose
+  exit 1
+fi
+
+printf '\n\033[32mall assertions passed\033[0m\n'
+
+if [[ -n "${KEEP_RUNNING:-}" ]]; then
+  cat <<EOF
+
+────────────────────────────────────────────────────────────────────
+ The cluster is still up and forwarded to $BASE_URL.
+
+ Every request needs the identity header a fronting proxy would add:
+
+     curl -H '${AUTH_HEADER}: ${KNOWN_USER}' $BASE_URL/config
+
+ A browser cannot set it, so the SPA will 401 — which is the mode
+ working, not the mode broken. Tear down with:
+
+     kind delete cluster --name $CLUSTER
+────────────────────────────────────────────────────────────────────
+
+Ctrl-C to stop the port-forward.
+EOF
+  wait "$FORWARD_PID"
+fi

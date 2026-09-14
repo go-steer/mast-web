@@ -74,6 +74,18 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
 FROM gcr.io/distroless/static:nonroot
 COPY --from=go-stage /out/mast-web-server /mast-web-server
 
+# The attach-core conformance fixtures (~96KB of JSONL next to a ~10MB
+# binary). --mode=mock is a shipped mode of this binary, but it reads
+# its frames from disk, so without these the shipped image is the one
+# configuration of itself it cannot run: `docker run … --mode=mock`
+# could only ever fail.
+#
+# Carrying them is also what lets deploy/k8s/overlays/kind put the real
+# image behind the BFF instead of a test image built alongside it — a
+# cluster test that exercises an artifact we don't ship proves less than
+# it appears to.
+COPY --from=asset-stage /src/web/attach-core/conformance/fixtures/ /fixtures/
+
 USER 65532:65532
 EXPOSE 8080
 
@@ -85,9 +97,13 @@ EXPOSE 8080
 # multi-user deployment wants AUTH_MODE=iap-jwt (plus IAP_AUDIENCE) or
 # proxy-header (plus AUTH_HEADER) — see docs/site/content/docs/deployment.md.
 # The server warns loudly at startup if it ends up open and non-loopback.
+# MOCK_FIXTURES_DIR is read only in mock mode — the mode that refuses
+# to start without it — so naming it here costs the other modes nothing
+# and makes `--mode=mock` work out of the box.
 ENV LISTEN=:8080 \
     API_PREFIX=/attach \
-    AUTH_MODE=none
+    AUTH_MODE=none \
+    MOCK_FIXTURES_DIR=/fixtures
 
 # No HEALTHCHECK directive — distroless images don't ship wget/curl, and
 # adding a probe binary defeats the size goal. K8s / Cloud Run hit the

@@ -1,0 +1,88 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The backend-for-frontend: serves the SPA and proxies /attach to the
+# agent, authenticating the human at its own edge on the way past.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mast-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mast-web
+      app.kubernetes.io/component: bff
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mast-web
+        app.kubernetes.io/component: bff
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # Matches the Dockerfile's USER. Stated again here so the
+        # cluster rejects an image that quietly changed it rather than
+        # running it as whatever the image says.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mast-web
+          # Overlays pin this: `images:` in a kustomization replaces the
+          # name and tag without patching the Deployment.
+          image: ghcr.io/go-steer/mast-web:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: mast-web-config
+          ports:
+            - name: http
+              containerPort: 8080
+          # /healthz and /readyz are the entire anonymous surface (#55) —
+          # kubelet carries no identity header, so any other path would
+          # 401 and the pod would never come up.
+          #
+          # Both probes answer from the same in-process check, so
+          # readiness here means "this process is serving", not "the
+          # backend is reachable". A BFF that cannot reach its agent
+          # still serves the SPA and still returns a truthful error to
+          # every /attach call, which is a better failure than removing
+          # the endpoint that would explain it.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # No CPU limit on purpose: the work is SSE fan-out, which
+              # is bursty and latency-visible, and CFS throttling shows
+              # up as frames arriving late rather than as an OOM you can
+              # find. Memory is capped because a leak should be killed.
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']

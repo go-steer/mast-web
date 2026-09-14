@@ -233,3 +233,107 @@ describe('MastDaemonSidebar — the delete gesture', () => {
     });
   });
 });
+
+// Ownership rendering (PR 6, #63). The sidebar is the only place that
+// lists sessions nobody has opened, which makes it the only place that
+// can show one operator another operator's roster — so what it says
+// about whose session a row is deserves a faster test than Playwright.
+describe('MastDaemonSidebar — mine versus shared with me', () => {
+  let clients;
+  let listEl;
+
+  function makeStubClient(rec) {
+    const client = {
+      endpoint: rec.endpoint,
+      caller: 'ada@example.com',
+      whoamiFail: null,
+      // Two rows: one owned by the caller, one shared with them. Both
+      // are in the list because the list is ACL-filtered upstream.
+      sessions: [
+        { id: 's1', app: 'demo', user: 'ada@example.com' },
+        { id: 's2', app: 'demo', user: 'grace@example.com' },
+      ],
+      async listSessions() {
+        return this.sessions;
+      },
+      async whoami() {
+        if (this.whoamiFail) throw this.whoamiFail;
+        return { identity: this.caller, admin: false, source: 'stub', proxy_by: '' };
+      },
+      async deleteSession() {},
+    };
+    clients.set(rec.endpoint, client);
+    return client;
+  }
+
+  async function mount(tweak) {
+    const registry = globalThis.MastState.createDaemons({ makeClient: makeStubClient });
+    const sidebar = globalThis.MastDaemonSidebar.create({ listEl: listEl, registry: registry });
+    sidebar.add('https://a');
+    if (tweak) tweak(clients.get('https://a'));
+    await sidebar.refresh('https://a');
+    return { sidebar, registry };
+  }
+
+  const delControl = (id) => listEl.querySelector('[aria-label="Delete session ' + id + '"]');
+  const rowFor = (n) => listEl.querySelectorAll('.side-session')[n];
+
+  beforeEach(() => {
+    delete globalThis.MastState;
+    delete globalThis.MastDaemonSidebar;
+    localStorage.clear();
+    clients = new Map();
+    document.body.replaceChildren();
+    listEl = document.createElement('div');
+    document.body.appendChild(listEl);
+    load('state/subscriptions.js');
+    load('state/daemons.js');
+    load('daemon-sidebar.js');
+  });
+
+  it('marks the row somebody else owns, and leaves your own unmarked', async () => {
+    await mount();
+    expect(rowFor(0).dataset.own).toBe('mine');
+    expect(rowFor(0).querySelector('.side-session-owner')).toBeNull();
+
+    expect(rowFor(1).dataset.own).toBe('shared');
+    const badge = rowFor(1).querySelector('.side-session-owner');
+    // The local part is what tells two people apart when everyone
+    // shares a domain; the whole address stays in the tooltip.
+    expect(badge.textContent).toBe('grace');
+    expect(badge.title).toBe('shared with you by grace@example.com');
+    expect(rowFor(1).title).toContain('shared by grace@example.com');
+  });
+
+  // Read access is not admin access: pkg/auth's matrix gives Admin to
+  // the owner alone, so offering the gesture on a shared row would only
+  // be a way to collect a 403.
+  it('withholds the delete control from a session somebody shared', async () => {
+    await mount();
+    expect(delControl('s1')).not.toBeNull();
+    expect(delControl('s2')).toBeNull();
+  });
+
+  it('says nothing at all when the daemon cannot name the caller', async () => {
+    await mount(function (c) {
+      c.whoamiFail = new Error('HTTP 404');
+    });
+    expect(rowFor(0).dataset.own).toBeUndefined();
+    expect(rowFor(1).dataset.own).toBeUndefined();
+    expect(listEl.querySelector('.side-session-owner')).toBeNull();
+    // Unknown ownership is not a reason to withhold a gesture that may
+    // well be permitted — the server is still the one that decides.
+    expect(delControl('s2')).not.toBeNull();
+  });
+
+  it('names the caller on the daemon, and on the button that owns by it', async () => {
+    await mount();
+    expect(listEl.querySelector('.side-daemon-name').title).toBe(
+      'https://a — you are ada@example.com'
+    );
+    const add = Array.from(listEl.querySelectorAll('.side-icon')).find(function (b) {
+      return b.title.startsWith('New session');
+    });
+    expect(add.title).toBe('New session on a, owned by ada@example.com');
+  });
+});

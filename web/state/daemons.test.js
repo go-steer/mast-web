@@ -122,22 +122,34 @@ describe('state/daemons — registry operations', () => {
   let clients;
 
   // A stand-in for AttachClient: one per registered endpoint, with the
-  // two calls the registry makes.
+  // handful of calls the registry makes.
   function makeStubClient(rec) {
     const client = {
       endpoint: rec.endpoint,
       token: rec.token,
-      sessions: [{ id: 's1', app: 'demo' }],
+      sessions: [{ id: 's1', app: 'demo', user: 'ada' }],
       listCalls: 0,
       fail: null,
+      // Who this daemon says we are. `whoamiFail` is separate from
+      // `fail` because the whole point of the identity lookup is that
+      // it can fail on its own — a pre-1.4.0 daemon 404s it while
+      // listing sessions perfectly well.
+      caller: 'ada',
+      whoamiCalls: 0,
+      whoamiFail: null,
       async listSessions() {
         this.listCalls++;
         if (this.fail) throw this.fail;
         return this.sessions;
       },
+      async whoami() {
+        this.whoamiCalls++;
+        if (this.whoamiFail) throw this.whoamiFail;
+        return { identity: this.caller, admin: false, source: 'stub', proxy_by: '' };
+      },
       async createSession() {
         if (this.fail) throw this.fail;
-        return { id: 's2', app: 'demo', user: 'ada' };
+        return { id: 's2', app: 'demo', user: this.createdOwner || 'ada' };
       },
       deleted: [],
       async deleteSession(app, sid) {
@@ -214,7 +226,7 @@ describe('state/daemons — registry operations', () => {
     const stale = r.add('https://a');
     const fresh = await r.refresh(stale);
     expect(fresh.state).toBe('connected');
-    expect(fresh.sessions).toEqual([{ id: 's1', app: 'demo' }]);
+    expect(fresh.sessions).toEqual([{ id: 's1', app: 'demo', user: 'ada' }]);
     // The record handed in is a pre-list snapshot — which is exactly
     // why refresh resolves with a new one rather than mutating it.
     expect(stale.sessions).toEqual([]);
@@ -228,6 +240,66 @@ describe('state/daemons — registry operations', () => {
     expect(fresh.state).toBe('error');
     expect(fresh.lastError).toBe('connection refused');
     expect(fresh.sessions).toEqual([]);
+  });
+
+  // The sidebar has to be able to say whose session a row is before
+  // any terminal exists, so the identity is a per-daemon fact the
+  // refresh collects — not something a connected session reports.
+  it('refresh records who the daemon says we are', async () => {
+    const r = registry();
+    r.add('https://a');
+    const fresh = await r.refresh('https://a');
+    expect(fresh.caller).toBe('ada');
+    expect(clients.get('https://a').whoamiCalls).toBe(1);
+  });
+
+  it('a daemon with no /whoami still lists, and just cannot name us', async () => {
+    const r = registry();
+    r.add('https://a');
+    clients.get('https://a').whoamiFail = new Error('HTTP 404');
+    const fresh = await r.refresh('https://a');
+    // The list is what a refresh is for. An identity lookup that 404s
+    // on a pre-1.4.0 daemon must not make the daemon look unreachable.
+    expect(fresh.state).toBe('connected');
+    expect(fresh.sessions).toHaveLength(1);
+    expect(fresh.caller).toBe('');
+  });
+
+  describe('ownership', () => {
+    async function attached(caller) {
+      const r = registry();
+      r.add('https://a');
+      clients.get('https://a').caller = caller;
+      await r.refresh('https://a');
+      return r;
+    }
+
+    it('a row whose user is the caller is mine', async () => {
+      const r = await attached('ada');
+      expect(r.ownership('https://a', { id: 's1', user: 'ada' })).toBe('mine');
+    });
+
+    // The list is already ACL-filtered, so a row belonging to somebody
+    // else is in it only because they shared it.
+    it('a row with a different user is shared with me', async () => {
+      const r = await attached('ada');
+      expect(r.ownership('https://a', { id: 's1', user: 'grace' })).toBe('shared');
+    });
+
+    // No caller, no comparison. Saying 'shared' here would be a guess
+    // dressed as a fact.
+    it('without a known caller the answer is unknown, not a guess', async () => {
+      const r = registry();
+      r.add('https://a');
+      clients.get('https://a').whoamiFail = new Error('HTTP 404');
+      await r.refresh('https://a');
+      expect(r.ownership('https://a', { id: 's1', user: 'ada' })).toBe('unknown');
+    });
+
+    it('takes a record as readily as an endpoint', async () => {
+      const r = await attached('ada');
+      expect(r.ownership(r.getDaemon('https://a'), { id: 's1', user: 'ada' })).toBe('mine');
+    });
   });
 
   it('refresh of an unregistered endpoint resolves null', async () => {
@@ -250,6 +322,20 @@ describe('state/daemons — registry operations', () => {
     const s = await r.newSession('https://a');
     expect(s).toEqual({ id: 's2', app: 'demo', user: 'ada', status: 'active' });
     expect(clients.get('https://a').listCalls).toBe(1);
+  });
+
+  // The create is what stamps the owner, so a create that comes back
+  // owned by somebody else has handed this operator a session they
+  // cannot delete or share. Surfaced at the moment it happens rather
+  // than left to be inferred later from a row marked 'shared'.
+  it('newSession flags a session that came back owned by someone else', async () => {
+    const r = registry();
+    r.add('https://a');
+    clients.get('https://a').createdOwner = 'grace';
+    await r.newSession('https://a');
+    expect(r.getDaemon('https://a').lastError).toBe(
+      'created session s2 is owned by grace, not ada'
+    );
   });
 
   it('newSession returns null and records the error on failure', async () => {

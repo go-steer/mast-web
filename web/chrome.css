@@ -263,6 +263,28 @@ body.side-hidden #app-sidebar {
   opacity: 0.66;
 }
 
+/* Whose session this is — drawn only on the rows that are not yours.
+   There is no matching "mine" badge on purpose: nearly every row in a
+   working sidebar is yours, and a label on all of them is a label
+   nobody reads. The exception is what is worth marking.
+
+   Not accent, and not red either. Accent means "this one is live", and
+   a colleague's session is a fact about ownership, not a state you are
+   in; red would read as a warning, and being shared a session is not a
+   problem. A quiet outline is the whole of it. */
+.side-session-owner {
+  flex: none;
+  max-width: 9ch;
+  overflow: hidden;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Destructive, so it stays invisible until the row is under the
    pointer — a delete control that is always lit next to every session
    is a delete control somebody eventually hits by accident. Keyboard

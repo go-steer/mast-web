@@ -108,9 +108,9 @@ func configHandler(cfg config, authn authenticator) http.Handler {
 			resp.APIPrefix = ""
 		}
 
-		identity, ok := authn.Identity(r)
+		caller, ok := authn.Identity(r)
 		resp.Auth.Authenticated = ok
-		resp.Auth.Identity = identity
+		resp.Auth.Identity = caller.Identity
 
 		w.Header().Set("Content-Type", "application/json")
 		// no-store, not no-cache: the body carries the caller's identity

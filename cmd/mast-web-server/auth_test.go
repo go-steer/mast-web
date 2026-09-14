@@ -62,8 +62,8 @@ func TestValidCaller(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := validCaller(tc.in)
-			if got != tc.want || ok != tc.wantK {
-				t.Fatalf("validCaller(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.wantK)
+			if got.Identity != tc.want || ok != tc.wantK {
+				t.Fatalf("validCaller(%q) = (%q, %v), want (%q, %v)", tc.in, got.Identity, ok, tc.want, tc.wantK)
 			}
 		})
 	}
@@ -84,8 +84,8 @@ func TestHeaderAuth(t *testing.T) {
 
 	r.Header.Set("X-Test-User", "alice@example.com")
 	got, ok := a.Identity(r)
-	if !ok || got != "alice@example.com" {
-		t.Fatalf("Identity() = (%q, %v)", got, ok)
+	if !ok || got.Identity != "alice@example.com" {
+		t.Fatalf("Identity() = (%q, %v)", got.Identity, ok)
 	}
 
 	// A different header name must not be honored — the configured one
@@ -114,7 +114,7 @@ func TestHeaderAuth_RejectsAmbiguousDuplicateHeader(t *testing.T) {
 		r.Header.Add("X-Test-User", order[0])
 		r.Header.Add("X-Test-User", order[1])
 		if got, ok := a.Identity(r); ok {
-			t.Errorf("values %v: authenticated as %q; want refused", order, got)
+			t.Errorf("values %v: authenticated as %q; want refused", order, got.Identity)
 		}
 	}
 }
@@ -245,8 +245,8 @@ func TestIAPJWTAuth_AcceptsValidAssertion(t *testing.T) {
 	}
 	// The email claim, not the opaque accounts.google.com subject —
 	// the agent's ACLs and audit log should name a person.
-	if got != "alice@example.com" {
-		t.Fatalf("Identity() = %q, want alice@example.com", got)
+	if got.Identity != "alice@example.com" {
+		t.Fatalf("Identity() = %q, want alice@example.com", got.Identity)
 	}
 }
 
@@ -261,8 +261,8 @@ func TestIAPJWTAuth_FallsBackToSubjectWithoutEmail(t *testing.T) {
 	r.Header.Set(iapAssertionHeader, signES256(t, key, "ES256", testKID, claims))
 
 	got, ok := a.Identity(r)
-	if !ok || got != "accounts.google.com:1234567890" {
-		t.Fatalf("Identity() = (%q, %v)", got, ok)
+	if !ok || got.Identity != "accounts.google.com:1234567890" {
+		t.Fatalf("Identity() = (%q, %v)", got.Identity, ok)
 	}
 }
 
@@ -302,7 +302,7 @@ func TestIAPJWTAuth_Rejects(t *testing.T) {
 				r.Header.Set(iapAssertionHeader, tc.token)
 			}
 			if got, ok := a.Identity(r); ok {
-				t.Fatalf("want rejected, got authenticated as %q", got)
+				t.Fatalf("want rejected, got authenticated as %q", got.Identity)
 			}
 		})
 	}
@@ -316,7 +316,7 @@ func echoCaller() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller := ""
 		if info := requestInfoFrom(r.Context()); info != nil {
-			caller = info.caller
+			caller = info.caller.Identity
 		}
 		_, _ = io.WriteString(w, "downstream caller="+caller)
 	})

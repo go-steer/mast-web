@@ -1,8 +1,9 @@
 module github.com/go-steer/mast-web
 
-go 1.26
+go 1.26.6
 
 require (
+	github.com/go-steer/purser v0.1.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.293.0
 )

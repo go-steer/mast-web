@@ -136,7 +136,7 @@ func (p *backendProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// than silently escalate.
 	if p.opts.authEnabled {
 		info := requestInfoFrom(r.Context())
-		if info == nil || info.caller == "" {
+		if info == nil || info.caller.IsZero() {
 			log.Printf("proxy: refusing %s %s: auth is enabled but no caller was resolved", r.Method, r.URL.Path)
 			http.Error(w, "no caller identity to assert", http.StatusInternalServerError)
 			return
@@ -219,8 +219,8 @@ func newBackendProxy(opts proxyOptions) (http.Handler, error) {
 			}
 
 			if opts.authEnabled {
-				if info := requestInfoFrom(pr.In.Context()); info != nil && info.caller != "" {
-					pr.Out.Header.Set(assertedCallerHeader, info.caller)
+				if info := requestInfoFrom(pr.In.Context()); info != nil && !info.caller.IsZero() {
+					pr.Out.Header.Set(assertedCallerHeader, info.caller.Identity)
 				}
 			}
 		},

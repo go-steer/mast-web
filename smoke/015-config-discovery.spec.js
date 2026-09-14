@@ -86,7 +86,13 @@ test.describe('smoke: 015-config-discovery', () => {
     // address a BFF deployment does not serve.
     const row = page.locator('.side-session').first();
     await expect(row).toBeVisible();
-    await expect(page.locator('.side-daemon-name')).toHaveAttribute('title', PREFIX);
+    // Starts with, not equals: #63 appends the caller this daemon
+    // resolved us to ("/attach — you are smoke@example.com"), and the
+    // claim here is about the endpoint discovery landed on.
+    await expect(page.locator('.side-daemon-name')).toHaveAttribute(
+      'title',
+      new RegExp('^' + PREFIX)
+    );
     // And the attach form offers the path this deployment serves.
     await expect(page.locator('#add-endpoint')).toHaveValue(PREFIX);
 

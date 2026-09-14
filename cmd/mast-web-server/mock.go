@@ -117,8 +117,15 @@ func (h *mockHandler) turnRequests(w http.ResponseWriter, r *http.Request) {
 // it. The client is deliberately tolerant of both shapes now — that's
 // correct defensiveness against backends in the wild — but the mock has
 // to model the wire truth, or the tolerant branch is the only one
-// anything ever exercises. sessionShapeIsCanonical in mock_test.go is
-// the guard.
+// anything ever exercises. TestMock_SessionRowsUseCanonicalWireShape in
+// mock_test.go is the guard — it requires {app, user, sessionID} on
+// every row and forbids the snake_case spellings outright.
+//
+// The ACL that decides which of these rows a given caller sees is
+// deliberately NOT here: core-agent keeps Owner/Viewers alongside a
+// session and emits neither, so modelling it as extra keys would
+// invent a wire field the real backends do not have. It lives in
+// mock_acl.go instead.
 
 // mockSession is the canned session the SPA auto-selects on connect.
 // Kept minimal — just enough to open an SSE stream. Always first in
@@ -126,7 +133,7 @@ func (h *mockHandler) turnRequests(w http.ResponseWriter, r *http.Request) {
 // auto-select) keep landing on it.
 var mockSession = map[string]any{
 	"app":             "mast-web-mock",
-	"user":            "smoke@example.com",
+	"user":            mockDefaultCaller,
 	"sessionID":       "smoke-session",
 	"has_event_log":   true,
 	"status":          "active",
@@ -148,7 +155,7 @@ var mockSessions = []map[string]any{
 	mockSession,
 	{
 		"app":             "core-agent",
-		"user":            "smoke@example.com",
+		"user":            mockDefaultCaller,
 		"sessionID":       "ops-triage",
 		"has_event_log":   true,
 		"status":          "active",
@@ -156,8 +163,13 @@ var mockSessions = []map[string]any{
 		"title":           "Paging alert on checkout-api",
 	},
 	{
+		// The one row the default caller does NOT own — bob shares it
+		// with them (mockSessionACLs). `user` is bob because the real
+		// create path sets the ADK UserID from the caller's identity,
+		// so "user is not me" is exactly what a shared session looks
+		// like on the wire. Keep the two in step.
 		"app":             "core-agent",
-		"user":            "smoke@example.com",
+		"user":            mockOtherCaller,
 		"sessionID":       "docs-writer",
 		"has_event_log":   true,
 		"status":          "idle",
@@ -166,7 +178,7 @@ var mockSessions = []map[string]any{
 	},
 	{
 		"app":             "mast",
-		"user":            "smoke@example.com",
+		"user":            mockDefaultCaller,
 		"sessionID":       "repo-indexer",
 		"has_event_log":   true,
 		"status":          "active",
@@ -388,24 +400,54 @@ func isKnownSessionEndpoint(name string) bool {
 
 // ─── Handlers ────────────────────────────────────────────────────────
 
-func (h *mockHandler) listSessions(w http.ResponseWriter, _ *http.Request) {
-	out := make([]any, 0, len(mockSessions))
-	for _, s := range mockSessions {
-		out = append(out, s)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+// listSessions answers the ACL-filtered roster for the calling
+// identity — see mock_acl.go. The filtering is the point: core-agent
+// scopes this list per caller precisely so it does not leak other
+// operators' activity patterns, and a mock that hands everyone
+// everything cannot fail the test that would catch us doing it.
+func (h *mockHandler) listSessions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": visibleSessions(callerOf(r))})
 }
 
+// createSession stamps the new session's owner from the caller, the
+// way handlers_create_session.go does. Two of its refusals are worth
+// modelling because a client can provoke both:
+//
+//	401 — no authenticated caller. There are no anonymous sessions.
+//	400 — the body named an `owner` that isn't the caller. Upstream
+//	      rejects that rather than quietly ignoring it, so a client
+//	      that tries to create-on-behalf-of learns it can't.
 func (h *mockHandler) createSession(w http.ResponseWriter, r *http.Request) {
+	c := callerOf(r)
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 	drainBody(r)
+	if c.anonymous() {
+		writeError(w, http.StatusUnauthorized, "authenticated caller required to create a session\n")
+		return
+	}
+	var req struct {
+		Owner string `json:"owner"`
+	}
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &req)
+	}
+	if req.Owner != "" && req.Owner != c.identity {
+		writeError(w, http.StatusBadRequest, "owner must match the authenticated caller\n")
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"app":       mockSession["app"],
-		"user":      mockSession["user"],
+		"user":      c.identity,
 		"sessionID": "smoke-session-2",
 		"url":       "http://" + r.Host + "/sessions/" + mockSession["app"].(string) + "/smoke-session-2",
 	})
 }
 
+// deleteSession is Admin in the ACL matrix, and Admin is the owner
+// alone — a viewer who can read a shared session still cannot destroy
+// it. A caller who cannot even read it gets the same 403 rather than a
+// 404, because distinguishing the two would tell them the session
+// exists.
 func (h *mockHandler) deleteSession(w http.ResponseWriter, r *http.Request) {
 	_, sid, _, ok := sessionSegments(r.URL.Path)
 	if !ok {
@@ -414,6 +456,11 @@ func (h *mockHandler) deleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if sid == "default" {
 		writeError(w, http.StatusForbidden, "cannot delete bootstrap default session\n")
+		return
+	}
+	c := callerOf(r)
+	if acl := aclFor(sid, c); acl.owner != c.identity || c.anonymous() {
+		writeError(w, http.StatusForbidden, "only the owner may delete a session\n")
 		return
 	}
 	writeEmpty(w, http.StatusNoContent)
@@ -596,11 +643,16 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
-func (h *mockHandler) whoami(w http.ResponseWriter, _ *http.Request) {
+// whoami echoes back whoever the request resolved to. It is the only
+// way the SPA can learn its own identity — nothing else on the wire
+// carries it — so a mock that answered a constant here would make the
+// browser's "is this mine?" question untestable.
+func (h *mockHandler) whoami(w http.ResponseWriter, r *http.Request) {
+	c := callerOf(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"identity": "smoke@example.com",
+		"identity": c.identity,
 		"admin":    false,
-		"source":   "mock",
+		"source":   c.source,
 		"proxy_by": "",
 	})
 }

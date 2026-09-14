@@ -45,6 +45,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/go-steer/purser"
 	"google.golang.org/api/idtoken"
 )
 
@@ -73,10 +74,36 @@ const (
 )
 
 // authenticator resolves the human behind a request. Identity returns
-// ("", false) when the request carries no usable identity; withAuth
+// ok=false when the request carries no usable identity; withAuth
 // decides what that means per route.
+//
+// The identity it returns is a purser.Caller — go-steer's shared
+// identity type (github.com/go-steer/purser), the same one core-agent
+// and mast are migrating onto. Adopting the type now is what makes the
+// eventual move to purser's own authenticators a wiring change rather
+// than a refactor of everything downstream of this interface.
+//
+// The *interface* is deliberately still ours and not purser's
+// authn.Authenticator, which is `Authenticate(r) (purser.Caller, error)`
+// plus `Source() purser.AuthSource`. Two reasons, both about honesty
+// rather than effort:
+//
+//   - auth-mode=none has to mean "no identity, and that is allowed".
+//     purser's contract makes a nil error with a zero Caller a bug, and
+//     its purser.Anonymous() names the caller "anon" — which this
+//     process would then assert to the agent as a real identity. The
+//     state we need has no representation there.
+//   - proxy-header has no honest AuthSource. AuthSourceIAP is documented
+//     as stampable only once a gateway's *signed* assertion is
+//     validated, "never inferred from the gateway's plaintext headers",
+//     which is exactly what this mode does; AuthSourceAsserted means a
+//     verified credential asserted someone else, and here no credential
+//     is verified at all. Filed upstream rather than papered over.
+//
+// iap-jwt, by contrast, fits AuthSourceIAP exactly, so the split is a
+// missing value and not a mismatch in kind.
 type authenticator interface {
-	Identity(r *http.Request) (string, bool)
+	Identity(r *http.Request) (purser.Caller, bool)
 	Mode() string
 }
 
@@ -85,10 +112,15 @@ type authenticator interface {
 // noAuth is the today-behavior authenticator: every request passes with
 // no identity. Kept as a real implementation rather than a nil check so
 // /config and the middleware have one code path in every mode.
+//
+// The zero Caller, not purser.Anonymous(). "anon" is a name, and a name
+// is what proxy.go puts on X-Asserted-Caller — so returning one here
+// would start asserting a fictional user to the agent in the one mode
+// whose whole point is that this server asserts nobody.
 type noAuth struct{}
 
-func (noAuth) Identity(*http.Request) (string, bool) { return "", true }
-func (noAuth) Mode() string                          { return authModeNone }
+func (noAuth) Identity(*http.Request) (purser.Caller, bool) { return purser.Caller{}, true }
+func (noAuth) Mode() string                                 { return authModeNone }
 
 // ─── headerAuth ──────────────────────────────────────────────────────
 
@@ -109,13 +141,13 @@ type headerAuth struct{ header string }
 // separately-added headers separate, so that only happens if something
 // in the chain deliberately folds them; an identity is still rejected
 // downstream unless it happens to be a syntactically valid caller.
-func (h headerAuth) Identity(r *http.Request) (string, bool) {
+func (h headerAuth) Identity(r *http.Request) (purser.Caller, bool) {
 	vals := r.Header.Values(h.header)
 	if len(vals) != 1 {
 		if len(vals) > 1 {
 			log.Printf("auth: %s carried %d values; refusing an ambiguous identity", h.header, len(vals))
 		}
-		return "", false
+		return purser.Caller{}, false
 	}
 	return validCaller(vals[0])
 }
@@ -135,19 +167,19 @@ type iapJWTAuth struct {
 	validate func(ctx context.Context, token, audience string) (*idtoken.Payload, error)
 }
 
-func (a iapJWTAuth) Identity(r *http.Request) (string, bool) {
+func (a iapJWTAuth) Identity(r *http.Request) (purser.Caller, bool) {
 	raw := strings.TrimSpace(r.Header.Get(iapAssertionHeader))
 	if raw == "" {
-		return "", false
+		return purser.Caller{}, false
 	}
 	payload, err := a.validate(r.Context(), raw, a.audience)
 	if err != nil {
 		log.Printf("auth: iap assertion rejected: %v", err)
-		return "", false
+		return purser.Caller{}, false
 	}
 	if payload.Issuer != iapIssuer {
 		log.Printf("auth: iap assertion rejected: issuer %q != %q", payload.Issuer, iapIssuer)
-		return "", false
+		return purser.Caller{}, false
 	}
 	// IAP puts the human-readable identity in `email`; `sub` is the
 	// opaque "accounts.google.com:<numeric id>" form. Prefer the email
@@ -189,21 +221,29 @@ func newAuthenticator(ctx context.Context, cfg config) (authenticator, error) {
 const maxCallerLen = 256
 
 // validCaller normalizes and sanity-checks an identity before it is
-// trusted. The value ends up on the outbound X-Asserted-Caller header,
-// so anything outside printable ASCII is rejected rather than escaped —
-// there is no legitimate identity that needs it, and a permissive
-// filter here is a header-injection primitive pointed at the agent.
-func validCaller(v string) (string, bool) {
+// trusted, returning it as the purser.Caller the rest of the process
+// passes around. The value ends up on the outbound X-Asserted-Caller
+// header, so anything outside printable ASCII is rejected rather than
+// escaped — there is no legitimate identity that needs it, and a
+// permissive filter here is a header-injection primitive pointed at the
+// agent.
+//
+// Labels stays nil. Neither mode has anything to put there that isn't
+// already the Identity: proxy-header carries one string, and the IAP
+// path's residual claims are exactly what purser's authn/oidc will
+// populate when it replaces this by-hand validation. An empty map now
+// would only be a place for something to accumulate unexamined.
+func validCaller(v string) (purser.Caller, bool) {
 	v = strings.TrimSpace(v)
 	if v == "" || len(v) > maxCallerLen {
-		return "", false
+		return purser.Caller{}, false
 	}
 	for i := 0; i < len(v); i++ {
 		if v[i] < 0x20 || v[i] > 0x7e {
-			return "", false
+			return purser.Caller{}, false
 		}
 	}
-	return v, true
+	return purser.Caller{Identity: v}, true
 }
 
 // ─── per-request identity ────────────────────────────────────────────
@@ -218,7 +258,7 @@ type ctxKeyRequestInfo struct{}
 // access-log line — and an outer wrapper cannot observe a context value
 // added by an inner one. The proxy reads the same holder to build
 // X-Asserted-Caller.
-type requestInfo struct{ caller string }
+type requestInfo struct{ caller purser.Caller }
 
 func withRequestInfo(ctx context.Context) (context.Context, *requestInfo) {
 	info := &requestInfo{}

@@ -463,7 +463,7 @@ func withLogging(h http.Handler) http.Handler {
 		ctx, info := withRequestInfo(r.Context())
 		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK}
 		h.ServeHTTP(lw, r.WithContext(ctx))
-		caller := info.caller
+		caller := info.caller.Identity
 		if caller == "" {
 			caller = "-"
 		}

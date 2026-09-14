@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-steer/purser"
 	"golang.org/x/oauth2"
 )
 
@@ -60,7 +61,7 @@ func proxyFront(t *testing.T, opts proxyOptions, caller string) *httptest.Server
 	inner := http.StripPrefix("/attach", proxy)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, info := withRequestInfo(r.Context())
-		info.caller = caller
+		info.caller = purser.Caller{Identity: caller}
 		inner.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	t.Cleanup(srv.Close)

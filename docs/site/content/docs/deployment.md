@@ -312,3 +312,14 @@ livenessProbe:  { httpGet: { path: /healthz, port: 8080 } }
 
 Both probes are exempt from auth. Set your ingress read timeout above
 `--sse-max-lifetime`, or the ingress will cut streams before the server does.
+
+Complete manifests are in [`deploy/k8s/`](https://github.com/go-steer/mast-web/tree/main/deploy/k8s) —
+a kustomize `base/` (Deployment, Service, ConfigMap, namespace) plus an
+`overlays/kind/` that puts the server's own `--mode=mock` behind it. `base` points
+at a Service named `mast-web-backend` and says nothing about what that is, so
+pointing it at a real agent is an overlay rather than a fork.
+
+`dev/tools/kind-cluster` builds the image, stands the whole thing up in a
+throwaway cluster and asserts the anonymous surface from outside the pod — the
+check that catches an ingress exempting a path, which no in-process test can see.
+It runs in CI as the `Kind` workflow.

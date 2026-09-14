@@ -197,6 +197,17 @@ window.MastDaemonSidebar = (function () {
 
     // ── Sidebar ──────────────────────────────────────────────────────
 
+    // alice@example.com → alice. Identities in one deployment almost
+    // always share a domain, so the half that tells two people apart is
+    // the half worth spending a narrow column on. Anything without an
+    // `@` (a service account, a bare username) is shown whole. The full
+    // string stays in the tooltip either way.
+    function shortIdentity(id) {
+      const s = String(id || '');
+      const at = s.indexOf('@');
+      return at > 0 ? s.slice(0, at) : s;
+    }
+
     function render() {
       if (!listEl) return;
       listEl.replaceChildren();
@@ -212,7 +223,13 @@ window.MastDaemonSidebar = (function () {
         const name = document.createElement('span');
         name.className = 'side-daemon-name';
         name.textContent = d.alias;
-        name.title = d.endpoint;
+        // Who this daemon thinks we are belongs on the daemon, not on
+        // every row: it is one fact per backend, and two attached
+        // daemons can answer differently (each runs its own auth
+        // mode). In the tooltip rather than the header because the
+        // header is already four controls wide, and because the rows
+        // below carry the visible half of the same answer.
+        name.title = d.caller ? d.endpoint + ' — you are ' + d.caller : d.endpoint;
         head.appendChild(dot);
         head.appendChild(name);
 
@@ -233,7 +250,14 @@ window.MastDaemonSidebar = (function () {
         addBtn.type = 'button';
         addBtn.className = 'side-icon';
         addBtn.textContent = '+';
-        addBtn.title = 'New session on ' + d.alias;
+        // Name the ownership consequence in the affordance that causes
+        // it. POST /sessions stamps the ACL owner from the caller, so
+        // this button does not just make a session, it makes one that
+        // is yours — and on a daemon that cannot name you it will be
+        // refused outright (401, no anonymous sessions).
+        addBtn.title = d.caller
+          ? 'New session on ' + d.alias + ', owned by ' + d.caller
+          : 'New session on ' + d.alias;
         addBtn.addEventListener('click', function () {
           newSession(d);
         });
@@ -292,10 +316,27 @@ window.MastDaemonSidebar = (function () {
           metaEl.textContent = s.title ? s.id : s.app || s.user || '';
           row.appendChild(idEl);
           row.appendChild(metaEl);
+
+          // Mine, or shared with me? Derived in state/daemons.js, which
+          // is where the reasoning about why the wire can't just say so
+          // lives. Unknown paints nothing at all — a daemon that cannot
+          // name the caller cannot attribute its rows either, and a
+          // sidebar guessing at that is worse than one staying quiet.
+          const own = registry.ownership(d, s);
+          if (own !== 'unknown') row.dataset.own = own;
+          if (own === 'shared') {
+            const owner = document.createElement('span');
+            owner.className = 'side-session-owner';
+            owner.textContent = shortIdentity(s.user);
+            owner.title = 'shared with you by ' + s.user;
+            row.appendChild(owner);
+          }
+
           row.title =
             (s.title ? s.title + ' · ' : '') +
             s.id +
             (s.app ? ' · ' + s.app : '') +
+            (own === 'shared' ? ' · shared by ' + s.user : '') +
             ' · ' +
             d.endpoint;
 
@@ -306,8 +347,11 @@ window.MastDaemonSidebar = (function () {
           // `default` gets no delete control at all: the server refuses
           // it, so offering the gesture would only be a way to find that
           // out. Ditto a daemon that hasn't connected — there is nothing
-          // to send the DELETE on.
-          if (s.id !== 'default' && d.client) {
+          // to send the DELETE on, and ditto a session somebody shared
+          // with us: Admin in the ACL matrix is the owner alone
+          // (pkg/auth/authorize.go), so reading a session is not
+          // permission to destroy it.
+          if (s.id !== 'default' && d.client && own !== 'shared') {
             const del = document.createElement('span');
             del.className = 'side-session-del';
             del.setAttribute('role', 'button');

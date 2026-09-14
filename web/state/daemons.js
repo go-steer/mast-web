@@ -58,6 +58,7 @@ window.MastState.createDaemons = (function () {
   //     state,           // 'disconnected' | 'connecting' | 'connected' | 'error'
   //     lastError,       // human-readable most-recent error (or '')
   //     sessions,        // last-known session list from listSessions()
+  //     caller,          // who this daemon says we are, or '' — see refresh()
   //     derived,         // discovered rather than chosen — see persist()
   //     // Live refs — not persisted; set on connect(), cleared on remove().
   //     client, prompter,
@@ -150,6 +151,7 @@ window.MastState.createDaemons = (function () {
         state: rec.state || existing.state || 'disconnected',
         lastError: rec.lastError || '',
         sessions: rec.sessions || existing.sessions || [],
+        caller: rec.caller !== undefined ? rec.caller : existing.caller || '',
         derived: rec.derived !== undefined ? !!rec.derived : !!existing.derived,
         client: rec.client !== undefined ? rec.client : existing.client || null,
         prompter: rec.prompter !== undefined ? rec.prompter : existing.prompter || null,
@@ -279,6 +281,28 @@ window.MastState.createDaemons = (function () {
       persist();
     }
 
+    // Who does this daemon think we are? Per daemon, not per session:
+    // each backend resolves the caller with its own auth mode, so two
+    // attached daemons can legitimately answer differently, and the
+    // sidebar has to be able to say whose session a row is before any
+    // terminal exists. (A terminal learns the same fact for itself on
+    // connect — state/session.js — but that is the wrong moment and
+    // the wrong scope for a list.)
+    //
+    // Never fatal. GET /whoami is v1.4.0+, so an older daemon 404s,
+    // and an anonymous listener answers with an empty identity. Both
+    // mean the same thing to a caller here — we cannot say who we are
+    // — and neither is a reason to report the daemon as unreachable
+    // when its session list came back fine.
+    async function callerOn(rec) {
+      try {
+        const who = await rec.client.whoami();
+        return (who && who.identity) || '';
+      } catch {
+        return '';
+      }
+    }
+
     // Lists the daemon's sessions and folds the outcome into its
     // record. Resolves with the fresh record — callers that react to a
     // refresh need the post-list state, and the record they passed in
@@ -289,8 +313,18 @@ window.MastState.createDaemons = (function () {
       if (!rec) return null;
       patchDaemon(ep, { state: 'connecting' });
       try {
-        const sessions = await rec.client.listSessions();
-        patchDaemon(ep, { sessions: sessions, state: 'connected', lastError: '' });
+        // Both in flight together. The identity is not a follow-up to
+        // the list, it is what the list MEANS — without it every row
+        // is a session belonging to nobody in particular — so paying
+        // two round trips in sequence for it would be a repaint with
+        // the rows briefly unattributed.
+        const [sessions, caller] = await Promise.all([rec.client.listSessions(), callerOn(rec)]);
+        patchDaemon(ep, {
+          sessions: sessions,
+          caller: caller,
+          state: 'connected',
+          lastError: '',
+        });
       } catch (e) {
         patchDaemon(ep, {
           sessions: [],
@@ -299,6 +333,43 @@ window.MastState.createDaemons = (function () {
         });
       }
       return getDaemon(ep);
+    }
+
+    // Mine, or shared with me?
+    //
+    // The wire does not say. A session descriptor is {app, user,
+    // sessionID, has_event_log, status, last_touched_at, title}
+    // (core-agent pkg/attach/handlers.go:353) and the ACL kept
+    // alongside it is never serialised — session_acl_store.go holds
+    // `UserID` and `Owner` as SEPARATE persisted fields and emits
+    // neither. So ownership is derived, from two things that ARE on
+    // the wire:
+    //
+    //   1. the list is already ACL-filtered per caller, so every row
+    //      in it is one this caller is allowed to read; and
+    //   2. a session created through POST /sessions has UserID equal
+    //      to its Owner, because pkg/compose/multi_session.go:481
+    //      builds it as agent.WithSession(caller.Identity, sid).
+    //
+    // Given both: `user === me` is mine, and anything else is a
+    // session somebody shared with me, because otherwise it would not
+    // be in the list at all.
+    //
+    // (2) is a factory convention, not a protocol guarantee. A session
+    // registered through the legacy Register() path has no ACL owner
+    // and whatever UserID the daemon chose, so it reads as 'shared'.
+    // That is the safe direction to be wrong in: the label claims less
+    // than the truth rather than more.
+    //
+    // With no known caller — pre-1.4.0 daemon, anonymous listener —
+    // there is nothing to compare against and the answer is 'unknown'.
+    // Callers should render nothing rather than guess.
+    function ownership(d, session) {
+      const rec = typeof d === 'string' ? getDaemon(normalize(d)) : d;
+      const me = rec && rec.caller;
+      const user = session && session.user;
+      if (!me) return 'unknown';
+      return user === me ? 'mine' : 'shared';
     }
 
     function refreshAll() {
@@ -312,6 +383,16 @@ window.MastState.createDaemons = (function () {
     // Creates a session on the daemon and re-lists. Resolves with the
     // new session row, or null if the create failed — the error is on
     // the record either way.
+    //
+    // The create is also what makes you the owner: POST /sessions
+    // stamps the ACL Owner from the authenticated caller and refuses a
+    // body that names anyone else (handlers_create_session.go:96-108).
+    // That consequence used to be invisible — the button said "new
+    // session" and the ownership happened offstage — so the mismatch
+    // check below exists to say it out loud in the one case where it
+    // goes wrong. A session owned by somebody else is not one this
+    // operator can delete or share, and finding that out later, from a
+    // row that quietly renders as 'shared', is finding out too late.
     async function newSession(d) {
       const ep = endpointOf(d);
       const rec = getDaemon(ep);
@@ -319,6 +400,12 @@ window.MastState.createDaemons = (function () {
       try {
         const s = await rec.client.createSession();
         await refresh(ep);
+        const me = (getDaemon(ep) || {}).caller;
+        if (me && s.user && s.user !== me) {
+          patchDaemon(ep, {
+            lastError: 'created session ' + s.id + ' is owned by ' + s.user + ', not ' + me,
+          });
+        }
         return { id: s.id, app: s.app, user: s.user, status: 'active' };
       } catch (e) {
         patchDaemon(ep, { lastError: e && e.message ? e.message : String(e) });
@@ -404,6 +491,7 @@ window.MastState.createDaemons = (function () {
       getActiveDaemon,
       listDaemons,
       daemonMap,
+      ownership,
       // Registry operations
       add,
       remove,

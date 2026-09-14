@@ -42,6 +42,24 @@ camera, an overlay's position).
 in `helpers.js` clear storage, load the shell, click the mock's first
 session row and hand back that terminal's `.term-screen`.
 
+## Who you are
+
+The mock is two people. Say nothing and you are `smoke@example.com`,
+which is what every spec except `019-multi-user` does. To be somebody
+else, set the `mock_caller` cookie before the first navigation:
+
+```js
+await page.context().addCookies([{ name: 'mock_caller', value: 'bob@example.com', url: baseURL }]);
+```
+
+A cookie rather than a header because the SPA's stream is an
+`EventSource` and `EventSource` cannot set one. `X-Asserted-Caller`
+still wins where it is present — that is what a real deployment sends
+— so running these pages behind the BFF behaves like production
+without the cookie being involved. `GET /sessions` and `GET /whoami`
+both answer per caller; the fixture ACLs are in
+`cmd/mast-web-server/mock_acl.go`, and an empty value means anonymous.
+
 ## Adding a scenario
 
 One test file per fixture is the current pattern. Add a new file

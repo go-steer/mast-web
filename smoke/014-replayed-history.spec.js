@@ -94,11 +94,22 @@ async function expectShowEarlier(rows) {
   const block = rows.locator('.replay-history');
   const more = block.locator('.history-more');
 
+  await expect(more).toBeVisible();
   await expect(more).toBeEnabled();
   await expect(more).toContainText('show 3 earlier turns');
   await expect(more).toContainText('3 left');
 
-  await more.click();
+  // Dispatched, not clicked. The control sits at the very top of the
+  // transcript, so a real click has to scroll there first — and
+  // scrolling to the top is itself the auto-load gesture that
+  // onHistoryScroll answers. Playwright's scroll-into-view would hand
+  // the turns back before the click landed, leaving the click waiting
+  // on a control that had correctly become the disabled end-of-log
+  // marker. The two routes are inseparable by construction in this
+  // layout, so this test takes the handler directly and the scroll
+  // gesture keeps its own test below. Visible + enabled above is what
+  // the real click was contributing. See #85.
+  await more.dispatchEvent('click');
 
   await expect(block.locator('.history-turn')).toHaveCount(6);
   for (const prompt of OLDEST_THREE) {

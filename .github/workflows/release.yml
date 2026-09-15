@@ -96,21 +96,35 @@ jobs:
           sha256sum "mast-web-${tag}.tar.gz" > "mast-web-${tag}.tar.gz.sha256"
           ls -la mast-web-*.tar.gz*
 
+      - name: Render release notes
+        # That tag's CHANGELOG.md section plus the artifact boilerplate.
+        # Written to a file and passed with --notes-file: the body is
+        # markdown with backticks, brackets and blank lines in it, and
+        # the previous inline --notes string carried its own YAML block
+        # indentation into every release from v0.2.0 to v0.3.0, where
+        # four leading spaces made the description render as a code
+        # block.
+        run: |
+          dev/tools/release-notes "${{ steps.tag.outputs.name }}" > release-notes.md
+          echo "--- release body ---"
+          cat release-notes.md
+
       - name: Create / update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ steps.tag.outputs.name }}"
-          # `gh release create` is idempotent-ish via `--target` + clobber via
-          # `gh release upload --clobber`. Create-if-missing then upload.
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          # Create-if-missing, then upload with --clobber so a re-run or a
+          # workflow_dispatch republish is idempotent. `gh release edit`
+          # on the existing-release path so re-running after a CHANGELOG
+          # fix actually updates the body rather than silently keeping
+          # the old one.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file release-notes.md
+          else
             gh release create "$tag" \
               --title "$tag" \
-              --notes "mast-web $tag — static asset bundle.
-
-              The downloadable \`mast-web-${tag}.tar.gz\` is the canonical artifact for downstream agent binaries (core-agent, mast) to fetch and embed via \`go:embed\`. SHA256 in the companion \`.sha256\` file.
-
-              See [\`docs/web-design.md\`](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) for how the embedding works in phase C."
+              --notes-file release-notes.md
           fi
           gh release upload "$tag" \
             "mast-web-${tag}.tar.gz" \

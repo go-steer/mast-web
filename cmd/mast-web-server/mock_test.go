@@ -57,6 +57,17 @@ func newMockServer(t *testing.T) *httptest.Server {
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
+	// The pause gates hang off the handler, so a new server starts with
+	// fresh ones. The ACL and the title overlay do NOT — they are
+	// package-level, because the roster they shadow is — so a test that
+	// shares a session or renames one would otherwise be visible to
+	// every test after it, in whatever order the runner picked.
+	mockACLs.reset()
+	resetMockSessionTitles()
+	t.Cleanup(func() {
+		mockACLs.reset()
+		resetMockSessionTitles()
+	})
 	return srv
 }
 

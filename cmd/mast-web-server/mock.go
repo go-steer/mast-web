@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +43,7 @@ const defaultMockFixture = "001-happy-turn"
 // parked sessions (#68). Nothing was wrong with any individual test.
 // The problem was that no test asserted the mock was current, so being
 // out of date was not a failure condition.
-const wireProtocolVersion = "1.7.0"
+const wireProtocolVersion = "1.12.0"
 
 // mockPublishedEvents are the SSE events the mock emits from its own
 // handlers rather than from fixture replay — the pause gate's
@@ -72,6 +73,8 @@ type mockHandler struct {
 	// the posts is the only way the suite can see it.
 	mu     sync.Mutex
 	counts map[string]int
+	// prompts is the inbox-id sequence behind nextPromptID.
+	prompts int
 
 	// Operator pause gate (protocol v1.5.0) and the fan-out that makes
 	// its events visible to streams already open. See mock_pause.go —
@@ -89,6 +92,17 @@ func (h *mockHandler) countPost(endpoint string) {
 		h.counts = make(map[string]int)
 	}
 	h.counts[endpoint]++
+}
+
+// nextPromptID mints the inbox id an inject or a prompted wake reports
+// back (v1.10.0, core-agent#840). Monotonic and per-process, which is
+// all a correlation handle has to be: the only property a consumer can
+// rely on is that two injects get two different ids.
+func (h *mockHandler) nextPromptID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.prompts++
+	return fmt.Sprintf("mock-prompt-%d", h.prompts)
 }
 
 // turnRequests reports the tally and, on DELETE, clears it. Specs
@@ -164,7 +178,7 @@ var mockSessions = []map[string]any{
 	},
 	{
 		// The one row the default caller does NOT own — bob shares it
-		// with them (mockSessionACLs). `user` is bob because the real
+		// with them (mockACLs). `user` is bob because the real
 		// create path sets the ADK UserID from the caller's identity,
 		// so "user is not me" is exactly what a shared session looks
 		// like on the wire. Keep the two in step.
@@ -273,6 +287,16 @@ var (
 	// stubSubagentsCatalog backs GET /sessions/{sid}/subagents — the
 	// configured/spawnable roster (core-agent#627/#634), distinct from
 	// stubAgents (the live roster returned by GET .../agents).
+	// One row carries `tools` (v1.9.0, core-agent#768) and one does
+	// not, because the absent case is the one a client gets wrong.
+	// ABSENCE MEANS UNKNOWN, NOT NONE: the key is omitted by a
+	// pre-1.9.0 daemon and equally for a subagent configured with no
+	// grant of its own, so a renderer that prints "no tools" for a
+	// missing key is guessing — and a catalog where every row had one
+	// would never make it say so out loud. The three the runtime wires
+	// into every subagent regardless (return_result, report_alert,
+	// schedule_next_turn) are deliberately not listed: they are a
+	// property of the runtime, not of this configuration.
 	stubSubagentsCatalog = map[string]any{
 		"subagents": []map[string]any{
 			{
@@ -280,6 +304,10 @@ var (
 				"description": "Research + summarize",
 				"model":       "mock-model-1.5",
 				"modes":       []string{"sync", "async"},
+				"tools": []map[string]any{
+					{"name": "fs_read", "description": "Read files", "source": "builtin"},
+					{"name": "gke_clusters_list", "description": "List GKE clusters", "source": "gke"},
+				},
 			},
 			{
 				"name":        "implementer",
@@ -295,6 +323,16 @@ var (
 	// exercisable against an unknown name too.
 	knownSubagentNames = []string{"researcher", "implementer"}
 )
+
+// finishedSubagentName is the subagent that has already terminated on
+// its own. It exists so POST .../agents/{name}/stop can answer both of
+// v1.12.0's cases (core-agent#897) without any setup: stopping
+// `researcher` reports stopped:true, stopping this one reports
+// stopped:false with the status it ended as. A mock with only live
+// subagents leaves the case the change was filed about unreachable,
+// which is how "stopped" kept meaning the wrong thing for four minor
+// versions.
+const finishedSubagentName = "implementer"
 
 func newMockHandler(cfg config) (*mockHandler, error) {
 	if cfg.fixturesDir == "" {
@@ -330,6 +368,10 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	mux.HandleFunc("POST /sessions", h.createSession)
 	mux.HandleFunc("POST /sessions/", h.sessionPost)
 	mux.HandleFunc("DELETE /sessions/", h.deleteSession)
+	// PATCH has exactly one route (the v1.10.0 ACL) and the verb is
+	// load-bearing there — omitted and `[]` mean different things,
+	// which a PUT cannot express. Dispatched inside like the rest.
+	mux.HandleFunc("PATCH /sessions/", h.sessionPatch)
 
 	// Test-only introspection. Not part of the attach protocol —
 	// the underscore marks it as belonging to the mock, not to
@@ -340,6 +382,9 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// the only thing a spec can leak into the next one. Let them clear
 	// it rather than restart the server between cases.
 	mux.HandleFunc("DELETE /_mock/pause-gates", h.resetGates)
+	// Same problem, newer state: an ACL amended or a session renamed by
+	// one spec would otherwise be what the next one starts from.
+	mux.HandleFunc("DELETE /_mock/share-state", h.resetShareState)
 
 	// Session-agnostic endpoints.
 	mux.HandleFunc("GET /whoami", h.whoami)
@@ -350,6 +395,7 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// requests to. Can't use a bare `OPTIONS /` because Go's ServeMux
 	// treats method+catchall combinations as ambiguous vs. any
 	// method-less pattern like /healthz. Scope narrowly instead.
+	// PATCH is never a simple request, so the ACL edit always preflights.
 	mux.HandleFunc("OPTIONS /sessions", h.preflight)
 	mux.HandleFunc("OPTIONS /sessions/", h.preflight)
 	mux.HandleFunc("OPTIONS /whoami", h.preflight)
@@ -392,7 +438,12 @@ func isKnownSessionEndpoint(name string) bool {
 		"agents", "subagents", "guardrails", "usage", "context", "memory",
 		"skills", "mcp", "pricing", "perms", "reload", "slash",
 		// v1.5.0 operator pause gate.
-		"pause", "resume":
+		"pause", "resume",
+		// v1.10.0 sharing + naming. Neither has a feature flag
+		// upstream, so the only thing telling a client they exist is
+		// wireProtocolVersion — which makes routing them here part of
+		// what claiming 1.12.0 means, not an optional extra.
+		"acl", "title":
 		return true
 	}
 	return false
@@ -489,6 +540,8 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 		}
 		// /perms (no /stream) — return {} for the perms read.
 		writeJSON(w, http.StatusOK, map[string]any{})
+	case "acl":
+		h.getACL(w, r, sid)
 	case "status":
 		writeJSON(w, http.StatusOK, h.statusFor(sid))
 	case "tools":
@@ -522,20 +575,41 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 // to an already-paused session never saw the `pause` event that closed
 // it, so /status is the only way it can find out — without this the
 // gate would be discoverable only by whoever happened to be watching.
+//
+// It also carries `turn_in_flight` (v1.12.0, core-agent#896), which is
+// the one field on the whole wire that can say "parked, and the turn
+// the park interrupted is STILL RUNNING". The gate's `interrupted`
+// records that a turn was cancelled on the way in; the bool records
+// whether that cancellation has finished unwinding. An operator
+// staring at a hold banner needs to know which of the two they are
+// looking at, and no other surface can tell them: pause outranks
+// running in `state`, so the session says "paused" either way.
 func (h *mockHandler) statusFor(sid string) map[string]any {
-	out := make(map[string]any, len(stubStatus)+4)
+	out := make(map[string]any, len(stubStatus)+6)
 	for k, v := range stubStatus {
 		out[k] = v
 	}
 	gate := h.gates.get(sid)
 	out["paused"] = gate.paused
-	if gate.paused {
+	out["turn_in_flight"] = gate.turnInFlight
+	// `state` is one field and pause outranks running in it — verbatim
+	// from upstream's central pause projection. That ordering is the
+	// whole reason turn_in_flight had to exist as a separate key, so
+	// getting it backwards here would model away the problem.
+	switch {
+	case gate.paused:
+		out["state"] = "paused"
 		out["turn_state"] = "paused"
 		out["paused_since"] = gate.since.UTC().Format(time.RFC3339Nano)
 		out["pause_reason"] = gate.reason
 		if gate.interrupted {
 			out["interrupted"] = true
 		}
+	case gate.turnInFlight:
+		out["state"] = "running"
+		out["turn_state"] = "streaming"
+	default:
+		out["state"] = "idle"
 	}
 	return out
 }
@@ -580,8 +654,10 @@ func (h *mockHandler) subagentEvents(w http.ResponseWriter, sid, name string) {
 // sessionPost dispatches on the endpoint segment for POST requests
 // against /sessions/... . Handles the v1.5.0 pause gate (interrupt /
 // pause / resume — see mock_pause.go, the only stateful handlers here),
-// slash/<name> (returns a markdown _render response), and a {}
-// fallthrough for inject / wake / perms/allow / perms/deny etc.
+// inject / wake (v1.10.0 envelopes, and the v1.11.0 gate semantics),
+// title (v1.10.0), agents/{name}/stop (v1.12.0), slash/<name> (returns
+// a markdown _render response), and a {} fallthrough for perms/allow /
+// perms/deny etc.
 func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 	_, sid, tail, ok := sessionSegments(r.URL.Path)
 	if !ok || len(tail) == 0 {
@@ -605,14 +681,29 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 		h.resume(w, r, sid)
 		return
 	}
-	drainBody(r)
+	// Endpoints that read their body, for the same reason the gate ones
+	// do — they can't sit downstream of the blanket drain below.
 	switch tail[0] {
 	case "inject", "wake":
-		// Both wake the loop, and since v1.7.0 the agent says so on the
-		// stream. Publishing it here is what lets a consumer be tested
-		// against a wake it caused — there is no other way to provoke
-		// one from outside.
-		h.hub.publish(sid, wakeFrame(time.Now()))
+		h.injectOrWake(w, r, sid, tail[0])
+		return
+	case "title":
+		h.setTitle(w, r, sid)
+		return
+	case "acl":
+		// PATCH is the ACL's mutating verb; a POST to it is not a route
+		// upstream has. Fall through to the {} no-op rather than
+		// inventing one.
+	}
+	drainBody(r)
+	switch tail[0] {
+	case "agents":
+		// POST .../agents/{name}/stop (v1.5.0, semantics revised in
+		// v1.12.0 #897).
+		if len(tail) >= 3 && tail[1] != "" && tail[2] == "stop" {
+			h.stopSubagent(w, sid, tail[1])
+			return
+		}
 	case "slash":
 		// v1.4.0-conformant response with the reserved _render
 		// convention so the SPA's slash-render dispatcher exercises
@@ -638,9 +729,196 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Everything else (inject / wake / perms/allow / perms/deny /
-	// perms/respond / pricing/* / reload) — accept as no-op.
+	// Everything else (perms/allow / perms/deny / perms/respond /
+	// pricing/* / reload) — accept as no-op.
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// sessionPatch dispatches PATCH against /sessions/... . One route
+// today — the v1.10.0 ACL — but registered by method like the others
+// so the next one isn't a special case.
+func (h *mockHandler) sessionPatch(w http.ResponseWriter, r *http.Request) {
+	_, sid, tail, ok := sessionSegments(r.URL.Path)
+	if !ok || len(tail) == 0 || tail[0] != "acl" {
+		drainBody(r)
+		// Not a route. 404 rather than the {} the POST fallthrough
+		// gives: a PATCH is a mutation, and answering a cheerful 200 to
+		// one that changed nothing is the silent-failure shape the ACL
+		// endpoint was filed about.
+		writeError(w, http.StatusNotFound, "not found\n")
+		return
+	}
+	h.patchACL(w, r, sid)
+}
+
+// injectOrWake models POST /sessions/{sid}/inject and .../wake.
+//
+// Two things here are not decoration.
+//
+// AN INJECT DOES NOT OPEN A CLOSED GATE (v1.11.0, core-agent#878).
+// Through 1.10.0 it did, implicitly, and this mock published a wake
+// frame unconditionally to match. That shim is gone upstream — the
+// grounds were that "callers carry an identity, not a species" — so a
+// message sent to a held session now queues behind the gate and the
+// loop stays parked. Publishing a wake here regardless would model the
+// old backend, and the SPA would be developed against a world where
+// typing rescues a parked session. It does not. Only /resume does,
+// which is the whole reason #70 stopped being deferrable.
+//
+// The response envelope is v1.10.0's. `woke` is reported on both paths
+// and never omitted: false is the informative value, so a key that
+// vanishes exactly when it says something is a key clients read wrong.
+// `prompt_id` (#840) is omitted rather than empty, because there is no
+// informative empty id and a caller has to handle its absence anyway.
+func (h *mockHandler) injectOrWake(w http.ResponseWriter, r *http.Request, sid, endpoint string) {
+	var req struct {
+		Message string `json:"message"`
+		Prompt  string `json:"prompt"`
+		Target  string `json:"target"`
+		// Pointer for the same reason core-agent's is: the distinction
+		// that matters is "said nothing" vs. "said false".
+		Wake *bool `json:"wake"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	drainBody(r)
+
+	if endpoint == "wake" && req.Target != "" {
+		writeError(w, http.StatusNotImplemented,
+			"wake: per-subagent target is not yet implemented; omit 'target' to wake the session\n")
+		return
+	}
+	text := req.Message
+	if endpoint == "wake" {
+		text = req.Prompt
+	} else if text == "" {
+		writeError(w, http.StatusBadRequest, "inject: message is required\n")
+		return
+	}
+
+	// A bare wake queues nothing, so it names no prompt.
+	promptID := ""
+	if text != "" {
+		promptID = h.nextPromptID()
+	}
+
+	gate := h.gates.get(sid)
+	// `woke` answers for the delivery the caller asked for. A closed
+	// gate is not a "no" to that question — upstream's flag reports the
+	// requested disposition, and the gate is what decides whether the
+	// loop acts on it.
+	woke := req.Wake == nil || *req.Wake
+	if woke && !gate.paused {
+		// The loop actually runs. Since v1.7.0 the agent says so on the
+		// stream, and publishing it here is what lets a consumer be
+		// tested against a wake it caused — there is no other way to
+		// provoke one from outside.
+		next := gate
+		next.turnInFlight = true
+		h.gates.set(sid, next)
+		h.hub.publish(sid, wakeFrame(time.Now()))
+	}
+
+	out := map[string]any{"session": sid, "woke": woke}
+	if endpoint == "wake" {
+		out = map[string]any{"woken": sid, "prompt": req.Prompt}
+	} else {
+		out["injected"] = req.Message
+	}
+	if promptID != "" {
+		out["prompt_id"] = promptID
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// setTitle models POST /sessions/{sid}/title (v1.10.0, core-agent#808).
+//
+// The `title` key is required and a pointer upstream, because "" and
+// omitted are different instructions: "" clears the name and re-arms
+// inference, omitted is a caller who typo'd the key and would
+// otherwise get a silent 200. A mock that accepted both alike would
+// make that 400 undiscoverable.
+//
+// It answers with the STORED title after normalization — the 60-rune
+// cap is modelled, the decorative-quote strip is not, since one is
+// enough to prove the echo is worth reading — and with
+// `persisted: false`, which IS NOT AN ERROR. False is the norm: a
+// session with no durable ACL row has nowhere to write, and the rename
+// is live for as long as the process is. A client that treats it as a
+// failure will report every successful rename as broken.
+func (h *mockHandler) setTitle(w http.ResponseWriter, r *http.Request, sid string) {
+	var req struct {
+		Title *string `json:"title"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	drainBody(r)
+	if req.Title == nil {
+		writeError(w, http.StatusBadRequest,
+			`title: title is required (send {"title":""} to clear it)`+"\n")
+		return
+	}
+	stored := normalizeTitle(*req.Title)
+	setMockSessionTitle(sid, stored)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session":   sid,
+		"title":     stored,
+		"persisted": false,
+	})
+}
+
+// maxTitleRunes is core-agent's cap. Runes, not bytes: the point of the
+// limit is how wide the name draws in a picker.
+const maxTitleRunes = 60
+
+func normalizeTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > maxTitleRunes {
+		s = strings.TrimSpace(string(r[:maxTitleRunes]))
+	}
+	return s
+}
+
+// stopSubagent models POST /sessions/{sid}/agents/{name}/stop at
+// v1.12.0 semantics (core-agent#897).
+//
+// The change the mock exists to expose: `stopped` used to mean "the
+// name is registered" and now means "THIS CALL is what halted it". A
+// subagent that finished on its own answers 200 with `stopped: false`
+// and the terminal `status`, where through 1.11.0 it answered true and
+// told an operator they had stopped something that completed thirty
+// seconds earlier. A client must read the 200 itself as "it is no
+// longer running".
+//
+// 404 keeps its narrow trigger — a name the manager has never
+// registered — and is NOT the answer for a finished subagent: that one
+// existed, the operator aimed correctly, and there is nothing to
+// retry.
+func (h *mockHandler) stopSubagent(w http.ResponseWriter, sid, name string) {
+	for _, known := range knownSubagentNames {
+		if name != known {
+			continue
+		}
+		// `implementer` is the mock's already-finished subagent, so both
+		// branches of #897 are reachable without any setup. A mock that
+		// only modelled the live one would leave the case the change was
+		// filed about untested.
+		if name == finishedSubagentName {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"session": sid,
+				"agent":   name,
+				"stopped": false,
+				"status":  "completed",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"session": sid,
+			"agent":   name,
+			"stopped": true,
+			"status":  "stopped",
+		})
+		return
+	}
+	writeError(w, http.StatusNotFound, "stop: no subagent named "+strconv.Quote(name)+"\n")
 }
 
 // whoami echoes back whoever the request resolved to. It is the only
@@ -810,7 +1088,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func corsHeaders() map[string]string {
 	return map[string]string{
 		"Access-Control-Allow-Origin":  "*",
-		"Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+		"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 		"Access-Control-Allow-Headers": "Content-Type, Authorization, X-Attach-Token",
 		"Access-Control-Max-Age":       "3600",
 	}

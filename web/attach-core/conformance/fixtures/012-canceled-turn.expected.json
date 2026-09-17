@@ -1,0 +1,61 @@
+[
+  {
+    "type": "capabilities",
+    "data": {
+      "protocol_version": "1.12.0",
+      "event_types": [
+        "capabilities",
+        "status-update",
+        "usage-update",
+        "inbox",
+        "turn-complete",
+        "turn-error",
+        "agent",
+        "pause",
+        "wake"
+      ],
+      "server": "core-agent",
+      "features": {
+        "interrupt": true,
+        "pause": true,
+        "guardrails": true
+      }
+    }
+  },
+  {
+    "type": "status-update",
+    "data": {
+      "model": "gemini-2.5-flash",
+      "provider": "vertex",
+      "turn_state": "streaming",
+      "context_pct": 9,
+      "perm_mode": "prompt"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Renaming the field across all forty call sites",
+      "partial": true,
+      "author": "assistant"
+    }
+  },
+  {
+    "type": "turn-error",
+    "data": {
+      "kind": "canceled",
+      "message": "turn canceled by operator",
+      "retryable": true
+    }
+  },
+  {
+    "type": "status-update",
+    "data": {
+      "model": "gemini-2.5-flash",
+      "provider": "vertex",
+      "turn_state": "idle",
+      "context_pct": 9,
+      "perm_mode": "prompt"
+    }
+  }
+]

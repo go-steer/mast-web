@@ -180,4 +180,52 @@ describe('AttachCoreProtocol', () => {
       expect(AttachCoreProtocol.hasFeature(speaksButCannotHold, 'pause')).toBe(false);
     });
   });
+
+  // The third question, added at v1.10.0: "does this endpoint exist?"
+  // Neither helper above can answer it. event_types is about frames,
+  // features is about flags, and the ACL and title routes have no flag
+  // — checked in core-agent's events.go, not assumed.
+  describe('protocolAtLeast', () => {
+    const at = (v, want) => AttachCoreProtocol.protocolAtLeast({ protocol_version: v }, want);
+
+    it('compares components numerically, not as strings', () => {
+      // The bug this function exists to not have: '1.10.0' < '1.7.0'
+      // lexicographically, so a string compare would hide every
+      // v1.10.0 endpoint on exactly the servers that have them.
+      expect('1.10.0' < '1.7.0').toBe(true);
+      expect(at('1.10.0', '1.7.0')).toBe(true);
+      expect(at('1.12.0', '1.10.0')).toBe(true);
+      expect(at('1.9.0', '1.10.0')).toBe(false);
+    });
+
+    it('is inclusive of the version asked for', () => {
+      expect(at('1.10.0', '1.10.0')).toBe(true);
+    });
+
+    it('reads a short version as zero-filled', () => {
+      // core-agent has shipped two-component strings. '1.10' is 1.10.0,
+      // not something less than it.
+      expect(at('1.10', '1.10.0')).toBe(true);
+      expect(at('2', '1.12.0')).toBe(true);
+    });
+
+    it('answers NO when it cannot tell — the opposite default from hasFeature', () => {
+      // hasFeature reads silence as yes, because a producer that
+      // predates a flag still has the feature. Here silence means a
+      // server too old to have said, and calling an endpoint that
+      // isn't there is a 404 in the operator's face. The two defaults
+      // disagree on purpose.
+      expect(AttachCoreProtocol.protocolAtLeast(null, '1.10.0')).toBe(false);
+      expect(AttachCoreProtocol.protocolAtLeast({}, '1.10.0')).toBe(false);
+      expect(at('', '1.10.0')).toBe(false);
+      expect(at('v1.12.0', '1.10.0')).toBe(false);
+      expect(at('1.x.0', '1.10.0')).toBe(false);
+      expect(at('1.2.3.4', '1.10.0')).toBe(false);
+      expect(AttachCoreProtocol.protocolAtLeast({ protocol_version: 112 }, '1.10.0')).toBe(false);
+    });
+
+    it('tolerates the surrounding whitespace a hand-edited fixture picks up', () => {
+      expect(at(' 1.12.0 ', '1.10.0')).toBe(true);
+    });
+  });
 });

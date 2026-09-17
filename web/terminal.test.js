@@ -968,6 +968,28 @@ describe('MastTerminal built-ins', () => {
       expect(inflight(term).hidden).toBe(false);
     });
 
+    // The version gate and the start of the chain are the same moment,
+    // and it is not the socket opening: 'connected' fires on the open
+    // and the capabilities frame is the first thing to arrive on it, so
+    // a client asked at connect does not yet know what it is talking
+    // to. Getting this wrong arms nothing and the poll silently never
+    // happens — which is exactly how it first shipped.
+    it('starts the chain when the version lands, not when the socket opens', async () => {
+      const { client } = mount();
+      const seen = polling(client);
+      let known = false;
+      client.protocolAtLeast = () => known;
+
+      client.conn('connected');
+      await flush();
+      expect(seen.count).toBe(0);
+
+      known = true;
+      client.feed({ type: 'capabilities', data: { protocol_version: '1.12.0' } });
+      await flush();
+      expect(seen.count).toBe(1);
+    });
+
     // The negotiated version, not the capabilities frame: a 1.11.0
     // daemon serves the route and answers 'idle' to every read of it,
     // which is a request per panel per ten seconds for no fact.

@@ -1485,6 +1485,14 @@ window.MastTerminal = (function () {
           // arrives here — a banner drawn before this frame has to be
           // redrawn after it.
           renderHold();
+          // And the status poll is gated on the version, which also
+          // arrives here: 'connected' is the socket opening, and this
+          // frame is the first thing on it. Asking at connect gets a
+          // client that does not yet know what it is talking to and a
+          // chain that never arms, which is a poll that silently never
+          // happens (#93). This is the real start; the one on connect
+          // is for a reconnect, where the version is already known.
+          refreshStatus();
           // Attaching to a session someone else is driving means the
           // usage-update that priced the last turn happened before we
           // got here. GET /usage still carries it as last_turn, and

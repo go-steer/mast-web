@@ -639,6 +639,13 @@ body.side-hidden #app-sidebar {
   color: var(--red);
 }
 
+/* A session parked behind a gate somewhere in the window. Yellow, to
+   match the banner in the panel it points at — and not red, because a
+   hold is a thing somebody chose. */
+.status-held {
+  color: var(--yellow);
+}
+
 /* Dimmer than the rest of the bar until it is worth reading. Cost is
    the number you want to be able to find without it being the number
    you keep noticing. */

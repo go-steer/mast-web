@@ -37,7 +37,15 @@ function makeTerminal(state) {
   const subs = new Set();
   return {
     state: Object.assign(
-      { connState: 'connected', running: false, costUSD: 0, turns: 0, model: '', label: '' },
+      {
+        connState: 'connected',
+        running: false,
+        paused: false,
+        costUSD: 0,
+        turns: 0,
+        model: '',
+        label: '',
+      },
       state
     ),
     subscribe(fn) {
@@ -102,6 +110,23 @@ describe('MastStatusBar', () => {
     open = [a];
     bar.sync();
     expect(slot('status-fleet').textContent).toBe('1 terminal');
+  });
+
+  // #70. The banner explaining a hold is in the panel that holds it,
+  // which is also the one place you can't see from anywhere else: a
+  // session parked behind an unclicked tab waits forever in silence.
+  it('counts held sessions, which are not the same set as running ones', () => {
+    const a = makeTerminal({ label: 'ops' });
+    // Parked mid-turn — upstream's one `state` field can't say this and
+    // neither could a bar that treated the two as exclusive.
+    const b = makeTerminal({ label: 'docs', running: true, paused: true });
+    open = [a, b];
+    mount();
+
+    expect(slot('status-fleet').textContent).toBe('2 terminals · 1 running · 1 held');
+
+    b.poke({ paused: false });
+    expect(slot('status-fleet').textContent).toBe('2 terminals · 1 running');
   });
 
   it('sums the cost across the window rather than reading one session', () => {

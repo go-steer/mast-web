@@ -69,14 +69,44 @@ function stubClient() {
     resetGuardrails: record('resetGuardrails', { ok: true, reset: ['watchdog'] }),
     getUsage: record('getUsage', { overall: { turns: 1 } }),
     whoami: record('whoami', { identity: 'alice@example.com' }),
+    // The hold's two routes, plus the poll the banner reads
+    // turn_in_flight from. Defaults are the ordinary answers; a test
+    // that cares about a different one overwrites the method.
+    // PauseResponse's keys are the prefixed ones — paused_since and
+    // pause_reason, not since and reason. Spelled correctly here so a
+    // consumer that reads the frame's names instead fails a test rather
+    // than quietly rendering undefined.
+    pause: record('pause', (reason) => ({
+      session: 's1',
+      paused: true,
+      transitioned: true,
+      state: 'paused',
+      pause_reason: reason || 'operator hold',
+      paused_since: '2026-09-17T12:00:00Z',
+    })),
+    resume: record('resume', (mode) => ({
+      session: 's1',
+      resumed: true,
+      mode: mode || 'continue',
+      state: 'running',
+    })),
+    getStatus: record('getStatus', { state: 'paused', turn_in_flight: false }),
+    protocolAtLeast: () => true,
     _post: record('_post', { _render: 'text', body: 'ok' }),
     disconnect() {},
   };
 }
 
+// One turn of the event loop, for the paths that fire a request and
+// redraw when it lands (refreshTurnInFlight).
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 function mount({ features, slashCommands, commands } = {}) {
   const client = stubClient();
-  globalThis.AttachClient = function () {
+  globalThis.AttachClient = function (opts) {
+    // Keep the frame sink the terminal handed us, so a test can push a
+    // `pause` or `status-update` frame the way a live stream would.
+    client.feed = opts.onEvent;
     return client;
   };
   const term = globalThis.MastTerminal.create({
@@ -90,7 +120,12 @@ function mount({ features, slashCommands, commands } = {}) {
     features: features,
     slash_commands: slashCommands || [],
   });
-  return { term, client, text: () => term.out.textContent };
+  return {
+    term,
+    client,
+    text: () => term.out.textContent,
+    hold: () => term.el.querySelector('.term-hold'),
+  };
 }
 
 describe('MastTerminal built-ins', () => {
@@ -477,6 +512,12 @@ describe('MastTerminal built-ins', () => {
       expect(r.ttfbMs).toBe(1200);
     });
 
+    it('returns null at a held session, because a steer is not a turn', async () => {
+      const { term, client } = mount({ features: { pause: true } });
+      client.feed({ type: 'pause', data: { state: 'paused' } });
+      expect(await term.submit('actually, use the other file')).toBeNull();
+    });
+
     it('returns the failure instead of throwing it', async () => {
       const { term, client, text } = mount({ features: {} });
       client.inject = async () => {
@@ -488,6 +529,220 @@ describe('MastTerminal built-ins', () => {
       // And it is still rendered, because the other callers of submit()
       // are keypresses with nobody to catch a rejection.
       expect(text()).toContain('socket died');
+    });
+  });
+
+  // #70. A hold is the one piece of session state that changes what
+  // every other control means, so the tests below are mostly about
+  // which surface says what: the banner draws the state, the `pause`
+  // frame narrates the transition, and exactly one of them does each.
+  describe('the hold', () => {
+    const paused = (over) => ({ type: 'pause', data: { state: 'paused', ...over } });
+
+    it('/pause holds, carries the reason, and names the ways out', async () => {
+      const { term, client, text, hold } = mount({ features: { pause: true } });
+      await term.submit('/pause looking at the diff');
+      expect(client.calls.map((c) => c.name)).toContain('pause');
+      expect(client.calls.find((c) => c.name === 'pause').args[0]).toBe('looking at the diff');
+      expect(text()).toContain('/continue');
+      expect(text()).toContain('/abandon');
+      expect(text()).toContain('steer');
+      // The route's own post-condition put the banner up; no frame has
+      // arrived yet and the operator should not have to wait for one.
+      expect(hold().hidden).toBe(false);
+      expect(hold().textContent).toContain('HELD — looking at the diff');
+      expect(hold().textContent).toContain('Held since');
+      expect(term.state.paused).toBe(true);
+    });
+
+    // A bare /pause takes whatever reason the backend supplied, which
+    // is the string the next operator to find this session will read.
+    it('renders the reason the server stored, not the one we sent', async () => {
+      const { term, hold } = mount({ features: { pause: true } });
+      await term.submit('/pause');
+      expect(hold().textContent).toContain('HELD — operator hold');
+    });
+
+    // Idempotent upstream, and saying "held" twice would imply this
+    // press is what did it.
+    it('/pause reports an already-held session as already held', async () => {
+      const { term, client, text } = mount({ features: { pause: true } });
+      client.pause = async () => ({ paused: true, transitioned: false });
+      await term.submit('/pause');
+      expect(text()).toContain('Already held');
+    });
+
+    // The two facts an operator asks for in order, and the reason
+    // turn_in_flight is a separate field from the gate at all.
+    it('says whether the turn it interrupted is still running', async () => {
+      const { term, client, hold } = mount({ features: { pause: true } });
+      client.getStatus = async () => ({ state: 'paused', turn_in_flight: true });
+      client.feed(paused({ interrupted: true, reason: 'cost ceiling' }));
+      await flush();
+      expect(hold().textContent).toContain('still unwinding');
+      expect(term.state.turnInFlight).toBe(true);
+    });
+
+    it('distinguishes a cancelled turn from a gate over nothing', async () => {
+      const a = mount({ features: { pause: true } });
+      a.client.feed(paused({ interrupted: true }));
+      await flush();
+      expect(a.hold().textContent).toContain('was cancelled');
+
+      const b = mount({ features: { pause: true } });
+      b.client.feed(paused());
+      await flush();
+      expect(b.hold().textContent).toContain('Nothing was in flight');
+    });
+
+    // Exactly one surface narrates, or every park is announced twice:
+    // the `pause` frame and the status poll carry the same fact about a
+    // second apart.
+    it('narrates a transition once, and a repeat of the same state never', async () => {
+      const { client, text } = mount({ features: { pause: true } });
+      client.feed(paused({ reason: 'operator' }));
+      await flush();
+      expect(text().match(/Session held/g)).toHaveLength(1);
+
+      client.feed(paused({ reason: 'operator' }));
+      client.feed({ type: 'status-update', data: { turn_state: 'paused' } });
+      await flush();
+      expect(text().match(/Session held/g)).toHaveLength(1);
+    });
+
+    it('narrates the release, with the disposition that was applied', async () => {
+      const { client, text, hold } = mount({ features: { pause: true } });
+      client.feed(paused());
+      await flush();
+      client.feed({ type: 'pause', data: { state: 'resumed', mode: 'abandon' } });
+      expect(text()).toContain('Session resumed (abandon)');
+      expect(hold().hidden).toBe(true);
+    });
+
+    it('/continue and /abandon send their mode, and /cont is /continue', async () => {
+      const { term, client, text } = mount({ features: { pause: true } });
+      client.feed(paused());
+      await flush();
+
+      await term.submit('/continue');
+      expect(client.calls.at(-1)).toEqual({ name: 'resume', args: ['continue', undefined] });
+      expect(text()).toContain('carrying on from where it stopped');
+
+      await term.submit('/cont');
+      expect(client.calls.at(-1)).toEqual({ name: 'resume', args: ['continue', undefined] });
+
+      await term.submit('/abandon');
+      expect(client.calls.at(-1)).toEqual({ name: 'resume', args: ['abandon', undefined] });
+      expect(text()).toContain('the held work was dropped');
+    });
+
+    // An alias dispatches but is not a second row: /help would otherwise
+    // list the same command twice under two spellings.
+    it('lists /continue once, mentioning the alias in its help', async () => {
+      const { term, text } = mount({ features: { pause: true } });
+      await term.submit('/help');
+      expect(text().match(/\/continue/g)).toHaveLength(1);
+      expect(text()).toContain('alias /cont');
+      expect(term.commands.map((c) => c.name)).not.toContain('cont');
+    });
+
+    // The whole point of the mode vocabulary: typing IS the third one.
+    it('steers on typed text instead of starting a turn', async () => {
+      const { term, client, text } = mount({ features: { pause: true } });
+      client.feed(paused());
+      await flush();
+      await term.submit('use the other file');
+
+      expect(client.calls.at(-1)).toEqual({
+        name: 'resume',
+        args: ['steer', 'use the other file'],
+      });
+      // Drawn, because the live echo of an operator's own prompt is
+      // suppressed and nothing else would render it.
+      expect(text()).toContain('use the other file');
+      // And NOT run here. mast-web reads a standing stream, so the host
+      // runs the steer; a client that also ran it would send it twice.
+      expect(client.calls.map((c) => c.name)).not.toContain('inject');
+      expect(term.connection.getActiveTurn()).toBeFalsy();
+    });
+
+    // core-tui#289: deciding "is this a command" from anything narrower
+    // than the built-in name list sends /quit to the agent as prose at
+    // the exact moment the operator meant it most.
+    it('still treats a slash command at a held session as a command', async () => {
+      const { term, client, text } = mount({ features: { pause: true } });
+      client.feed(paused());
+      await flush();
+
+      await term.submit('/help');
+      expect(text()).toContain('This list');
+      expect(client.calls.map((c) => c.name)).not.toContain('resume');
+
+      // Including one this table does not know — it is still not prose.
+      await term.submit('/quit');
+      expect(text()).toContain('Unknown command: /quit');
+      expect(client.calls.map((c) => c.name)).not.toContain('resume');
+    });
+
+    // "Stop and let me look" is worth nothing if it only works once the
+    // thing you wanted to look at has finished.
+    it('lets /pause through mid-turn, and nothing else', async () => {
+      const { term, client } = mount({ features: { pause: true } });
+      client.inject = async () => {};
+      const pending = term.submit('do the thing');
+
+      await term.submit('/usage');
+      expect(client.calls.map((c) => c.name)).not.toContain('getUsage');
+
+      await term.submit('/pause');
+      expect(client.calls.map((c) => c.name)).toContain('pause');
+
+      term.connection.getActiveTurn().finish({ totalMs: 1, tokens: { in: 0, out: 0 } });
+      await pending;
+    });
+
+    // A backend that lists the `pause` event but whose agent has no
+    // PauseController: the gate can close from elsewhere and this
+    // operator has no way to open it. Say that, rather than offering a
+    // button that 501s.
+    it('offers no controls when the agent cannot resume', async () => {
+      const { term, client, text, hold } = mount({ features: { pause: false } });
+      client.feed(paused());
+      await flush();
+      expect(hold().hidden).toBe(false);
+      expect(hold().textContent).toContain('no resume route');
+      expect(hold().querySelector('.term-hold-go').hidden).toBe(true);
+
+      await term.submit('/continue');
+      expect(text()).toContain('/continue is not supported by this backend.');
+      // And a typed steer, which reaches the resume path past both the
+      // table's gate and the hidden buttons.
+      await term.submit('never mind');
+      expect(text()).toContain('no resume route');
+      expect(client.calls.map((c) => c.name)).not.toContain('resume');
+    });
+
+    // resumed:false with a 200 is the idempotent answer from two
+    // surfaces racing the same click, not a failure.
+    it('reports a resume that found no hold, without claiming one', async () => {
+      const { term, client, text } = mount({ features: { pause: true } });
+      client.resume = async () => ({ resumed: false, mode: 'continue' });
+      await term.submit('/continue');
+      expect(text()).toContain('The session was not held.');
+      expect(text()).not.toContain('Resumed');
+    });
+
+    it('surfaces a failed resume rather than lowering the banner', async () => {
+      const { term, client, text, hold } = mount({ features: { pause: true } });
+      client.feed(paused());
+      await flush();
+      client.resume = async () => {
+        throw new Error('socket died');
+      };
+      await term.submit('/continue');
+      expect(text()).toContain('Resume failed');
+      expect(hold().hidden).toBe(false);
+      expect(term.state.paused).toBe(true);
     });
   });
 });

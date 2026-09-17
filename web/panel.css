@@ -822,9 +822,81 @@
   color: var(--hue);
 }
 
+/* The hold banner (#70). Directly above the prompt, because a gate
+   drawn anywhere else is a gate you can type past — and because while
+   it is up, what the field below does changes: typing steers rather
+   than starts. Yellow, like the observer notice: both say "this is
+   working as intended and you need to know about it", which is not the
+   same colour as a failure. */
+.term-hold {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 8px;
+  border: 1px solid var(--yellow);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--yellow) 12%, var(--bg-surface));
+  font-size: 11px;
+}
+
+.term-hold-why {
+  color: var(--yellow);
+  letter-spacing: 0.06em;
+}
+
+.term-hold-detail {
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.term-hold-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.term-hold-go {
+  color: var(--green);
+}
+
+.term-hold-go:hover:not(:disabled) {
+  border-color: var(--green);
+}
+
+.term-hold-drop {
+  color: var(--red);
+}
+
+.term-hold-drop:hover:not(:disabled) {
+  border-color: var(--red);
+}
+
+.term-hold-hint {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
 .term-input {
   flex: none;
   display: flex;
+}
+
+/* Held: the prompt still takes text and the text still goes somewhere,
+   so it is not disabled — but it means something else now, and an
+   unchanged field would be the only part of the panel not saying so. */
+.term-held .term-shell {
+  border-color: var(--yellow);
+}
+
+.term-held .term-shell:focus-within {
+  box-shadow: 0 0 16px -6px var(--yellow);
+}
+
+.term-held .term-caret {
+  background: var(--yellow);
+  box-shadow: 0 0 8px var(--yellow);
 }
 
 .term-shell {

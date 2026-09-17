@@ -850,7 +850,11 @@ window.AttachClient = (function () {
     // log. Idempotent: `transitioned` is false when it was already
     // held, which is a 200 and not a failure.
     //
-    // Returns { session, paused, transitioned, state, since?, reason? }.
+    // Returns { session, paused, transitioned, state, paused_since?,
+    // pause_reason? }. Note the prefixed names: PauseResponse
+    // (core-agent pkg/attach/pause.go:104-107) does not use the same
+    // keys the `pause` FRAME does for the same two facts, so a consumer
+    // that reads `since` off this body silently gets undefined.
     async pause(reason) {
       const body = reason ? { reason } : {};
       return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/pause', body);

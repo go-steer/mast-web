@@ -29,7 +29,7 @@
 // questions the window has and a panel cannot:
 //
 //   how many agents am I attached to, and are they all up
-//   how many terminals are open, and how many are mid-turn
+//   how many terminals are open, how many are mid-turn, how many held
 //   what have all of them cost me so far
 //   which one is in front, and is it connected
 //
@@ -184,6 +184,19 @@ window.MastStatusBar = (function () {
       }).length;
       if (running) {
         fleet.appendChild(mk('span', 'status-live', ' · ' + running + ' running'));
+      }
+      // Held sessions (#70). The banner that explains one of these
+      // lives in its own panel, which is the right place for it and is
+      // also invisible from anywhere else: a room of six terminals can
+      // have one parked behind a tab nobody has clicked, waiting for a
+      // resume that isn't coming. This is the count that sends you
+      // looking. Counted separately from `running` because they are not
+      // exclusive — a session parked mid-turn is both.
+      const held = open.filter(function (t) {
+        return t.state.paused;
+      }).length;
+      if (held) {
+        fleet.appendChild(mk('span', 'status-held', ' · ' + held + ' held'));
       }
     }
 

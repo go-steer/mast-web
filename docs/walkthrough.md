@@ -8,6 +8,8 @@ It is written to be *run*, not read. Every section is **Setup → Steps → Expe
 
 Audience: someone who knows what mast-web is and wants to know whether this build is sound. Not a tutorial.
 
+Sections 4 through 9 cover the v0.5.0 surface. What each of those changed, in prose, is [`CHANGELOG.md`](../CHANGELOG.md#050---2026-09-17); why it changed is [`v0.5-plan.md`](./v0.5-plan.md).
+
 ## Before you start
 
 ```
@@ -334,7 +336,7 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 
 - **`--auth-mode=oidc` is out of scope for v0.5.** Not blocked, not broken: not attempted. The mock's `mock_caller` cookie is the identity story this release has, and it is a development affordance, not an auth mechanism.
 - **`/share` is refused on `ops-triage`, `repo-indexer` and `docs-writer` by default.** Those three are pinned to old conformance fixtures (1.2.0–1.4.0) and the ACL routes arrived in 1.10.0, so the command correctly says the backend cannot serve it. Append `?fixture=001-happy-turn` to the shell URL to get a modern backend. This is the version gate working, and it is worth seeing once on purpose.
-- **The hold banner does not say how many background subagents are still running.** #70 asked for that line. There is nowhere truthful to read it from: the live roster carries no status, and the one number the wire does give (`interrupt`'s `running_subagents`) only arrives on a Stop, which does not hold. A zero that is always a zero is worse than nothing.
+- **The hold banner does not say how many background subagents are still running.** #70 asked for that line. There is nowhere truthful to read it from: the live roster carries no status, and the one number the wire does give (`interrupt`'s `running_subagents`) only arrives on a Stop, which does not hold. A zero that is always a zero is worse than nothing. Tracked in [#106](https://github.com/go-steer/mast-web/issues/106).
 - **No `by` on an approval does not mean nobody approved it.** It means the daemon verified no identity for whoever answered. The client says `unattributed` rather than inventing one; against a pre-1.10.0 backend it says nothing at all and notes that the backend cannot attribute.
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.

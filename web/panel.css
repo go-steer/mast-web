@@ -788,6 +788,16 @@
   color: var(--text-dim);
 }
 
+/* Who the daemon recorded the decision as (#94, v1.10.0). Dimmer than
+   the decision beside it and not upper-cased: an identity is a name
+   somebody has to read, not a label. */
+.term .perms-approver {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
 /* Grounding evidence. The search row and the sources strip are the
    shared primitives from styles.css, re-tuned for a panel: hue-tinted
    so they read as this terminal's, and wrapping hard because a

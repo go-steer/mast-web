@@ -549,6 +549,133 @@ describe('SlashRender', () => {
     });
   });
 
+  // The grant a specialist was configured with (v1.9.0,
+  // core-agent#768), and the absence that is not an emptiness.
+  describe('renderSpecialists', () => {
+    const roster = [
+      {
+        name: 'researcher',
+        description: 'Research + summarize',
+        model: 'mock-model-1.5',
+        modes: ['sync', 'async'],
+        tools: [
+          { name: 'fs_read', source: 'builtin', description: 'Read files' },
+          { name: 'gke_clusters_list', source: 'gke', description: 'List clusters' },
+        ],
+      },
+      { name: 'implementer', description: 'Write + edit code', modes: ['async'] },
+      { name: 'auditor', modes: ['async'], tools: [] },
+    ];
+
+    it('summarizes each grant the way /tools counts a catalog', () => {
+      const { html } = SlashRender.renderSpecialists(roster, '');
+      expect(html).toContain('Specialists (3)');
+      expect(html).toContain('builtin 1 · gke 1');
+    });
+
+    // The whole point. A pre-1.9.0 daemon omits the key for every
+    // specialist and a current one omits it for a specialist with no
+    // grant, so "no tools" would be a guess — and against an older
+    // backend, a wrong one every time.
+    it('reports a missing grant as unknown, never as none', () => {
+      const { html } = SlashRender.renderSpecialists(roster, '');
+      expect(html).toContain('grant unknown');
+      expect(html).toContain('1 report no grant, which is not the same as none');
+    });
+
+    // And the other side of it: a grant that IS reported as empty is
+    // an answer, and gets a different word.
+    it('distinguishes a reported-empty grant from a missing one', () => {
+      const { html } = SlashRender.renderSpecialists(roster, '');
+      expect(html).toContain('no tools of its own');
+    });
+
+    it('groups one specialist’s grant by source on request', () => {
+      const { html } = SlashRender.renderSpecialists(roster, 'researcher');
+      expect(html).toContain('researcher — mock-model-1.5 · sync/async');
+      expect(html).toContain('<div class="list-group-header">builtin (1)</div>');
+      expect(html).toContain('List clusters');
+    });
+
+    it('spells out both reasons a grant can be missing', () => {
+      const { text, html } = SlashRender.renderSpecialists(roster, 'implementer');
+      expect(html).toBeUndefined();
+      expect(text).toContain('Tool grant: unknown');
+      expect(text).toContain('predates v1.9.0');
+      expect(text).toContain('no tools of its own');
+    });
+
+    // The three the runtime wires in regardless are a property of the
+    // runtime, so an empty grant says something specific rather than
+    // "this specialist can do nothing at all".
+    it('notes the runtime-wired tools when the grant is empty', () => {
+      const { text } = SlashRender.renderSpecialists(roster, 'auditor');
+      expect(text).toContain('none of its own');
+      expect(text).toContain('return_result');
+    });
+
+    it('names the roster on a miss', () => {
+      const { text } = SlashRender.renderSpecialists(roster, 'ghost');
+      expect(text).toBe(
+        '/specialists: no specialist named "ghost". Registered: researcher, implementer, auditor'
+      );
+    });
+  });
+
+  describe('renderPerms', () => {
+    const perms = {
+      mode: 'ask',
+      allow: ['fs_read'],
+      deny: ['bash_exec rm -rf *'],
+      approvals: [
+        {
+          tool: 'bash_exec',
+          key: 'git push',
+          decision: 'allow-session-tool',
+          by: 'ada@example.com',
+          at: '2026-09-17T10:00:00Z',
+        },
+        { tool: 'fs_write', decision: 'allow-once', at: '2026-09-17T10:05:00Z' },
+      ],
+    };
+
+    it('renders the mode, the patterns and the log', () => {
+      const html = SlashRender.renderPerms(perms, { attribution: true });
+      expect(html).toContain('Permissions — mode ask');
+      expect(html).toContain('allow (1)');
+      expect(html).toContain('approved this session (2)');
+      expect(html).toContain('bash_exec git push');
+    });
+
+    // The two answers, side by side: a name, and the daemon saying it
+    // has none. Never the reader's own identity — they are the
+    // likeliest author of any row and the most damaging to assume,
+    // because the log is read when something got through that
+    // shouldn't have.
+    it('names the approver where there is one and says so where there is not', () => {
+      const html = SlashRender.renderPerms(perms, { attribution: true });
+      expect(html).toContain('by ada@example.com');
+      expect(html).toContain('unattributed');
+    });
+
+    // On a backend that cannot attribute, every row would say
+    // "unattributed" and it would mean nothing. Say it once, about the
+    // backend, and leave the rows alone.
+    it('prints no per-row attribution when the backend has none to give', () => {
+      const html = SlashRender.renderPerms(perms, { attribution: false });
+      expect(html).not.toContain('unattributed');
+      expect(html).not.toContain('by ada@example.com');
+      expect(html).toContain('does not attribute approvals');
+    });
+
+    it('renders an empty log as a heading rather than as nothing', () => {
+      const html = SlashRender.renderPerms({ mode: 'yolo' }, { attribution: true });
+      expect(html).toContain('Permissions — mode yolo');
+      expect(html).toContain('approved this session (0)');
+      expect(html).toContain('(none)');
+    });
+  });
+
   describe('groupToolsByServer', () => {
     // The shape core-agent flattens to: the server's own name in
     // `source`, no `server` field at all.

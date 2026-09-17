@@ -63,6 +63,13 @@
 //       sources on offer. Here rather than in a shell because the
 //       grouping rules are the interesting part and there should be
 //       one of them.
+//   renderSpecialists(specs, filter)
+//     — /specialists, whole. The roster with each specialist's own
+//       tool grant summarized, or one specialist's grant in full.
+//       A missing grant renders as unknown, never as none.
+//   renderPerms(perms, opts)
+//     — /perms: mode, the standing patterns, and the approval log with
+//       who approved each row when the daemon could say.
 //   groupToolsBySource(tools)
 //     — [[groupKey, tools], …] in heading order. Exported for tests
 //       and for anything that wants the buckets without the markup.
@@ -579,6 +586,178 @@ window.SlashRender = (function () {
     };
   }
 
+  // ─── /specialists ─────────────────────────────────────────────────
+  //
+  // The catalog /subagents lists, answering the question an operator
+  // asks straight after "what specialists exist?" — can this one
+  // actually reach kubectl (core-agent#768).
+  //
+  // The rows are the parent's own `tools` shape, so they group the same
+  // way /tools' do and the same helpers do it. What is different is
+  // that the key can be ABSENT, and absence is not emptiness: a
+  // pre-1.9.0 daemon omits it for every specialist, and a 1.9.0 one
+  // omits it for a specialist configured with no grant of its own.
+  // Nothing on the wire tells those apart, so a row without the key
+  // reports its grant as unknown rather than as none — printing "no
+  // tools" would be a guess, and against every older backend a wrong
+  // one.
+  //
+  // Not listed even when the key is there: return_result, report_alert
+  // and schedule_next_turn. The runtime wires those into every spawned
+  // subagent regardless, so they say nothing about this configuration.
+  function specialistGrant(s) {
+    return Array.isArray(s && s.tools) ? s.tools : null;
+  }
+
+  // "builtin 3 · gke 2" — the same per-source counts /tools leads with,
+  // which is the shape of the answer: what an operator wants off a
+  // roster row is whether this specialist has any reach outside the
+  // built-ins, not fourteen tool names.
+  function grantSummary(tools) {
+    return groupToolsBySource(tools)
+      .map(([key, entries]) => `${key} ${entries.length}`)
+      .join(' · ');
+  }
+
+  function specialistRow(s) {
+    const tags = [];
+    if (s.model) tags.push(s.model);
+    if (s.modes && s.modes.length) tags.push(s.modes.join('/'));
+    const tools = specialistGrant(s);
+    if (tools === null) tags.push('grant unknown');
+    else if (tools.length === 0) tags.push('no tools of its own');
+    else tags.push(grantSummary(tools));
+    return { name: s.name, tags, description: s.description || '' };
+  }
+
+  // Returns {html} or {text}, like renderTools. `filter` names one
+  // specialist and asks for its grant in full.
+  function renderSpecialists(specs, filter) {
+    const rows = (specs || []).filter((s) => s && s.name);
+    const want = String(filter || '')
+      .trim()
+      .toLowerCase();
+
+    if (want) {
+      const s = rows.find((r) => String(r.name).toLowerCase() === want);
+      if (!s) {
+        return {
+          text:
+            `/specialists: no specialist named "${filter}". Registered: ` +
+            rows.map((r) => r.name).join(', '),
+        };
+      }
+      const head = [s.model, s.modes && s.modes.length ? s.modes.join('/') : '']
+        .filter(Boolean)
+        .join(' · ');
+      const title = `${s.name}${head ? ' — ' + head : ''}`;
+      const tools = specialistGrant(s);
+      if (tools === null) {
+        // The honest answer, and the two reasons for it, because they
+        // lead to different next steps: upgrade the daemon, or look at
+        // the specialist's own configuration.
+        return {
+          text:
+            `${title}\n` +
+            (s.description ? '  ' + s.description + '\n' : '') +
+            `  Tool grant: unknown. This backend reports no grant for "${s.name}" — either it\n` +
+            '  predates v1.9.0, or the specialist is configured with no tools of its own.\n' +
+            '  The two look identical on the wire, so neither is assumed.',
+        };
+      }
+      if (tools.length === 0) {
+        return {
+          text:
+            `${title}\n` +
+            (s.description ? '  ' + s.description + '\n' : '') +
+            '  Tool grant: none of its own. (The runtime still wires in return_result,\n' +
+            '  report_alert and schedule_next_turn — those are not configuration.)',
+        };
+      }
+      const grouped = groupToolsBySource(tools);
+      return {
+        html: renderList(
+          `${title} — ${tools.length} tool(s): ${grantSummary(tools)}`,
+          grouped.map(([key, entries]) => ({
+            header: `${key} (${entries.length})`,
+            items: entries.map((t) => toolRow(t, true)),
+          })),
+          {
+            summary: s.description || 'Configured grant, not effective — see /tools for the parent',
+          }
+        ),
+      };
+    }
+
+    const unknown = rows.filter((s) => specialistGrant(s) === null).length;
+    return {
+      html: renderList(`Specialists (${rows.length})`, [{ items: rows.map(specialistRow) }], {
+        summary:
+          '/specialists <name> for its tool grant' +
+          (unknown ? ` · ${unknown} report no grant, which is not the same as none` : ''),
+      }),
+    };
+  }
+
+  // ─── /perms ───────────────────────────────────────────────────────
+  //
+  // Mode, the standing patterns, and the approval log — the last of
+  // which is the point: it is the only record of what was let through
+  // this session and, since v1.10.0 (core-agent#830), of who let it.
+  //
+  // `by` is omitted when the daemon verified no identity for whoever
+  // answered, so `attribution` says whether asking was even possible.
+  // False (a pre-1.10.0 backend) prints no attribution at all: every
+  // row would read "unattributed" and it would mean nothing. True
+  // prints it, because there it means something specific — this
+  // decision landed in the log anonymous, and nobody can be asked
+  // about it later.
+  //
+  // What it never prints is the reader's own identity. They are the
+  // likeliest author of any given row and the most damaging one to
+  // guess, because the log is consulted precisely when something got
+  // through that should not have.
+  function renderPerms(info, opts) {
+    const o = opts || {};
+    const p = info || {};
+    const groups = [];
+    const allow = p.allow || [];
+    const deny = p.deny || [];
+    if (allow.length) {
+      groups.push({ header: `allow (${allow.length})`, items: allow.map((x) => ({ name: x })) });
+    }
+    if (deny.length) {
+      groups.push({ header: `deny (${deny.length})`, items: deny.map((x) => ({ name: x })) });
+    }
+    const approvals = p.approvals || [];
+    groups.push({
+      header: `approved this session (${approvals.length})`,
+      items: approvals.map((a) => {
+        const tags = [a.decision].filter(Boolean);
+        if (o.attribution) tags.push(a.by ? 'by ' + a.by : 'unattributed');
+        return {
+          name: a.tool + (a.key ? ' ' + a.key : ''),
+          tags,
+          description: formatAt(a.at),
+        };
+      }),
+    });
+    return renderList(`Permissions — mode ${p.mode || 'unknown'}`, groups, {
+      summary: o.attribution ? '' : 'This backend does not attribute approvals (v1.10.0 and up do)',
+    });
+  }
+
+  // Timestamps arrive as RFC3339. Local clock time is what an operator
+  // correlates against; the date is noise for a log that only covers
+  // one session. An unparseable value prints verbatim rather than
+  // "Invalid Date".
+  function formatAt(at) {
+    if (!at) return '';
+    const d = new Date(at);
+    if (isNaN(d.getTime())) return String(at);
+    return d.toLocaleTimeString();
+  }
+
   // /mcp buckets the same catalog by MCP server and nothing else,
   // which is a different question from /tools': "which of my servers
   // is contributing what", not "where did this tool come from".
@@ -679,6 +858,8 @@ window.SlashRender = (function () {
     escapeHTML,
     renderList,
     renderTools,
+    renderSpecialists,
+    renderPerms,
     groupToolsBySource,
     groupToolsByServer,
     formatGuardrails,

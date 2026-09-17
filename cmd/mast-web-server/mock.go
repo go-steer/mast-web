@@ -82,6 +82,12 @@ type mockHandler struct {
 	// a gate whose only state is "open" isn't a gate.
 	gates pauseGates
 	hub   mockHub
+
+	// The approval log and the prompt-id sequence behind the
+	// permission surface. See mock_perms.go — state for the same
+	// reason the gate keeps some: an audit log with nothing in it
+	// cannot be got wrong.
+	perms mockPermsLog
 }
 
 // countPost tallies one write against an endpoint name.
@@ -385,6 +391,10 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// Same problem, newer state: an ACL amended or a session renamed by
 	// one spec would otherwise be what the next one starts from.
 	mux.HandleFunc("DELETE /_mock/share-state", h.resetShareState)
+	// A permission prompt has no other way in. The mock has no tools,
+	// so nothing it replays can reach for one — see raisePrompt.
+	mux.HandleFunc("POST /_mock/perms-prompt", h.raisePrompt)
+	mux.HandleFunc("DELETE /_mock/perms-log", h.resetPermsLog)
 
 	// Session-agnostic endpoints.
 	mux.HandleFunc("GET /whoami", h.whoami)
@@ -533,13 +543,13 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 	case "events":
 		h.sseEvents(w, r)
 	case "perms":
-		// /perms/stream — long-lived SSE idle stream.
+		// /perms/stream — long-lived SSE, quiet until something raises
+		// a prompt on this session's perms topic (mock_perms.go).
 		if len(tail) >= 2 && tail[1] == "stream" {
-			h.streamSSE(w, r, nil, "")
+			h.streamSSE(w, r, nil, permsHubKey(sid))
 			return
 		}
-		// /perms (no /stream) — return {} for the perms read.
-		writeJSON(w, http.StatusOK, map[string]any{})
+		h.getPerms(w, sid)
 	case "acl":
 		h.getACL(w, r, sid)
 	case "status":
@@ -690,6 +700,14 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 	case "title":
 		h.setTitle(w, r, sid)
 		return
+	case "perms":
+		// perms/respond reads its body twice over: the decision, and
+		// the `approver` the server checks rather than believes.
+		// perms/allow and perms/deny stay no-ops below.
+		if len(tail) >= 2 && tail[1] == "respond" {
+			h.permsRespond(w, r, sid)
+			return
+		}
 	case "acl":
 		// PATCH is the ACL's mutating verb; a POST to it is not a route
 		// upstream has. Fall through to the {} no-op rather than
@@ -982,11 +1000,12 @@ func (h *mockHandler) sseEvents(w http.ResponseWriter, r *http.Request) {
 // think we hung up. Nil frames = keep-alive-only stream (used by
 // /perms/stream).
 //
-// A non-empty liveSID subscribes the stream to that session's fan-out,
-// so frames a POST handler produces after the fixture is exhausted —
-// `pause`, `wake` — arrive here. Pass "" for streams that shouldn't see
-// them: /perms/stream is a different channel and duplicating session
-// events onto it would be a lie about where they came from.
+// A non-empty liveSID subscribes the stream to that fan-out topic, so
+// frames a POST handler produces after the fixture is exhausted —
+// `pause`, `wake` — arrive here. The topic is the session id for the
+// event stream and permsHubKey(sid) for /perms/stream: a different
+// channel, deliberately, since duplicating session events onto the
+// prompt stream would be a lie about where they came from.
 func (h *mockHandler) streamSSE(w http.ResponseWriter, r *http.Request, frames []frame, liveSID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

@@ -1029,6 +1029,29 @@ window.AttachClient = (function () {
       return out.agents || [];
     }
 
+    // GET /sessions/{sid}/perms — the permission posture plus the
+    // per-session approval log. Shape (pkg/attach/state.go PermsInfo):
+    //   { mode, allow?: [...], deny?: [...],
+    //     approvals?: [{ tool, key?, decision, at, by? }] }
+    //
+    // `by` (v1.10.0, core-agent#830) is the identity the daemon
+    // VERIFIED for whoever answered the prompt, and it is OMITTED —
+    // not "unknown", not a placeholder — when it verified nobody, as
+    // on an unauthenticated loopback listener. So a row without it is
+    // an approval whose author this backend genuinely cannot name, and
+    // the one identity a client must never substitute is the person
+    // reading the log: they are the likeliest candidate and the most
+    // damaging to guess wrong, since the log is what gets consulted
+    // after something went through that should not have.
+    //
+    // Always 200 on a daemon with a PermsProvider; the approval log is
+    // absent on older ones, which is indistinguishable here from a
+    // session where nothing has been approved yet. That one is fine to
+    // conflate: both mean "this log has nothing to tell you".
+    async getPerms() {
+      return this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/perms');
+    }
+
     // GET /sessions/{sid}/usage — cumulative-usage snapshot including
     // the same last_turn payload the usage-update SSE frame carries.
     // Used by the observer-mode footer-stamping path (v0.3.0 PR 3) to

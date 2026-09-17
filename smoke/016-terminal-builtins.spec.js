@@ -233,6 +233,7 @@ test.describe('smoke: 016-terminal-builtins', () => {
       '/tools',
       '/mcp',
       '/subagents',
+      '/perms',
       '/specialists',
       '/sessions',
       '/guardrails',

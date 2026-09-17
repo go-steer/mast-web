@@ -66,6 +66,62 @@ describe('AttachCorePrompter', () => {
       expect(opts.headers['X-Attach-Token']).toBe('secret');
     });
 
+    // v1.10.0 (core-agent#830): the 200 says who the daemon recorded
+    // the decision as. That is the audit line this click just wrote,
+    // and on a shared session it is not necessarily the person at the
+    // keyboard.
+    it('returns the approver the server recorded', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{"acknowledged":true,"approver":"ada@example.com"}'),
+      });
+      await expect(p.respond('prompt-42', 'allow-once')).resolves.toEqual({
+        acknowledged: true,
+        approver: 'ada@example.com',
+      });
+    });
+
+    // Omitted, not empty: the daemon verified nobody. The decision
+    // still landed — the log just cannot name who made it.
+    it('leaves the approver absent when the daemon attributed nobody', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{"acknowledged":true}'),
+      });
+      const out = await p.respond('prompt-42', 'deny');
+      expect(out.acknowledged).toBe(true);
+      expect(out.approver).toBeUndefined();
+    });
+
+    // A pre-1.10.0 200 was empty. An absent body is not a failure to
+    // respond, so it answers {} rather than throwing.
+    it('survives a producer that sends no body', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(''),
+      });
+      await expect(p.respond('prompt-42', 'allow-once')).resolves.toEqual({});
+    });
+
+    it('never sends an approver of its own', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{}'),
+      });
+      await p.respond('prompt-42', 'allow-once');
+      // The server checks this field against its own verdict rather
+      // than believing it, so anything we put in it can only disagree.
+      expect(JSON.parse(globalThis.fetch.mock.calls[0][1].body).approver).toBeUndefined();
+    });
+
     it('respond throws on non-OK response', async () => {
       const p = new AttachCorePrompter.Prompter({
         endpoint: 'https://example',

@@ -1056,6 +1056,37 @@ describe('AttachClient', () => {
     });
   });
 
+  describe('perms read (core-agent#830)', () => {
+    it('getPerms GETs /sessions/{sid}/perms and hands the body back whole', async () => {
+      const client = new AttachClient({
+        endpoint: 'https://example',
+        sessionId: 's1',
+        onEvent: () => {},
+      });
+      const body = {
+        mode: 'ask',
+        allow: ['fs_read'],
+        approvals: [
+          { tool: 'bash_exec', decision: 'allow-once', at: '2026-09-17T10:00:00Z', by: 'ada@x' },
+          { tool: 'fs_write', decision: 'allow-once', at: '2026-09-17T10:05:00Z' },
+        ],
+      };
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      });
+      const out = await client.getPerms();
+      expect(globalThis.fetch.mock.calls[0][0]).toBe('https://example/sessions/s1/perms');
+      // The second row's missing `by` is carried through as missing.
+      // A client that defaulted it to '' — or worse, to the caller —
+      // would be inventing an author for a decision the daemon could
+      // not attribute.
+      expect(out.approvals[1].by).toBeUndefined();
+      expect(out.approvals[0].by).toBe('ada@x');
+    });
+  });
+
   describe('subagent turn drill-down (core-agent#638/#687)', () => {
     it('getSubagentEvents GETs the qualified path with since/limit query params', async () => {
       const client = new AttachClient({

@@ -41,9 +41,10 @@
 // click-to-expand results, turn footers, the thinking indicator,
 // interrupt, inline permission prompts, server-dispatched slash
 // commands, grounded-source strips, observer-mode rendering of
-// externally-driven turns, and the client-side built-in slash
-// commands: /help, /clear, /export, /tools, /mcp, /subagents,
-// /specialists, /sessions, /guardrails, /model, /usage, /whoami —
+// externally-driven turns, the hold — banner, controls, and steer
+// (v1.5.0 §2.8) — and the client-side built-in slash commands: /help,
+// /clear, /export, /tools, /mcp, /subagents, /specialists, /sessions,
+// /guardrails, /pause, /continue, /abandon, /model, /usage, /whoami —
 // each of them gated on what the backend says it can serve.
 //
 // The commands that act on the window rather than on a session —
@@ -361,6 +362,28 @@ window.MastTerminal = (function () {
     shell.append(prefix, caret, input, sendBtn, stopBtn);
     inputRow.appendChild(shell);
 
+    // The hold banner (v1.5.0 §2.8, #70). Between the transcript and
+    // the prompt, because that is the order the questions arrive in —
+    // what happened, what you can do about it, where you type — and
+    // because a gate drawn anywhere else is a gate you can type past.
+    // Not at the top of the transcript, which is the observer notice's
+    // slot: that one is a caveat about the whole session, this one is a
+    // barrier across the control directly below it.
+    const holdBar = mk('div', 'term-hold');
+    holdBar.hidden = true;
+    const holdWhy = mk('div', 'term-hold-why', 'HELD');
+    const holdDetail = mk('div', 'term-hold-detail');
+    const holdActions = mk('div', 'term-hold-actions');
+    const contBtn = mk('button', 'term-btn term-hold-go', 'CONTINUE');
+    contBtn.type = 'button';
+    contBtn.title = 'Release the hold and carry on from where it stopped';
+    const abandonBtn = mk('button', 'term-btn term-hold-drop', 'ABANDON');
+    abandonBtn.type = 'button';
+    abandonBtn.title = 'Release the hold and drop the held work';
+    const holdHint = mk('span', 'term-hold-hint', '');
+    holdActions.append(contBtn, abandonBtn, holdHint);
+    holdBar.append(holdWhy, holdDetail, holdActions);
+
     const statusRow = mk('div', 'term-status');
     const sConn = mk('span', 'term-stat term-conn', '⬤ disconnected');
     const sModel = mk('span', 'term-stat', '—');
@@ -369,7 +392,7 @@ window.MastTerminal = (function () {
     const sElapsed = mk('span', 'term-stat term-elapsed', 't+ —');
     statusRow.append(sConn, sModel, sTurns, sCost, sElapsed);
 
-    root.append(screen, inputRow, statusRow);
+    root.append(screen, holdBar, inputRow, statusRow);
     setPrefix();
 
     // ── Rendering (ported from app.js, bound to `out`) ───────────────
@@ -859,6 +882,159 @@ window.MastTerminal = (function () {
       sCost.textContent = '$' + s.totalCostUSD.toFixed(s.totalCostUSD < 1 ? 4 : 2);
     }
 
+    // ── The hold ─────────────────────────────────────────────────────
+    //
+    // Three surfaces, and the split between them is the whole design:
+    //
+    //   renderHold()  redraws the banner from the store. Idempotent,
+    //                 called from every path that could have moved the
+    //                 gate, and silent.
+    //   narrateHold() writes one line into the transcript, and is
+    //                 called from exactly one of those paths.
+    //   releaseHold() is the only place a resume is sent.
+    //
+    // Narration is the `pause` frame's job alone. GET /status carries
+    // the same fact about a second later and status-update carries it
+    // on every poll, so a second narrator would announce every park
+    // twice — and an operator who sees "Session held" twice reasonably
+    // concludes it happened twice.
+
+    const HOLD_NO_CONTROLS =
+      'This backend advertises no resume route — the hold has to be lifted where it was set.';
+
+    const RESUME_BLURB = {
+      continue: 'carrying on from where it stopped.',
+      steer: 'the correction goes in first.',
+      abandon: 'the held work was dropped.',
+    };
+
+    // What an operator asks, in order: was my work killed, and is
+    // anything still running. Two facts, deliberately kept apart —
+    // upstream folds them into one `state` field where pause outranks
+    // running, which is exactly how a hold banner ends up sitting over
+    // another four minutes of turn (core-agent#896).
+    //
+    // #70 asked for a third line — how many background subagents are
+    // still going — and it is not here, because there is nowhere
+    // truthful to read it from yet. The live roster (GET .../agents)
+    // carries no status, and the one number we do get, interrupt's
+    // `running_subagents`, only arrives on a Stop, which does not hold.
+    // #94 is where subagent status becomes honest (v1.12.0 #897); the
+    // line belongs with it rather than as a zero that is always a zero.
+    function describeHold(p, inFlight) {
+      const bits = [];
+      if (p.interrupted && inFlight) bits.push('The turn it interrupted is still unwinding.');
+      else if (p.interrupted) bits.push('The turn it interrupted was cancelled.');
+      else if (inFlight) bits.push('A turn is still running behind the gate.');
+      else bits.push('Nothing was in flight.');
+      bits.push('No new turn starts until this is released.');
+      if (p.since) {
+        const t = new Date(p.since);
+        if (!isNaN(t.getTime())) bits.push('Held since ' + t.toLocaleTimeString('en-GB') + '.');
+      }
+      return bits.join(' ');
+    }
+
+    function renderHold() {
+      const s = sess();
+      const p = s.pause;
+      // Drawn on the observation, not on the capability. `paused` is
+      // only ever set by something the server told us — a `pause` frame,
+      // a status body, or a route's own post-condition — and a flag is
+      // not a reason to hide a fact already in hand. emitsPauseEvents()
+      // answers "should we expect to hear about this", which is a
+      // question about anticipating the state; supportsPause() answers
+      // "can this operator do anything about it", and that is the one
+      // the buttons below are gated on.
+      holdBar.hidden = !p.paused;
+      root.classList.toggle('term-held', p.paused);
+      input.placeholder = p.paused
+        ? 'type a correction to steer, or /continue…'
+        : 'ask, instruct, or /command…';
+      if (!p.paused) return;
+      holdWhy.textContent = p.reason ? 'HELD — ' + p.reason : 'HELD';
+      holdDetail.textContent = describeHold(p, s.status.turnInFlight);
+      const controls = available({ feature: 'pause' });
+      contBtn.hidden = !controls;
+      abandonBtn.hidden = !controls;
+      holdHint.textContent = controls ? '…or type a correction to steer' : HOLD_NO_CONTROLS;
+    }
+
+    function narrateHold(p) {
+      addSystemMessage(
+        p.paused
+          ? 'Session held' + (p.reason ? ' — ' + p.reason : '') + '.'
+          : 'Session resumed' + (p.resumeMode ? ' (' + p.resumeMode + ')' : '') + '.'
+      );
+    }
+
+    // turn_in_flight is poll-only: it rides on GET /status and is
+    // deliberately NOT on the status-update frame, which folds it into
+    // turn_state:'streaming' at the source. So the one moment the
+    // banner needs it, it has to go and ask. One read, not a poll — the
+    // standing poll is #93, and a banner that started a timer of its
+    // own would be a second one to reconcile.
+    function refreshTurnInFlight() {
+      if (typeof client.protocolAtLeast !== 'function' || !client.protocolAtLeast('1.12.0')) return;
+      client.getStatus().then(
+        (st) => {
+          if (ui.destroyed) return;
+          session.applyStatusSnapshot(st);
+          renderHold();
+        },
+        () => {}
+      );
+    }
+
+    // Every way out of the gate — /continue, /abandon, the two buttons
+    // and a typed steer — lands here, so they cannot drift apart in
+    // what they send or what they report.
+    async function releaseHold(mode, steer) {
+      if (connection.getState() !== 'connected') {
+        addSystemMessage('Not connected.');
+        return null;
+      }
+      // The two commands are gated in the table and the two buttons are
+      // hidden, but a typed steer arrives here past both — and a resume
+      // route this agent doesn't implement is a 501 that reads like a
+      // bug. Say the true thing instead.
+      if (!available({ feature: 'pause' })) {
+        addSystemMessage(HOLD_NO_CONTROLS);
+        return null;
+      }
+      contBtn.disabled = true;
+      abandonBtn.disabled = true;
+      try {
+        const r = (await client.resume(mode, steer)) || {};
+        // `resumed: false` with a 200 is the idempotent answer, not a
+        // failure: two operator surfaces racing the same click should
+        // not produce an error between them.
+        if (r.resumed === false) {
+          addSystemMessage('The session was not held.');
+        } else {
+          const m = r.mode || mode || 'continue';
+          addSystemMessage('Resumed — ' + (RESUME_BLURB[m] || 'gate open.'));
+          // The response body is the server's post-condition, which is
+          // an observation and not an assumption — the distinction
+          // session.js draws. Applied here so the banner comes down on
+          // a backend that answers the route but is slow with the
+          // frame; the frame that follows says the same thing.
+          if (r.resumed !== false) session.applyPauseEvent({ state: 'resumed', mode: m });
+          renderHold();
+        }
+        return r;
+      } catch (e) {
+        addSystemMessage(describeError(e, 'Resume failed: '));
+        return null;
+      } finally {
+        contBtn.disabled = false;
+        abandonBtn.disabled = false;
+      }
+    }
+
+    contBtn.addEventListener('click', () => releaseHold('continue'));
+    abandonBtn.addEventListener('click', () => releaseHold('abandon'));
+
     function startElapsed() {
       const start = performance.now();
       sElapsed.textContent = 't+ 0.0s';
@@ -1174,6 +1350,10 @@ window.MastTerminal = (function () {
         case 'capabilities':
           session.setCapabilities(ev.data);
           applyObserverMode((ev.data || {}).features);
+          // The hold's controls are gated on features.pause, which
+          // arrives here — a banner drawn before this frame has to be
+          // redrawn after it.
+          renderHold();
           // Attaching to a session someone else is driving means the
           // usage-update that priced the last turn happened before we
           // got here. GET /usage still carries it as last_turn, and
@@ -1224,6 +1404,10 @@ window.MastTerminal = (function () {
           // `pause` frame applied moments ago — the two can disagree
           // for about a second across a resume.
           session.applyPauseStatus(s);
+          // Redraw, never narrate. This frame arrives on every poll and
+          // repeats the gate's state each time; the `pause` case below
+          // is the one that gets to say a transition happened.
+          renderHold();
           if (s.model) {
             session.setCurrentModel(s.model);
             updateStatus();
@@ -1233,14 +1417,25 @@ window.MastTerminal = (function () {
 
         // v1.5.0 §2.8. Anyone can park this session — another tab, an
         // embedded TUI, a cost ceiling — so this frame arrives
-        // unsolicited, not only in reply to something we sent. Recorded
-        // into the store now; the banner and the resume controls are
-        // #70. No capability gate on the receiving side: a frame the
-        // server actually sent is a frame worth believing.
-        case 'pause':
+        // unsolicited, not only in reply to something we sent. No
+        // capability gate on the receiving side: a frame the server
+        // actually sent is a frame worth believing.
+        case 'pause': {
+          const was = sess().pause.paused;
           session.applyPauseEvent(ev.data);
+          const p = sess().pause;
+          // Only a transition is worth a line. An unchanged gate still
+          // redraws — the reason or the timestamp may have moved — but
+          // it did not happen again.
+          if (p.paused !== was) narrateHold(p);
+          renderHold();
+          // Freshly held: go and find out whether the turn it
+          // interrupted is still running. That bool exists on one
+          // surface and it is not this frame.
+          if (p.paused && !was) refreshTurnInFlight();
           onChange(api, 'pause');
           return;
+        }
 
         // v1.7.0 §2.9. An edge, not a state, and explicitly NOT a
         // notification that an alert is waiting — whatever did the
@@ -1905,6 +2100,62 @@ window.MastTerminal = (function () {
       }
     }
 
+    // /pause, /continue, /abandon — the hold's vocabulary (#70).
+    //
+    // core-tui's words, deliberately. "/resume" is the route's name and
+    // the wrong name for a person: the thing an operator wants to say
+    // at a held session is what happens next — carry on, or drop it —
+    // and `/resume steer "…"` makes them spell a mode where typing the
+    // correction would have done. So the modes are the commands, typing
+    // is the third one, and the route keeps its own name in the client.
+    async function cmdPause(args) {
+      const reason = args.join(' ').trim();
+      try {
+        const r = (await client.pause(reason)) || {};
+        // Idempotent: already-held is a 200 with transitioned:false,
+        // and saying "held" again would imply this press did it.
+        if (r.transitioned === false) {
+          addSystemMessage('Already held. /continue, /abandon, or type a correction to steer.');
+        } else {
+          addSystemMessage(
+            'Held. /continue to carry on, /abandon to drop the work, or type a correction to steer.'
+          );
+        }
+        // Post-condition from the server, same argument as releaseHold:
+        // this is the route reporting the gate it just closed, not us
+        // assuming it closed. The `pause` frame will repeat it.
+        if (r.paused) {
+          // pause_reason / paused_since, not reason / since: this is
+          // PauseResponse (core-agent pkg/attach/pause.go:104-107) and
+          // its JSON tags are the prefixed ones. The `pause` FRAME uses
+          // the short names, which is the mismatch worth naming here —
+          // the two carry the same two facts under different keys.
+          session.applyPauseEvent({
+            state: 'paused',
+            reason: r.pause_reason || reason,
+            at: r.paused_since || null,
+          });
+          renderHold();
+          refreshTurnInFlight();
+        }
+      } catch (e) {
+        addSystemMessage(describeError(e, '/pause failed: '));
+      }
+    }
+
+    // Both of these go to the server even when the store says the
+    // session is not held. The route is idempotent and answers
+    // `resumed: false`, which is the same sentence from the authority
+    // rather than from our copy of its state — and our copy is exactly
+    // what is stale in the case where it matters.
+    function cmdContinue() {
+      return releaseHold('continue');
+    }
+
+    function cmdAbandon() {
+      return releaseHold('abandon');
+    }
+
     // /export [json|md] — this panel's transcript, downloaded.
     //
     // Scraped from `out` rather than from a model of the conversation,
@@ -2022,7 +2273,10 @@ window.MastTerminal = (function () {
     }
 
     // The table. `feature` names the capability flag a command needs;
-    // `offline` marks the ones that don't need a backend at all.
+    // `offline` marks the ones that don't need a backend at all;
+    // `midTurn` marks the ones that may be typed while a turn is
+    // running; `aliases` are extra spellings that dispatch but are not
+    // listed separately.
     //
     // Commands with no `feature` are ungated because there is nothing
     // to gate them on — `features` has no key for a tool catalog or an
@@ -2085,6 +2339,31 @@ window.MastTerminal = (function () {
         feature: 'guardrails',
         run: cmdGuardrails,
       },
+      {
+        name: 'pause',
+        usage: '/pause [reason]',
+        help: 'Hold the loop — no new turn starts until it is released',
+        feature: 'pause',
+        midTurn: true,
+        run: cmdPause,
+      },
+      {
+        name: 'continue',
+        aliases: ['cont'],
+        usage: '/continue',
+        help: 'Release a hold and carry on (alias /cont)',
+        feature: 'pause',
+        midTurn: true,
+        run: cmdContinue,
+      },
+      {
+        name: 'abandon',
+        usage: '/abandon',
+        help: 'Release a hold and drop the held work',
+        feature: 'pause',
+        midTurn: true,
+        run: cmdAbandon,
+      },
       { name: 'model', usage: '/model', help: 'Model this session is running', run: cmdModel },
       { name: 'usage', usage: '/usage', help: 'Session token + cost totals', run: cmdUsage },
       {
@@ -2099,6 +2378,18 @@ window.MastTerminal = (function () {
     // everything downstream reads: dispatch, /help, and the shell's own
     // command palette via api.commands.
     //
+    // Every spelling the built-in table answers to, aliases included.
+    // Its own list, on purpose. core-tui#289 derived "is this a
+    // command" from a narrower set once, and /quit at a held session
+    // went to the agent as prose — the command inverted into its own
+    // subject at the exact moment it mattered most. A name this table
+    // knows is a command everywhere it is asked.
+    const BUILTIN_NAMES = new Set();
+    BUILTINS.forEach((b) => {
+      BUILTIN_NAMES.add(b.name);
+      (b.aliases || []).forEach((a) => BUILTIN_NAMES.add(a));
+    });
+
     // A shell cannot shadow a built-in. /clear means the same thing in
     // every panel of every shell, and a shell that could redefine it
     // would make that a per-page question.
@@ -2109,7 +2400,7 @@ window.MastTerminal = (function () {
             c &&
             typeof c.name === 'string' &&
             typeof c.run === 'function' &&
-            !BUILTINS.some((b) => b.name === c.name.toLowerCase())
+            !BUILTIN_NAMES.has(c.name.toLowerCase())
           );
         })
         .map(function (c) {
@@ -2136,7 +2427,16 @@ window.MastTerminal = (function () {
     }
 
     function findCommand(name) {
-      return COMMANDS.find((b) => b.name === name);
+      return COMMANDS.find((b) => b.name === name || (b.aliases || []).includes(name));
+    }
+
+    // May this input run inside a turn? Read off the same table /help
+    // and dispatch read, so a command cannot be mid-turn-legal in one
+    // place and not the other — and gated, so a name this backend can't
+    // serve doesn't become a hole in the busy guard.
+    function isMidTurnCommand(trimmed) {
+      const b = findCommand(trimmed.slice(1).split(/\s+/)[0].toLowerCase());
+      return !!(b && b.midTurn && available(b));
     }
 
     // Returns true when the input was a command and has been handled.
@@ -2192,7 +2492,14 @@ window.MastTerminal = (function () {
     // this; the input wiring ignores it.
     async function submit(text) {
       const trimmed = (text || '').trim();
-      if (!trimmed || connection.isRunning()) return null;
+      if (!trimmed) return null;
+      // Busy, and not one of the two things that are still allowed to
+      // happen mid-turn: a `midTurn` command, or a steer at a session
+      // somebody has held. "Stop and let me look" is worth nothing if
+      // it only works once the thing you wanted to look at has ended.
+      if (connection.isRunning() && !sess().pause.paused) {
+        if (!trimmed.startsWith('/') || !isMidTurnCommand(trimmed)) return null;
+      }
       // Commands answer for themselves on a dead connection: /clear and
       // /export are display actions that should still work on one, and
       // the rest say "Not connected." from the same table that decides
@@ -2207,6 +2514,30 @@ window.MastTerminal = (function () {
         addSystemMessage('Not connected.');
         return null;
       }
+
+      // Typing at a held session steers it. Note the order: the slash
+      // branch above has already run, so a command at a held session is
+      // still a command — it is not shipped to the agent as prose.
+      //
+      // The text is NOT run here. mast-web reads a standing stream, so
+      // the host takes the correction, frames it as an interrupt-steer
+      // (which is what tells the model its last turn was killed), and
+      // the answer arrives on the stream we are already reading. Who
+      // runs the steer depends on who owns the loop, and we don't;
+      // running it here as well would send it twice. The transcript
+      // still gets the operator's copy, because nothing else will draw
+      // it — the echo is suppressed live.
+      if (sess().pause.paused) {
+        // Same reason the prompt path does it below: whatever is still
+        // open belongs above this line, not under it.
+        flushTurnClose();
+        drawHistory();
+        ui.lastUserPrompt = trimmed;
+        addMessage('user', trimmed);
+        await releaseHold('steer', trimmed);
+        return null;
+      }
+      if (connection.isRunning()) return null;
 
       // A turn still inside its grace window (an observer one — an
       // operator turn holds the running flag until it closes) gets its footer
@@ -2298,12 +2629,18 @@ window.MastTerminal = (function () {
       try {
         const r = await client.interrupt();
         if (r && r.unsupported) addSystemMessage('This agent does not support interrupt.');
-        // We asked for hold: false, so this should never fire. If it does,
-        // the agent is parked behind a gate this shell has no control to
-        // lift yet (that's #70) — say so rather than let the next turn
-        // silently fail to start.
-        if (r && r.paused)
-          addSystemMessage('The agent is paused and will not start another turn until it resumes.');
+        // We asked for hold: false, so this should never fire. If it
+        // does, the gate is closed and the operator is now one keypress
+        // from a turn that will never start — so record the
+        // post-condition the route just reported, which raises the
+        // banner and with it the way out.
+        if (r && r.paused) {
+          session.applyPauseEvent({ state: 'paused', reason: 'held by the backend on interrupt' });
+          renderHold();
+          addSystemMessage(
+            'Held — the agent will not start another turn. /continue to release it.'
+          );
+        }
       } catch (e) {
         addSystemMessage(describeError(e, 'Interrupt failed: '));
       } finally {
@@ -2388,6 +2725,18 @@ window.MastTerminal = (function () {
           // proxy_by means "on behalf of".
           identity: s.whoami ? describeWhoami(s.whoami) : '',
           whoami: s.whoami,
+          // The hold. The banner belongs to the panel — it is about one
+          // session and it sits over that session's prompt — but "how
+          // many of the six are parked" is a question only the window
+          // can answer, and it is the one you need before you go
+          // looking. So: the banner here, a count in the status bar
+          // (#70 OQ2).
+          paused: s.pause.paused,
+          pauseReason: s.pause.reason,
+          // Poll-only and therefore often stale-by-omission on a
+          // backend older than 1.12.0, where it reads false because the
+          // key was absent rather than because nothing is running.
+          turnInFlight: s.status.turnInFlight,
         };
       },
 
@@ -2497,6 +2846,7 @@ window.MastTerminal = (function () {
 
     setConnState('disconnected');
     updateStatus();
+    renderHold();
     syncInput();
     return api;
   }

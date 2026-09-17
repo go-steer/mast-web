@@ -1038,6 +1038,13 @@
   color: var(--hue-ink);
 }
 
+/* A turn nobody in this browser started (#93). Warm rather than urgent:
+   it is the agent working, which is what it is for — the slot exists so
+   an idle-looking panel that is actually mid-turn stops lying. */
+.term-inflight {
+  color: var(--yellow);
+}
+
 /* Flat panels for anyone who asked for less motion. The room's own
    share of this query — the drifting grid, the radar sweep, the
    breathing floor pool — is in spatial.css. */

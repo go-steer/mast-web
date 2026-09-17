@@ -840,6 +840,13 @@
   font-size: 11px;
 }
 
+/* display:flex beats the [hidden] attribute's UA rule, so a gate drawn
+   with no hold to show would sit there permanently. Same fix as
+   #solo-body .term[hidden] in solo.css, same reason. */
+.term-hold[hidden] {
+  display: none;
+}
+
 .term-hold-why {
   color: var(--yellow);
   letter-spacing: 0.06em;

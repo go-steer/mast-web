@@ -453,6 +453,66 @@ window.MastState.createDaemons = (function () {
       return { ok: true, error: '' };
     }
 
+    // Renames a session (POST /sessions/{sid}/title, v1.10.0 #808) and
+    // writes the STORED name onto the local row. Resolves
+    // { ok, title, persisted, detail, error, status } — same
+    // don't-throw contract as deleteSession, and for the same reason.
+    //
+    // Four things the contract makes easy to get wrong, all of which
+    // this function or its caller has to honour:
+    //
+    //   1. `title` is required and `""` is a real value — it clears the
+    //      name and re-arms inference. Omitting the key is a 400. So
+    //      "clear it" and "don't touch it" are different calls, and the
+    //      second one never reaches here: a cancelled prompt returns
+    //      before we are called at all.
+    //   2. The 200 carries what was stored after normalization (a
+    //      60-rune cap, a decorative-quote strip). That is what goes on
+    //      the row — not the string we sent, which is frequently not
+    //      what the host kept.
+    //   3. `persisted:false` IS NOT AN ERROR. It is the norm for a
+    //      daemon with no ACL store: the rename is live for the life of
+    //      the process and only won't survive a restart. `detail` is
+    //      the other case — a store that was wired and failed — and is
+    //      the only one worth a notice.
+    //   4. A 404 here is not ambiguous the way the ACL's is, because
+    //      the caller owns the row (the sidebar only offers this on
+    //      rows it derived as 'mine') and title is gated on
+    //      ActionSessionWrite, which an owner always has. So the one
+    //      remaining meaning is "this daemon predates the route", and
+    //      the caller can say that rather than hedge.
+    async function renameSession(d, session, title) {
+      const ep = endpointOf(d);
+      const rec = getDaemon(ep);
+      if (!rec) return { ok: false, error: 'daemon ' + ep + ' is not attached' };
+      const sid = typeof session === 'string' ? session : session && session.id;
+      if (!sid) return { ok: false, error: 'no session to rename' };
+      if (typeof title !== 'string') return { ok: false, error: 'a title is required' };
+      let res;
+      try {
+        res = await rec.client.setTitleFor(sid, title);
+      } catch (e) {
+        return {
+          ok: false,
+          error: e && e.message ? e.message : String(e),
+          status: e && e.status,
+        };
+      }
+      const stored = res && typeof res.title === 'string' ? res.title : '';
+      patchDaemon(ep, {
+        sessions: (getDaemon(ep).sessions || []).map(function (s) {
+          return s.id === sid ? { ...s, title: stored } : s;
+        }),
+      });
+      return {
+        ok: true,
+        error: '',
+        title: stored,
+        persisted: !!(res && res.persisted),
+        detail: (res && res.detail) || '',
+      };
+    }
+
     // The rows this boot should register, and whether they were
     // derived rather than chosen.
     //
@@ -499,6 +559,7 @@ window.MastState.createDaemons = (function () {
       refreshAll,
       newSession,
       deleteSession,
+      renameSession,
       discover,
       persist,
       site() {

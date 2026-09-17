@@ -337,3 +337,206 @@ describe('MastDaemonSidebar — mine versus shared with me', () => {
     expect(add.title).toBe('New session on a, owned by ada@example.com');
   });
 });
+
+// The rename gesture (PR 3, #92). POST /sessions/{sid}/title landed in
+// protocol 1.10.0, and its contract has four edges a naive
+// implementation walks straight off: `""` clears while an omitted key
+// is a 400, the 200 echoes what was actually stored, `persisted:false`
+// is the norm rather than a failure, and the two refusals (404, 501)
+// mean different things. Each one gets a case here, because not one of
+// them is visible in a screenshot.
+describe('MastDaemonSidebar — the rename gesture', () => {
+  let clients;
+  let listEl;
+
+  function makeStubClient(rec) {
+    const client = {
+      endpoint: rec.endpoint,
+      caller: 'ada@example.com',
+      sessions: [
+        { id: 's1', app: 'demo', user: 'ada@example.com', title: 'ops triage' },
+        { id: 's2', app: 'demo', user: 'grace@example.com' },
+        { id: 'default', app: 'demo', user: 'ada@example.com' },
+      ],
+      titled: [],
+      fail: null,
+      persisted: false,
+      detail: '',
+      async listSessions() {
+        return this.sessions;
+      },
+      async whoami() {
+        return { identity: this.caller, admin: false, source: 'stub', proxy_by: '' };
+      },
+      async deleteSession() {},
+      // Normalizes on the way in, the way a host does — so a test that
+      // asserts the rendered name is asserting the echo and not the
+      // string it typed.
+      async setTitleFor(sid, title) {
+        if (this.fail) throw this.fail;
+        this.titled.push([sid, title]);
+        return {
+          session: sid,
+          title: String(title)
+            .trim()
+            .replace(/^[“"]|[”"]$/g, ''),
+          persisted: this.persisted,
+          detail: this.detail,
+        };
+      },
+    };
+    clients.set(rec.endpoint, client);
+    return client;
+  }
+
+  // `answers` is what the prompt returns, in order. null is a cancel.
+  async function mount(answers) {
+    const queue = Array.isArray(answers) ? answers.slice() : [answers];
+    const registry = globalThis.MastState.createDaemons({ makeClient: makeStubClient });
+    const asked = [];
+    const sidebar = globalThis.MastDaemonSidebar.create({
+      listEl: listEl,
+      registry: registry,
+      prompt: (message, value) => {
+        asked.push({ message, value });
+        return queue.length ? queue.shift() : null;
+      },
+    });
+    sidebar.add('https://a');
+    await sidebar.refresh('https://a');
+    return { sidebar, registry, asked, client: clients.get('https://a') };
+  }
+
+  const renControl = (id) => listEl.querySelector('[aria-label="Rename session ' + id + '"]');
+  const rowText = (id) =>
+    renControl(id).parentElement.querySelector('.side-session-id').textContent;
+  const notice = () => {
+    const el = listEl.querySelector('.side-error');
+    return el ? el.textContent : '';
+  };
+
+  beforeEach(() => {
+    delete globalThis.MastState;
+    delete globalThis.MastDaemonSidebar;
+    localStorage.clear();
+    clients = new Map();
+    document.body.replaceChildren();
+    listEl = document.createElement('div');
+    document.body.appendChild(listEl);
+    load('state/subscriptions.js');
+    load('state/daemons.js');
+    load('daemon-sidebar.js');
+  });
+
+  it('offers the control on owned rows, including default', async () => {
+    await mount(null);
+    expect(renControl('s1')).not.toBeNull();
+    // Unlike delete: the bootstrap session refuses destruction, not
+    // naming.
+    expect(renControl('default')).not.toBeNull();
+    // Title is Write-gated and a shared row may be a viewer's, which
+    // the roster cannot tell us — so the gesture stays off it.
+    expect(renControl('s2')).toBeNull();
+  });
+
+  it('prefills with the current name and stores the normalized echo', async () => {
+    const { asked, client } = await mount('  “Paging alert”  ');
+    renControl('s1').click();
+    await vi.waitFor(() => expect(client.titled).toEqual([['s1', '  “Paging alert”  ']]));
+    expect(asked[0].value).toBe('ops triage');
+    // What the host kept, not what the operator typed.
+    expect(rowText('s1')).toBe('Paging alert');
+  });
+
+  it('sends the empty string to clear, and the row falls back to the id', async () => {
+    const { client } = await mount('');
+    renControl('s1').click();
+    await vi.waitFor(() => expect(client.titled).toEqual([['s1', '']]));
+    expect(rowText('s1')).toBe('s1');
+  });
+
+  // The whole reason the endpoint takes a pointer: "" and omitted are
+  // different instructions, and a cancelled prompt is the omitted one.
+  it('sends nothing at all when the prompt is cancelled', async () => {
+    const { client } = await mount(null);
+    renControl('s1').click();
+    await Promise.resolve();
+    expect(client.titled).toEqual([]);
+    expect(rowText('s1')).toBe('ops triage');
+  });
+
+  it('sends nothing when the name came back unchanged', async () => {
+    const { client } = await mount('ops triage');
+    renControl('s1').click();
+    await Promise.resolve();
+    expect(client.titled).toEqual([]);
+  });
+
+  // The bug this case exists to pre-empt: false is the norm for a
+  // daemon with no ACL store, and reading it as a failure would put an
+  // error on every successful rename.
+  it('treats persisted:false as the success it is', async () => {
+    const { client } = await mount('renamed');
+    client.persisted = false;
+    renControl('s1').click();
+    await vi.waitFor(() => expect(rowText('s1')).toBe('renamed'));
+    expect(notice()).toBe('');
+  });
+
+  // `detail` is the other case — a store that was wired and refused —
+  // and that one an operator does want to hear about.
+  it('reports a store that was there and failed', async () => {
+    const { client } = await mount('renamed');
+    client.detail = 'acl store write failed';
+    renControl('s1').click();
+    await vi.waitFor(() => expect(notice()).toContain('acl store write failed'));
+    // Still renamed: the name is live for as long as the process is.
+    expect(rowText('s1')).toBe('renamed');
+  });
+
+  // An owner always has Write, so the only 404 reachable from this
+  // control is a daemon that predates the route. Naming the version is
+  // the difference between a dead end and an upgrade.
+  it('reads a 404 as a daemon older than the route', async () => {
+    const { client } = await mount('renamed');
+    const e = new Error('POST /sessions/s1/title → HTTP 404: not found');
+    e.status = 404;
+    client.fail = e;
+    renControl('s1').click();
+    await vi.waitFor(() => expect(notice()).toContain('1.10.0'));
+    expect(rowText('s1')).toBe('ops triage');
+  });
+
+  it('reads a 501 as a host with no title capability', async () => {
+    const { client } = await mount('renamed');
+    const e = new Error('POST /sessions/s1/title → HTTP 501: not implemented');
+    e.status = 501;
+    client.fail = e;
+    renControl('s1').click();
+    await vi.waitFor(() => expect(notice()).toContain('does not implement renaming'));
+  });
+
+  it('does not open the session it is renaming', async () => {
+    const registry = globalThis.MastState.createDaemons({ makeClient: makeStubClient });
+    const opened = [];
+    const sidebar = globalThis.MastDaemonSidebar.create({
+      listEl: listEl,
+      registry: registry,
+      prompt: () => 'renamed',
+      onOpen: (d, s) => opened.push(s.id),
+    });
+    sidebar.add('https://a');
+    await sidebar.refresh('https://a');
+    renControl('s1').click();
+    await vi.waitFor(() => expect(clients.get('https://a').titled).toHaveLength(1));
+    expect(opened).toEqual([]);
+  });
+
+  it('activates from the keyboard, since role=button promises that', async () => {
+    const { client } = await mount('renamed');
+    renControl('s1').dispatchEvent(
+      new globalThis.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await vi.waitFor(() => expect(client.titled).toEqual([['s1', 'renamed']]));
+  });
+});

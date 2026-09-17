@@ -390,7 +390,15 @@ window.MastTerminal = (function () {
     const sTurns = mk('span', 'term-stat', 'T0');
     const sCost = mk('span', 'term-stat', '$0.00');
     const sElapsed = mk('span', 'term-stat term-elapsed', 't+ —');
-    statusRow.append(sConn, sModel, sTurns, sCost, sElapsed);
+    // "A turn is running in here that I did not start." Hidden whenever
+    // this browser is the one driving, because the elapsed timer to its
+    // left already says that and says it better. Only knowable from
+    // 1.12.0 onwards: before it, a mid-turn GET /status answered "idle"
+    // and there was nothing truthful to draw here (#93, core-agent#896).
+    const sRun = mk('span', 'term-stat term-inflight', '⟳ turn in flight');
+    sRun.hidden = true;
+    sRun.title = 'The agent is working on a turn this browser did not dispatch';
+    statusRow.append(sConn, sModel, sTurns, sCost, sElapsed, sRun);
 
     root.append(screen, holdBar, inputRow, statusRow);
     setPrefix();
@@ -864,15 +872,65 @@ window.MastTerminal = (function () {
       sConn.textContent = glyph + ' ' + state;
       sConn.dataset.state = state;
       root.dataset.conn = state;
+      // The status chain lives and dies with the stream. Attaching is
+      // also the moment the answer matters most and is least likely to
+      // be known: a session someone else has been driving for a minute
+      // sends no frame to say so, and the seed status-update says
+      // 'paused' if it is held. So the first read is immediate rather
+      // than one cadence away; a drop stops the chain rather than
+      // polling a backend the stream has already given up on.
+      if (state === 'connected') refreshStatus();
+      else {
+        clearTimeout(statusTimer);
+        statusTimer = 0;
+      }
       onChange(api, 'conn');
     }
 
+    // setRunning is about *this browser's* turn, and deliberately stays
+    // that way: it is what disables SEND, reveals STOP and starts the
+    // elapsed timer, and none of those are things to do to an operator
+    // because somebody else's turn is in flight. The wider question —
+    // is this agent working at all — is serverRunning() below, and the
+    // seam ORs the two (#93).
     function setRunning(running) {
       connection.setIsRunning(running);
       sendBtn.disabled = running;
       stopBtn.hidden = !running;
       root.classList.toggle('term-busy', running);
+      renderRunning();
       onChange(api, 'busy');
+    }
+
+    // What the *server* says is executing, from the three places it can
+    // say so. OR-ed rather than ranked, because they are one fact seen
+    // through three windows of different ages:
+    //
+    //   turnInFlight  GET /status's bool (1.12.0). The only one that
+    //                 survives a hold — pause outranks running in
+    //                 `state`, so a session parked mid-turn reports
+    //                 "paused" and this is what says the turn it
+    //                 interrupted is still going.
+    //   runState      GET /status's `state`, reachable as "running"
+    //                 only from 1.12.0; before that the run loop had no
+    //                 signal to read and a mid-turn poll said "idle".
+    //   turnState     the status-update frame's turn_state, where the
+    //                 broadcaster has already folded turn_in_flight
+    //                 into 'streaming'. The fast one, and the only one
+    //                 on a backend too old to poll usefully.
+    //
+    // A false here is never louder than a true: every source is
+    // omitempty or absent on an older backend, so "no" and "nobody
+    // said" look alike, and treating the pair as a veto over a running
+    // turn we can see locally would make a 2026-02 daemon look idle
+    // mid-stream.
+    function serverRunning(s) {
+      const st = s.status;
+      return !!st.turnInFlight || st.runState === 'running' || st.turnState === 'streaming';
+    }
+
+    function renderRunning() {
+      sRun.hidden = !(serverRunning(sess()) && !connection.isRunning());
     }
 
     function updateStatus() {
@@ -968,21 +1026,94 @@ window.MastTerminal = (function () {
       );
     }
 
-    // turn_in_flight is poll-only: it rides on GET /status and is
-    // deliberately NOT on the status-update frame, which folds it into
-    // turn_state:'streaming' at the source. So the one moment the
-    // banner needs it, it has to go and ask. One read, not a poll — the
-    // standing poll is #93, and a banner that started a timer of its
-    // own would be a second one to reconcile.
-    function refreshTurnInFlight() {
-      if (typeof client.protocolAtLeast !== 'function' || !client.protocolAtLeast('1.12.0')) return;
-      client.getStatus().then(
+    // ── The status poll (#93, spec v1.12.0) ──────────────────────────
+    //
+    // Two facts live on GET /sessions/{sid}/status and nowhere else:
+    // `state: "running"`, reachable for the first time in 1.12.0, and
+    // `turn_in_flight` beside it. The status-update frame carries
+    // neither — the broadcaster folds the bool into
+    // turn_state:'streaming' before the frame leaves, and a held
+    // session's frame says 'paused' because pause outranks running in
+    // the single field it has. A hold banner sitting over another four
+    // minutes of turn is the bug that came from believing it, so the
+    // only honest answer is to ask.
+    //
+    // Two cadences, because the question is not always live. Held or
+    // in flight, the answer is changing and someone is waiting on it;
+    // otherwise this is a background check that another operator, a
+    // TUI or a scheduler has started something in here, and once every
+    // ten seconds is plenty. Six panels in the spatial shell each run
+    // one of these, which is the other reason the idle rate is slow.
+    //
+    // setTimeout rather than setInterval: a chain cannot overlap with
+    // itself on a slow backend, and the delay is recomputed from the
+    // state each time rather than from the state when it was armed.
+    const STATUS_POLL_MS = 10000;
+    const STATUS_POLL_LIVE_MS = 3000;
+
+    let statusTimer = 0;
+    let statusPending = false;
+
+    // Gated on the negotiated version, not the capabilities frame: this
+    // is a route's behaviour, and `state: "running"` on an older daemon
+    // is not wrong so much as never produced. Polling one would spend a
+    // request per panel per ten seconds to be told "idle" by a server
+    // that has no other answer.
+    function pollsStatus() {
+      return typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.12.0');
+    }
+
+    function scheduleStatusPoll() {
+      clearTimeout(statusTimer);
+      statusTimer = 0;
+      if (ui.destroyed || !pollsStatus() || connection.getState() !== 'connected') return;
+      const s = sess();
+      const live = s.pause.paused || serverRunning(s);
+      statusTimer = setTimeout(refreshStatus, live ? STATUS_POLL_LIVE_MS : STATUS_POLL_MS);
+    }
+
+    // One read now, and the chain re-armed behind it. Every caller that
+    // wants the answer sooner than the cadence would bring it — a fresh
+    // hold, a /pause that just landed, a shell bringing a tab to the
+    // front — comes through here rather than starting a timer of its
+    // own, so there is only ever one.
+    function refreshStatus() {
+      // Whatever was armed is now this read. Without the clear, a
+      // caller that asks early — a `pause` frame, two seconds into a
+      // ten-second wait — leaves the old timer to fire as well, and the
+      // panel ends up with two chains polling at once.
+      clearTimeout(statusTimer);
+      statusTimer = 0;
+      if (ui.destroyed || !pollsStatus()) return Promise.resolve(null);
+      // A tab nobody is looking at still keeps its place in the chain;
+      // it just doesn't spend the request. The next visible tick reads
+      // the current state anyway, and the browser throttles background
+      // timers regardless.
+      if (typeof document !== 'undefined' && document.hidden) {
+        scheduleStatusPoll();
+        return Promise.resolve(null);
+      }
+      if (statusPending) return Promise.resolve(null);
+      statusPending = true;
+      return client.getStatus().then(
         (st) => {
-          if (ui.destroyed) return;
+          statusPending = false;
+          if (ui.destroyed) return null;
           session.applyStatusSnapshot(st);
           renderHold();
+          renderRunning();
+          onChange(api, 'status');
+          scheduleStatusPoll();
+          return st;
         },
-        () => {}
+        () => {
+          statusPending = false;
+          // A failed poll is not news. The stream is the surface that
+          // reports a connection going wrong, and a transcript line per
+          // ten seconds would bury it. Keep the chain and stay quiet.
+          scheduleStatusPoll();
+          return null;
+        }
       );
     }
 
@@ -1354,6 +1485,14 @@ window.MastTerminal = (function () {
           // arrives here — a banner drawn before this frame has to be
           // redrawn after it.
           renderHold();
+          // And the status poll is gated on the version, which also
+          // arrives here: 'connected' is the socket opening, and this
+          // frame is the first thing on it. Asking at connect gets a
+          // client that does not yet know what it is talking to and a
+          // chain that never arms, which is a poll that silently never
+          // happens (#93). This is the real start; the one on connect
+          // is for a reconnect, where the version is already known.
+          refreshStatus();
           // Attaching to a session someone else is driving means the
           // usage-update that priced the last turn happened before we
           // got here. GET /usage still carries it as last_turn, and
@@ -1399,6 +1538,13 @@ window.MastTerminal = (function () {
           // The agent is generating again: whatever it produces now
           // belongs to the next turn, so close the last one first.
           if (s.turn_state === 'streaming') flushTurnClose();
+          // Kept, not just reacted to: this frame is the fastest thing
+          // that says the agent is working, it arrives whoever started
+          // the turn, and #93's question is whether this session is
+          // running at all — not whether we are the one running it.
+          if (typeof s.turn_state === 'string') {
+            session.patchStatus({ turnState: s.turn_state });
+          }
           // turn_state carries the gate too (v1.5.0). Routed through
           // applyPauseStatus rather than set directly so it loses to a
           // `pause` frame applied moments ago — the two can disagree
@@ -1408,6 +1554,7 @@ window.MastTerminal = (function () {
           // repeats the gate's state each time; the `pause` case below
           // is the one that gets to say a transition happened.
           renderHold();
+          renderRunning();
           if (s.model) {
             session.setCurrentModel(s.model);
             updateStatus();
@@ -1432,7 +1579,7 @@ window.MastTerminal = (function () {
           // Freshly held: go and find out whether the turn it
           // interrupted is still running. That bool exists on one
           // surface and it is not this frame.
-          if (p.paused && !was) refreshTurnInFlight();
+          if (p.paused && !was) refreshStatus();
           onChange(api, 'pause');
           return;
         }
@@ -1485,6 +1632,17 @@ window.MastTerminal = (function () {
 
         case 'turn-complete': {
           const tc = ev.data || {};
+          // That turn is over, whoever started it. A real backend says
+          // so again in the next status-update, but not every producer
+          // sends one — the 001 capture is a status-update:'streaming'
+          // and then this, with nothing to retract it — and a
+          // turn_state left at 'streaming' is a panel that claims to be
+          // working forever (#93). The poll is the backstop; this is the
+          // frame that already knows.
+          if (sess().status.turnState === 'streaming') {
+            session.patchStatus({ turnState: 'idle' });
+            renderRunning();
+          }
           const open = connection.getActiveTurn();
           if (open) {
             // Measured to *now* rather than to close time — the grace
@@ -2305,7 +2463,7 @@ window.MastTerminal = (function () {
             at: r.paused_since || null,
           });
           renderHold();
-          refreshTurnInFlight();
+          refreshStatus();
         }
       } catch (e) {
         addSystemMessage(describeError(e, '/pause failed: '));
@@ -2910,7 +3068,18 @@ window.MastTerminal = (function () {
           sessionId: s.currentSession,
           label: s.label,
           connState: c.state,
-          running: c.isRunning,
+          // Is this agent working — not "did this browser press send".
+          // Until 1.12.0 the two were the same question here, because
+          // nothing else could answer: a mid-turn poll said "idle" and
+          // the room's busy pulse went out on any session someone else
+          // was driving (#93). The OR is the fix and the order is the
+          // honesty: the local flag is certain and instant, the server's
+          // three keys are the ones that see somebody else's turn.
+          running: c.isRunning || serverRunning(s),
+          // The local half on its own, for anything that means "this
+          // browser has a turn out" — a shell should not have to
+          // re-derive it from the pair below.
+          driving: c.isRunning,
           model: s.currentModel,
           turns: s.turnCount,
           costUSD: s.totalCostUSD,
@@ -2929,10 +3098,15 @@ window.MastTerminal = (function () {
           // (#70 OQ2).
           paused: s.pause.paused,
           pauseReason: s.pause.reason,
-          // Poll-only and therefore often stale-by-omission on a
-          // backend older than 1.12.0, where it reads false because the
-          // key was absent rather than because nothing is running.
+          // The two halves of the pair, unfolded, for anything that
+          // needs to tell them apart — the hold banner says "held, and
+          // the turn it interrupted is still unwinding" and that
+          // sentence has no single field behind it. Poll-only, and so
+          // both read false on a backend older than 1.12.0 because the
+          // keys were absent, not because nothing is running.
           turnInFlight: s.status.turnInFlight,
+          runState: s.status.runState,
+          turnState: s.status.turnState,
         };
       },
 
@@ -2994,6 +3168,13 @@ window.MastTerminal = (function () {
       submit: submit,
       stop: stop,
 
+      // Read GET /status now rather than waiting for the cadence, and
+      // re-arm the chain behind it. For a shell with a tab that has
+      // just come to the front, and for a test that would rather not
+      // wait ten seconds to see the poll work. Resolves to the body, or
+      // to null if the read was skipped or refused.
+      refreshStatus: refreshStatus,
+
       // Drops text into the prompt and puts the caret after it, without
       // sending. What the command palette wants: picking /tools from a
       // list should leave you able to type ` builtin` after it, not
@@ -3029,6 +3210,8 @@ window.MastTerminal = (function () {
         flushTurnClose();
         replayView.sealed = true;
         clearTimeout(replayView.timer);
+        clearTimeout(statusTimer);
+        statusTimer = 0;
         stopElapsed();
         closePromptStream();
         try {
@@ -3043,6 +3226,7 @@ window.MastTerminal = (function () {
     setConnState('disconnected');
     updateStatus();
     renderHold();
+    renderRunning();
     syncInput();
     return api;
   }

@@ -68,13 +68,27 @@ window.MastState.createSession = (function () {
     capabilities: null,
 
     // status-update-driven runtime state. turnState ∈
-    // {idle, streaming, awaiting_permission, awaiting_elicit}.
+    // {idle, streaming, awaiting_permission, awaiting_elicit, paused},
+    // taken verbatim from the frame — the broadcaster has already
+    // folded turn_in_flight into 'streaming' and the pause gate into
+    // 'paused' by the time it arrives, which is why the poll below
+    // carries two more fields that this one cannot express.
     status: {
       model: '',
       provider: '',
       turnState: 'idle',
       contextPct: null,
       permMode: '',
+      // GET /status's `state`, verbatim: 'idle' | 'running' | 'paused'
+      // | 'stopped'. Empty until a poll has answered, and empty is not
+      // 'idle' — one means nobody has said, the other is an answer.
+      //
+      // "running" was declared from the start and never produced: the
+      // sole StatusProvider had no run-loop signal to read, so a
+      // mid-turn poll answered 'idle'. v1.12.0 (core-agent#896) wired
+      // it up, which makes this the first version where the field is
+      // worth storing rather than just reading past.
+      runState: '',
       // Is a turn executing right now? (spec v1.12.0 §GET /status,
       // core-agent#896.) Deliberately NOT folded into turnState, and
       // deliberately not the same fact as `pause.paused`.
@@ -334,10 +348,22 @@ window.MastState.createSession = (function () {
     // absence as "unknown, leave it" would pin a stale true forever.
     // A pre-1.12.0 daemon is the same shape and the same answer — it
     // never reported one, which is not a claim that one is running.
+    //
+    // `state` is stored beside it rather than folded into it. Upstream
+    // keeps them apart on purpose — pause outranks running in `state`,
+    // so a session parked mid-turn reports "paused" while the turn the
+    // park interrupted is still executing — and collapsing the two here
+    // would throw away the one window a hold banner has to describe. An
+    // absent `state` clears to '' for the same reason turn_in_flight
+    // clears to false: the poll answered, and what it did not say is
+    // not a fact to keep.
     function applyStatusSnapshot(status) {
       const st = status || {};
       applyPauseStatus(st);
-      patchStatus({ turnInFlight: !!st.turn_in_flight });
+      patchStatus({
+        turnInFlight: !!st.turn_in_flight,
+        runState: typeof st.state === 'string' ? st.state : '',
+      });
     }
 
     // recordWake consumes a `wake` frame (v1.7.0 §2.9). Timestamp only,

@@ -138,6 +138,11 @@ function mount({ features, slashCommands, commands, protocol } = {}) {
     // Keep the frame sink the terminal handed us, so a test can push a
     // `pause` or `status-update` frame the way a live stream would.
     client.feed = opts.onEvent;
+    // And the connection callback, which is the real stream's way of
+    // saying "attached" — the one thing that starts the status poll.
+    // mount() sets the store directly instead, so a test that does not
+    // ask for the poll does not get one.
+    client.conn = opts.onConnectionState;
     return client;
   };
   const term = globalThis.MastTerminal.create({
@@ -926,6 +931,240 @@ describe('MastTerminal built-ins', () => {
       await term.submit('/help');
       expect(text()).toContain('/share');
       expect(text()).not.toContain('Not supported by this backend');
+    });
+  });
+
+  // #93, spec v1.12.0. Until now "running" meant "this browser pressed
+  // send": a mid-turn GET /status answered `idle` because the run loop
+  // had no signal to read, so a session another operator was driving
+  // looked idle in every surface we draw. The tests below are about the
+  // two halves staying apart — what the server says is executing, and
+  // what we dispatched — because the surfaces want different ones.
+  describe('status truth', () => {
+    // Replaces the stub's recorded getStatus with a counted one, so a
+    // test can watch the chain without the reply changing under it.
+    function polling(client, body) {
+      const seen = { count: 0, body: body || { state: 'idle' } };
+      client.getStatus = async () => {
+        seen.count += 1;
+        return seen.body;
+      };
+      return seen;
+    }
+
+    const inflight = (term) => term.el.querySelector('.term-inflight');
+
+    it('asks once the stream attaches, because no frame will say this', async () => {
+      const { term, client } = mount();
+      const seen = polling(client, { state: 'running', turn_in_flight: true });
+      client.conn('connected');
+      await flush();
+      expect(seen.count).toBe(1);
+      // Running, and not by us: the pair the seam keeps unfolded.
+      expect(term.state.running).toBe(true);
+      expect(term.state.driving).toBe(false);
+      expect(term.state.turnInFlight).toBe(true);
+      expect(term.state.runState).toBe('running');
+      expect(inflight(term).hidden).toBe(false);
+    });
+
+    // The version gate and the start of the chain are the same moment,
+    // and it is not the socket opening: 'connected' fires on the open
+    // and the capabilities frame is the first thing to arrive on it, so
+    // a client asked at connect does not yet know what it is talking
+    // to. Getting this wrong arms nothing and the poll silently never
+    // happens — which is exactly how it first shipped.
+    it('starts the chain when the version lands, not when the socket opens', async () => {
+      const { client } = mount();
+      const seen = polling(client);
+      let known = false;
+      client.protocolAtLeast = () => known;
+
+      client.conn('connected');
+      await flush();
+      expect(seen.count).toBe(0);
+
+      known = true;
+      client.feed({ type: 'capabilities', data: { protocol_version: '1.12.0' } });
+      await flush();
+      expect(seen.count).toBe(1);
+    });
+
+    // The negotiated version, not the capabilities frame: a 1.11.0
+    // daemon serves the route and answers 'idle' to every read of it,
+    // which is a request per panel per ten seconds for no fact.
+    it('does not poll a backend that cannot produce the answer', async () => {
+      const { client } = mount();
+      const seen = polling(client);
+      client.protocolAtLeast = () => false;
+      client.conn('connected');
+      await flush();
+      expect(seen.count).toBe(0);
+    });
+
+    it('stops asking when the stream drops, and when the panel closes', async () => {
+      vi.useFakeTimers();
+      try {
+        const { term, client } = mount();
+        const seen = polling(client);
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(seen.count).toBe(1);
+
+        client.conn('disconnected');
+        await vi.advanceTimersByTimeAsync(60000);
+        expect(seen.count).toBe(1);
+
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(seen.count).toBe(2);
+        term.destroy();
+        await vi.advanceTimersByTimeAsync(60000);
+        expect(seen.count).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Two cadences, and which one is running is recomputed from the
+    // state at each tick rather than fixed when the chain was armed.
+    it('slows down when nothing is moving and speeds up when it is', async () => {
+      vi.useFakeTimers();
+      try {
+        const { term, client } = mount({ features: { pause: true } });
+        const seen = polling(client);
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(seen.count).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(9000);
+        expect(seen.count).toBe(1);
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(seen.count).toBe(2);
+
+        // Held with a turn behind the gate — the one window where the
+        // answer is changing and somebody is waiting on it.
+        seen.body = { state: 'paused', paused: true, turn_in_flight: true };
+        await vi.advanceTimersByTimeAsync(10000);
+        const settled = seen.count;
+        await vi.advanceTimersByTimeAsync(3500);
+        expect(seen.count).toBe(settled + 1);
+        expect(term.state.paused).toBe(true);
+        // Held is not a claim that nothing is running; that is the
+        // whole reason the bool exists beside `state`.
+        expect(term.state.running).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // A caller that asks early replaces the wait rather than adding to
+    // it. Two chains would double every panel's traffic and there is
+    // nothing in the UI that would show it.
+    it('keeps one chain when something asks for a read mid-wait', async () => {
+      vi.useFakeTimers();
+      try {
+        const { term, client } = mount({ features: { pause: true } });
+        const seen = polling(client);
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(seen.count).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(2000);
+        await term.refreshStatus();
+        expect(seen.count).toBe(2);
+
+        // The original ten-second timer, had it survived, would fire in
+        // here on top of the new one.
+        await vi.advanceTimersByTimeAsync(9000);
+        expect(seen.count).toBe(2);
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(seen.count).toBe(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('says nothing in the transcript when a poll fails, and keeps asking', async () => {
+      vi.useFakeTimers();
+      try {
+        const { client, text } = mount();
+        let count = 0;
+        client.getStatus = async () => {
+          count += 1;
+          throw new Error('status unavailable');
+        };
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(count).toBe(1);
+        expect(text()).not.toContain('status unavailable');
+        await vi.advanceTimersByTimeAsync(10500);
+        expect(count).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // The fast half of the pair. The broadcaster folds turn_in_flight
+    // into turn_state:'streaming' before the frame leaves, so a
+    // streaming frame is the server saying a turn is executing — and it
+    // arrives whoever started it.
+    it('counts a streaming status-update as running, whoever started it', async () => {
+      const { term, client } = mount();
+      client.feed({ type: 'status-update', data: { turn_state: 'streaming' } });
+      expect(term.state.turnState).toBe('streaming');
+      expect(term.state.running).toBe(true);
+      expect(term.state.driving).toBe(false);
+      expect(inflight(term).hidden).toBe(false);
+
+      client.feed({ type: 'status-update', data: { turn_state: 'idle' } });
+      expect(term.state.running).toBe(false);
+      expect(inflight(term).hidden).toBe(true);
+    });
+
+    // Not every producer retracts it. The 001 conformance capture is a
+    // status-update saying 'streaming' and then a turn-complete, with
+    // nothing after — and a panel that believed the last frame it was
+    // given would claim to be working for the rest of the session.
+    it('lets turn-complete end a turn no status-update came back to close', async () => {
+      const { term, client } = mount();
+      client.feed({ type: 'status-update', data: { turn_state: 'streaming' } });
+      expect(term.state.running).toBe(true);
+
+      client.feed({ type: 'turn-complete', data: { latency_ms: 120 } });
+      expect(term.state.turnState).toBe('idle');
+      expect(term.state.running).toBe(false);
+      expect(inflight(term).hidden).toBe(true);
+    });
+
+    // The footer slot is for the turn you did not start. When you did,
+    // the elapsed timer beside it already says so, at a resolution this
+    // could not match.
+    it('withholds the footer slot while this browser is the one driving', async () => {
+      const { term, client } = mount();
+      polling(client, { state: 'running', turn_in_flight: true });
+      term.connection.setIsRunning(true);
+      await term.refreshStatus();
+      expect(term.state.running).toBe(true);
+      expect(term.state.driving).toBe(true);
+      expect(inflight(term).hidden).toBe(true);
+
+      term.connection.setIsRunning(false);
+      await term.refreshStatus();
+      expect(inflight(term).hidden).toBe(false);
+    });
+
+    // Absent is not false, twice over: a 1.11.0 daemon sends neither
+    // key and a 1.12.0 daemon omits both when nothing is running. What
+    // it must never do is veto a turn this browser can see itself.
+    it('does not let a silent poll contradict a turn we dispatched', async () => {
+      const { term, client } = mount();
+      polling(client, { state: 'idle' });
+      term.connection.setIsRunning(true);
+      await term.refreshStatus();
+      expect(term.state.runState).toBe('idle');
+      expect(term.state.turnInFlight).toBe(false);
+      expect(term.state.running).toBe(true);
     });
   });
 });

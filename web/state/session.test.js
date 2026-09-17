@@ -363,6 +363,33 @@ describe('state/session', () => {
       session.applyPauseStatus({ turn_state: 'idle' });
       expect(session.get().status.turnInFlight).toBe(true);
     });
+
+    // The other half of the pair (#93). Stored beside the bool, never
+    // folded into it: pause outranks running in this one field, so a
+    // client that kept only `state` would have to call a held session
+    // idle and a client that kept only the bool would miss a turn
+    // running with no hold over it.
+    it('records `state` verbatim, including the running that 1.12.0 made reachable', () => {
+      session.applyStatusSnapshot({ state: 'running', turn_in_flight: true });
+      expect(session.get().status.runState).toBe('running');
+
+      session.applyStatusSnapshot({ state: 'paused', paused: true, turn_in_flight: true });
+      expect(session.get().status.runState).toBe('paused');
+      expect(session.get().status.turnInFlight).toBe(true);
+    });
+
+    it('starts empty, which is not the same answer as idle', () => {
+      // '' means nobody has said; 'idle' is a server saying nothing is
+      // running. A surface that conflates them reports an unattached
+      // session as a quiet one.
+      expect(session.get().status.runState).toBe('');
+      session.applyStatusSnapshot({ state: 'idle' });
+      expect(session.get().status.runState).toBe('idle');
+      // And a poll that omits it clears, for the same reason the bool
+      // does: the server answered, and what it left out is not a fact.
+      session.applyStatusSnapshot({ turn_in_flight: false });
+      expect(session.get().status.runState).toBe('');
+    });
   });
 });
 

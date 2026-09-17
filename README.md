@@ -113,6 +113,16 @@ mast-web/
 
 ---
 
+## Verifying a build by hand
+
+`dev/tools/ci` and the Playwright suite under `smoke/` check that the code agrees with itself. Neither of them looks at the screen. [`docs/walkthrough.md`](./docs/walkthrough.md) is the part a person does — a numbered script, run against the mock backend, that reaches a yes or no on every capability this release claims. Run it before a tag, and whenever a change touches something whose failure mode is *social* (whose session is this, did my Stop land, who approved that) rather than mechanical.
+
+```bash
+dev/tools/mock-backend     # SPA + fake attach backend on :7778
+```
+
+---
+
 ## Related
 
 - [mast](https://github.com/go-steer/mast) — the agent runtime this UI talks to (post-fork; until then, [core-agent](https://github.com/go-steer/core-agent) works equivalently)

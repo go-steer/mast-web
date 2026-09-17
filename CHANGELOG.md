@@ -29,6 +29,164 @@ message.
 
 Nothing yet.
 
+## [0.5.0] - 2026-09-17
+
+**Catching up to the wire, and the release where a parked session stopped
+being a dead end.**
+
+mast-web had been claiming attach protocol 1.7.0 since v0.3 while core-agent
+moved to 1.12.0, and five minor versions of drift is not a version-number
+problem: two of them changed behaviour the browser already depended on, and
+both changes are invisible to a client that never asks. The sharp one is
+**1.11.0, which removed the shim where an inject from a human-looking caller
+released a hold** — on the grounds that callers carry an identity, not a
+species. Correct upstream, and it turned a held session into a dead end here.
+A session parked by another tab, an embedded `core-tui`, a scheduler or a cost
+ceiling could be typed into forever: the message queues behind the gate and
+nothing happens. The gate had been modelled in the store since v0.4 and there
+was no control anywhere in either shell that could open one.
+
+The rest of the release is the multi-user surface catching up with its own
+premise. v0.4 made session ownership *visible*, and read-only — the v0.4 plan
+recorded "core-agent ACL mutation — no route today" as the reason. 1.10.0
+shipped the route, so v0.5 can grant and revoke from the browser that already
+draws who owns what. And 1.12.0 made `state: "running"` reachable for the
+first time, which is why this is also the release where "is anything running?"
+became a question about the daemon rather than about this browser tab.
+
+The reconciled architecture doc is [`web-design.md`](docs/web-design.md); the
+release's plan, with the protocol drift enumerated item by item, is the
+[v0.5 plan](docs/v0.5-plan.md).
+
+### Added
+
+- **The operator hold, in the browser.** A banner between the transcript and
+  the prompt states the reason verbatim, whether the turn the hold interrupted
+  was cancelled or is still unwinding, when it was set, and the ways out.
+  `/pause [reason]`, `/continue` (alias `/cont`) and `/abandon` — `core-tui`'s
+  vocabulary, deliberately, not the route's name `/resume`, which is the wrong
+  word to say to a person. Typing at a held session **steers**: the text is
+  sent as a correction rather than starting a turn that would block on the
+  gate forever. A held count sits in the window's status bar, because the one
+  place you cannot see a parked session from is anywhere but its own tab.
+  (#70)
+- **Session sharing — `/share`**, in the palette. `/share` lists the ACL,
+  `/share viewer <identity>` and `/share contributor <identity>` grant, and
+  `/share revoke <identity>` takes it back. Viewers and contributors stay distinct, and grants are
+  exclusive: promoting a viewer removes them from viewers, because an identity
+  in both lists would display two things about one permission. The `PATCH`
+  sends only the list that actually changed, so an untouched list is never
+  round-tripped from a snapshot that may already be stale — the lost-update
+  window on an authorization decision is narrow enough as it is. What gets
+  rendered is the server's echo, never the request. It is a command rather
+  than a sidebar dialog for a load-bearing reason: the ACL routes are
+  session-scoped and refuse with 404 rather than 403, so a sidebar row — which
+  has never seen a protocol version, that header being stamped only on
+  `/events` — could not tell "your backend is too old" from "this session is
+  not yours". A panel knows both. (#91)
+- **Rename a session from the sidebar.** A `✎` on rows the registry derived as
+  mine. Clearing the name is a distinct instruction from leaving it alone, and
+  re-arms the host's inference; the row shows the normalized title the server
+  says it *stored*, not what was typed. `persisted: false` is not an error —
+  it is the norm for a daemon with no ACL store, and reading it as failure
+  would put an error on every successful rename. (#92)
+- **`/perms`** — the permission mode, the standing allow/deny patterns, and
+  the approval log. The log is the point: an allow-session granted an hour ago
+  is invisible in every other surface. Since 1.10.0 a row can name who granted
+  it. (#94)
+- **Approval attribution on the permission card.** Answering a prompt now
+  records the approver the daemon verified, beside the decision. The SPA never
+  *sends* an approver — the server checks that field against its own verified
+  caller, so anything the browser put there could only disagree — and it never
+  fills a blank in with the reader's own identity. They are the likeliest
+  author of any row and the most damaging to guess, because the log is
+  consulted precisely when something got through that should not have. (#94)
+- **Tool grants on `/specialists`**: per-source counts on the roster row, the
+  full grouped grant on `/specialists <name>`. (#94)
+- **`/subagents stop <name>`.** (#94)
+
+### Changed
+
+- **mast-web speaks attach protocol 1.12.0** (was 1.7.0). *[embedders]* Every
+  new surface above is gated, so an older daemon loses controls rather than
+  breaking — but the client now asks **three** capability questions instead of
+  two, and the third defaults the other way. `emitsEvent` is about frames and
+  `hasFeature` is about flags, where silence means a producer that predates
+  the flag and *has* the feature; neither can answer "does this endpoint
+  exist?", and the ACL and title routes carry no flag at all. So
+  `protocolAtLeast()` joins them, and silence there means **off**: a server too
+  old to have said is a server that will 404, and offering a Share control
+  that 404s is worse than not offering one. (#90)
+- **"N running" now counts sessions, not tabs.** Through 1.11.0 the browser
+  could only answer "did I press send" — `state: "running"` was declared from
+  the start and never produced, and `turn_in_flight` did not exist. A session
+  another operator, an embedded TUI or a scheduler was driving looked idle in
+  every surface this SPA draws: the fleet count, the panel footer, the busy
+  pulse, the radar blip. A standing `GET /status` poll (ten seconds idle,
+  three while held or in flight, stopped while the tab is hidden) makes the
+  count honest. The two facts stay two facts, because `state` has one slot and
+  pause outranks running in it: a session parked mid-turn reports "paused"
+  while the turn the park interrupted is still executing, and a `⟳ turn in
+  flight` slot in the footer is the only way that gets said. SEND and STOP
+  keep their narrow local meaning — they are not things to do to an operator
+  because somebody else is working. (#93)
+- The tarball's mock backend (`mast-web-server --mode=mock`) advertises and
+  implements 1.12.0, including a permission surface that can be prompted from
+  outside (`POST /_mock/perms-prompt`) — it has no permission checker of its
+  own, having no tools. (#90, #94)
+
+### Fixed
+
+- **`/pause`, `/continue` and `/abandon` were offered to backends that have no
+  `/pause` route.** They were gated on the `pause` feature flag alone, and an
+  absent flag reads as *on*, so a pre-1.5.0 daemon got all three. Caught by
+  #91's version gate going past. Both gates now apply and they catch different
+  backends: the flag catches one built without a `PauseController`, the
+  version catches one built before the route existed. (#70, #91)
+- The hold banner was drawn at **every** session: `.term-hold` sets
+  `display:flex`, which beats the `[hidden]` attribute's UA rule. jsdom cannot
+  see this, which is what the browser smoke suite is for. (#70)
+- A `status-update` left at `streaming` was never retracted by
+  `turn-complete` — not every producer retracts it — so a panel that believed
+  the last frame it was given claimed to be working for the rest of the
+  session. (#93)
+- `client.js` documented `PauseResponse`'s keys as the short names the `pause`
+  frame uses for the same two facts; they are `paused_since` and
+  `pause_reason`. (#70)
+
+### Known gaps
+
+- **Nothing in CI has ever looked at the screen.** Every claim in this release
+  is asserted by a test that runs headless. A manual walkthrough doc is
+  written and in review; its acceptance criterion is a person running it once,
+  which no presubmit can discharge.
+  ([#99](https://github.com/go-steer/mast-web/issues/99))
+- **The hold banner does not say how many subagents are still running** — the
+  difference between "safe to walk away" and "wait". The subagent roster
+  carries no status, and the one place a running count crosses the wire is an
+  interrupt response, which a hold is not.
+  ([#106](https://github.com/go-steer/mast-web/issues/106))
+- Unchanged from v0.4 and all deliberately v0.6 or later:
+  **`--auth-mode=oidc`** ([#86](https://github.com/go-steer/mast-web/issues/86)),
+  the **Kind job running the mock rather than a real `core-agent`**
+  ([#66](https://github.com/go-steer/mast-web/issues/66)), the **hosted SPA**
+  ([#6](https://github.com/go-steer/mast-web/issues/6)), and **inline slash
+  autocomplete** ([#43](https://github.com/go-steer/mast-web/issues/43)).
+
+### Upgrading
+
+- *[embedders]* Nothing to change. `core-agent` and `mast` can bump the
+  embedded version; against a daemon older than the route a control is hidden
+  rather than broken. What you get by *also* being on a current daemon:
+  ≥1.10.0 for `/share` and rename, ≥1.12.0 for running counts that include
+  turns this browser did not start.
+- *[hosting]* No new flags. Sharing grants to whatever identity string you
+  type, and the agent enforces it against the caller it verified — so under
+  `--auth-mode=none` every browser reaches the agent as the same caller and a
+  grant is recorded without changing what anyone can see. Sharing is only
+  meaningful in a deployment that authenticates at the edge (`proxy-header` or
+  `iap-jwt`) and forwards the human as `X-Asserted-Caller`.
+
 ## [0.4.0] - 2026-09-15
 
 **Consolidation, and the release where mast-web became something you can host
@@ -278,7 +436,8 @@ First release of `mast-web-<tag>.tar.gz` as the canonical artifact for
 downstream agent binaries to fetch and embed via `go:embed`. See
 [`docs/web-design.md`](docs/web-design.md) for how the embedding works.
 
-[Unreleased]: https://github.com/go-steer/mast-web/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/go-steer/mast-web/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/go-steer/mast-web/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/go-steer/mast-web/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/go-steer/mast-web/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/go-steer/mast-web/compare/v0.2.0...v0.2.1

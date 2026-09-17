@@ -289,7 +289,8 @@ body.side-hidden #app-sidebar {
    pointer — a delete control that is always lit next to every session
    is a delete control somebody eventually hits by accident. Keyboard
    focus reveals it too, or it would be unreachable without a mouse. */
-.side-session-del {
+.side-session-del,
+.side-session-ren {
   flex: none;
   width: 13px;
   text-align: center;
@@ -301,12 +302,20 @@ body.side-hidden #app-sidebar {
 
 .side-session:hover .side-session-del,
 .side-session:focus-within .side-session-del,
-.side-session-del:focus-visible {
+.side-session-del:focus-visible,
+.side-session:hover .side-session-ren,
+.side-session:focus-within .side-session-ren,
+.side-session-ren:focus-visible {
   opacity: 1;
 }
 
 .side-session-del:hover {
   color: var(--red);
+}
+
+/* Renaming is not destructive, so it warms rather than reddens. */
+.side-session-ren:hover {
+  color: var(--text);
 }
 
 .side-empty,

@@ -48,6 +48,9 @@ window.MastDaemonSidebar = (function () {
   //   onRefreshed   — (daemon) its session list just came back
   //   onDeleted     — (daemon, session) it is gone upstream; close it
   //   confirm       — (message) → bool; window.confirm unless overridden
+  //   prompt        — (message, value) → string|null; window.prompt
+  //                   unless overridden. null is cancelled, which is
+  //                   NOT the same as '' — see renameSession
   //   sessionState  — (daemon, session) → { open, active } for row paint
   function create(opts) {
     const cfg = opts || {};
@@ -63,6 +66,17 @@ window.MastDaemonSidebar = (function () {
         ? cfg.confirm
         : function (message) {
             return window.confirm(message);
+          };
+    // window.prompt, and its null-vs-'' answer is exactly the
+    // distinction POST /title is built around: cancel is null and means
+    // "leave the name alone", an emptied box is '' and means "clear it
+    // and let the host infer again". A dialog that collapsed the two
+    // would make one of the endpoint's two instructions unreachable.
+    const askText =
+      typeof cfg.prompt === 'function'
+        ? cfg.prompt
+        : function (message, value) {
+            return window.prompt(message, value);
           };
     const sessionState =
       typeof cfg.sessionState === 'function'
@@ -164,6 +178,54 @@ window.MastDaemonSidebar = (function () {
       }
       setNotice(d.endpoint, '');
       onDeleted(d, s);
+      return r;
+    }
+
+    // Renaming a session (#92). The gesture is here and not in a
+    // terminal, which is the opposite of where /share landed one PR
+    // ago, and the difference is the failure mode rather than taste:
+    //
+    //   - The ACL's read is Admin-gated and refuses with 404, so a
+    //     sidebar row — which has no negotiated protocol version, since
+    //     the version is only stamped on /events — cannot tell an old
+    //     daemon from somebody else's session. It would have to guess.
+    //   - Title is Write-gated, and this control is only drawn on rows
+    //     the registry derived as 'mine'. An owner always has Write, so
+    //     the 404 that an old daemon returns for a route it does not
+    //     have is the only 404 reachable from here. It has one meaning,
+    //     and messageFor says it.
+    //
+    // Which leaves the sidebar the right home for it anyway: the roster
+    // is the surface that lists sessions nobody has opened, and a name
+    // is what you give something so you can find it later.
+    function renameMessage(r) {
+      if (r.status === 404) {
+        return 'rename needs attach protocol 1.10.0 — this daemon is older than the route.';
+      }
+      if (r.status === 501) return 'this agent host does not implement renaming.';
+      return 'rename failed: ' + r.error;
+    }
+
+    async function renameSession(d, s) {
+      const current = s.title || '';
+      const typed = askText(
+        'Rename ' + s.id + ' on ' + d.alias + '.\n\nEmpty the box to clear the name.',
+        current
+      );
+      // Cancelled. Not the same as an empty box, and the endpoint agrees
+      // — this path sends nothing at all, where '' sends {"title":""}.
+      if (typed === null || typed === undefined) return { ok: false, error: 'cancelled' };
+      if (typed === current) return { ok: false, error: 'unchanged' };
+
+      const r = await registry.renameSession(d, s, typed);
+      if (!r.ok) {
+        setNotice(d.endpoint, renameMessage(r));
+        return r;
+      }
+      // `persisted:false` is the common case and says nothing an
+      // operator can act on, so it is not a notice. `detail` is the
+      // case where a store existed and refused, which is.
+      setNotice(d.endpoint, r.detail ? 'renamed, but not saved: ' + r.detail : '');
       return r;
     }
 
@@ -340,6 +402,34 @@ window.MastDaemonSidebar = (function () {
             ' · ' +
             d.endpoint;
 
+          // Rename, on rows this caller owns. Shared rows are left out
+          // for a softer reason than delete's: a contributor may well
+          // have Write and be allowed to rename, but the roster does
+          // not say who is a contributor and who is a viewer, and a
+          // control that works for half the rows it appears on is worse
+          // than one that appears on fewer. `default` keeps it — the
+          // bootstrap session refuses deletion, not naming.
+          if (d.client && own !== 'shared') {
+            const ren = document.createElement('span');
+            ren.className = 'side-session-ren';
+            ren.setAttribute('role', 'button');
+            ren.setAttribute('aria-label', 'Rename session ' + s.id);
+            ren.tabIndex = 0;
+            ren.textContent = '✎';
+            ren.title = 'Rename session ' + s.id + ' on ' + d.alias;
+            ren.addEventListener('click', function (e) {
+              e.stopPropagation();
+              renameSession(d, s);
+            });
+            ren.addEventListener('keydown', function (e) {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              e.stopPropagation();
+              renameSession(d, s);
+            });
+            row.appendChild(ren);
+          }
+
           // A <span role="button"> rather than a nested <button>, which
           // is invalid inside the row's own button — the same trick the
           // solo tab strip uses for its close affordance.
@@ -401,6 +491,7 @@ window.MastDaemonSidebar = (function () {
       refreshAll: refreshAll,
       newSession: newSession,
       deleteSession: deleteSession,
+      renameSession: renameSession,
       render: render,
       boot: boot,
       site: registry.site,

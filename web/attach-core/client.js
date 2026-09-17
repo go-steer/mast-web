@@ -365,7 +365,15 @@ window.AttachClient = (function () {
         if (PermanentStreamError.isPermanentStatus(r.status)) {
           throw new PermanentStreamError(msg, r.status);
         }
-        throw new Error(msg);
+        // The status is on the plain error too. 401/403/404 get a class
+        // because the stream has to decide whether to stop reconnecting;
+        // a write's status is not that decision, but a caller still has
+        // to be able to read it — POST /title's 501 is a capability gap
+        // worth naming, and scraping it back out of the message text
+        // would be a parser over a sentence we wrote.
+        const err = new Error(msg);
+        err.status = r.status;
+        throw err;
       }
       // /inject and /wake return small JSON envelopes; tolerate empty.
       const text = await r.text();
@@ -990,7 +998,17 @@ window.AttachClient = (function () {
     // ActionSessionWrite rather than Admin: a title is a display
     // string, not an authorization decision.
     async setTitle(title) {
-      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/title', {
+      return this.setTitleFor(this.sessionId, title);
+    }
+
+    // The same call for a session this client is not attached to, which
+    // is what a sidebar needs: the roster lists sessions nobody has
+    // opened, and renaming one is the point of having the roster. Unlike
+    // DELETE there is no {app} segment to qualify it with — the route is
+    // /sessions/{sid}/title upstream, so the id has to be unambiguous on
+    // its own, which within one caller's filtered listing it is.
+    async setTitleFor(sid, title) {
+      return this._post('/sessions/' + encodeURIComponent(sid) + '/title', {
         title: typeof title === 'string' ? title : '',
       });
     }

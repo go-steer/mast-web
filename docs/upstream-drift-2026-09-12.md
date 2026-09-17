@@ -1,8 +1,12 @@
 # mast-web: upstream drift audit (2026-09-12)
 
-**Status:** dated one-shot audit. Snapshot of what `core-tui` has shipped since mast-web's docs were last reconciled against it (`web-design.md`, 2026-07-20, which cites core-tui#68 as its high-water mark). Enumerates the wire-contract drift, the feature work that changes the shape of v0.4 PRs already on the board, and — explicitly — the large fraction that is terminal-specific and which we should not track. Rots when the protocol catch-up lands and `web-design.md` / `v0.4-plan.md` are reconciled.
+**Status:** **executed, 2026-09-17.** Its own rot condition below is met on both halves: the protocol catch-up landed ([#98](https://github.com/go-steer/mast-web/pull/98), wire and mock to 1.12.0), [`v0.4-plan.md`](./v0.4-plan.md) is marked executed, and [`web-design.md`](./web-design.md) now cites 1.12.0. The version table in §Sync point is therefore a snapshot of 2026-09-12 and is no longer the answer to "what are we on" — [`web-design.md`](./web-design.md) is, and [`v0.5-plan.md`](./v0.5-plan.md) §1 is the item-by-item disposition of everything enumerated here.
 
-Not a plan. A delta. The precedent is [`upstream-drift-2026-07-16.md`](https://github.com/go-steer/mast-web/blob/be86879/docs/upstream-drift-2026-07-16.md), deleted after the v0.2 reconcile, which is the intended fate of this one.
+Kept rather than deleted, which reverses the intent in the paragraph below. The precedent it cites — [`upstream-drift-2026-07-16.md`](https://github.com/go-steer/mast-web/blob/be86879/docs/upstream-drift-2026-07-16.md), deleted after the v0.2 reconcile — is exactly why: this audit exists because five protocol versions drifted past unnoticed, and the record of *how long that went on* is the argument for shortening the interval. Deleting the evidence each time the catch-up lands is how the same surprise arrives again. Same convention as [`web-bootstrap.md`](./web-bootstrap.md) and both plan docs.
+
+*Original header:* dated one-shot audit. Snapshot of what `core-tui` has shipped since mast-web's docs were last reconciled against it (`web-design.md`, 2026-07-20, which cites core-tui#68 as its high-water mark). Enumerates the wire-contract drift, the feature work that changes the shape of v0.4 PRs already on the board, and — explicitly — the large fraction that is terminal-specific and which we should not track. Rots when the protocol catch-up lands and `web-design.md` / `v0.4-plan.md` are reconciled.
+
+Not a plan. A delta.
 
 ---
 

@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Unit tests for web/attach-core/client.js — spec v1.7.0 alignment.
+// Unit tests for web/attach-core/client.js — spec v1.12.0 alignment.
 //
 // Covers:
 //   1. PermanentStreamError classification on HTTP 404/401/403
-//   2. capabilities frame caching + the two-question capability gating
+//   2. capabilities frame caching + the three-question capability gating
 //   3. tool-result latency_ms sidecar extraction (via protocol.js)
 //   4. Legacy `agent` frame demux into stream-chunk / tool-call / tool-result
 //   5. Both float64 (browser) and int64-shaped latency values
 //   6. /interrupt's hold flag and the v1.5.0 response body
+//   7. The hold's own verbs (/pause, /resume) and inject's wake flag
+//   8. The v1.10.0 sharing and naming routes, and the version gate that
+//      is the only honest way to decide whether to offer them
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -1199,6 +1202,235 @@ describe('AttachClient', () => {
       const c = withCaps(null);
       expect(c.emitsPauseEvents()).toBe(false);
       expect(c.supportsPause()).toBe(true);
+    });
+  });
+
+  // ─── The hold's own verbs, and the two deliveries an inject has ────
+
+  describe('the hold (v1.5.0 §4) and inject’s wake flag (#698)', () => {
+    function client() {
+      return new AttachClient({ endpoint: 'https://example', sessionId: 's1', onEvent: () => {} });
+    }
+    function ok(body) {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify(body || {})),
+      });
+      return globalThis.fetch;
+    }
+    const sent = (f) => JSON.parse(f.mock.calls[0][1].body);
+
+    it('pause POSTs the operator’s reason, and omits the key when there is none', async () => {
+      let f = ok({ paused: true, transitioned: true });
+      await client().pause('reading the diff');
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/pause');
+      expect(sent(f)).toEqual({ reason: 'reading the diff' });
+
+      // An absent reason is not an empty one: the server fills in its
+      // own default, which reads better in a banner than ''.
+      f = ok({ paused: true });
+      await client().pause();
+      expect(sent(f)).toEqual({});
+    });
+
+    it('resume carries the mode the operator chose, not a blanket unpause', async () => {
+      // The three modes are three different instructions about the
+      // parked turn, and abandon in particular throws work away — so
+      // the choice has to reach the wire intact.
+      let f = ok({ resumed: true, mode: 'abandon' });
+      await client().resume('abandon');
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/resume');
+      expect(sent(f)).toEqual({ mode: 'abandon' });
+
+      f = ok({ resumed: true, mode: 'steer' });
+      await client().resume('steer', 'try the other branch');
+      expect(sent(f)).toEqual({ mode: 'steer', steer: 'try the other branch' });
+
+      // Nothing chosen sends nothing, and the server infers.
+      f = ok({ resumed: true, mode: 'continue' });
+      await client().resume();
+      expect(sent(f)).toEqual({});
+    });
+
+    it('inject says nothing about wake by default, and false only when asked', async () => {
+      // The tristate from #698. Sending wake:true explicitly would be
+      // harmless against a v1.10.0 server and an unknown field against
+      // an older one; saying nothing is what every pre-1.10.0 client
+      // did and still means "queue and wake".
+      let f = ok({ injected: 'hi', session: 's1', woke: true });
+      await client().inject('hi');
+      expect(sent(f)).toEqual({ message: 'hi' });
+
+      f = ok({ injected: 'hi', session: 's1', woke: false });
+      await client().inject('hi', { wake: false });
+      expect(sent(f)).toEqual({ message: 'hi', wake: false });
+
+      // Only an explicit false is a request to defer. A truthy or
+      // missing opts must not accidentally opt in.
+      f = ok({ woke: true });
+      await client().inject('hi', { wake: true });
+      expect(sent(f)).toEqual({ message: 'hi' });
+      f = ok({ woke: true });
+      await client().inject('hi', {});
+      expect(sent(f)).toEqual({ message: 'hi' });
+    });
+
+    it('inject hands back the prompt_id so a caller can key its own turn state', async () => {
+      const f = ok({ injected: 'hi', session: 's1', woke: true, prompt_id: 'p-7' });
+      const out = await client().inject('hi');
+      expect(out.prompt_id).toBe('p-7');
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/inject');
+    });
+
+    it('interrupt defaults to the safe Stop and can be asked to park', async () => {
+      // The #68 default, restated as a test on the parameterized verb:
+      // the button that says Stop must cancel, not hold.
+      const okInterrupt = (body) => {
+        globalThis.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          text: () => Promise.resolve(JSON.stringify(body)),
+        });
+        return globalThis.fetch;
+      };
+
+      let f = okInterrupt({ interrupted: true, paused: false });
+      await client().interrupt();
+      expect(sent(f)).toEqual({ hold: false });
+
+      f = okInterrupt({ interrupted: true, paused: true });
+      await client().interrupt({ hold: true });
+      expect(sent(f)).toEqual({ hold: true });
+    });
+
+    it('stopSubagent encodes the name into the path', async () => {
+      const f = ok({ stopped: false, status: 'completed' });
+      await client().stopSubagent('code reviewer');
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/agents/code%20reviewer/stop');
+    });
+  });
+
+  // ─── v1.10.0 sharing and naming ────────────────────────────────────
+
+  describe('ACL and title (v1.10.0, core-agent#797/#808)', () => {
+    function client() {
+      return new AttachClient({ endpoint: 'https://example', sessionId: 's1', onEvent: () => {} });
+    }
+    function ok(body) {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+      });
+      return globalThis.fetch;
+    }
+
+    it('getACL reads the session’s list', async () => {
+      const acl = { owner: 'alice@example.com', viewers: ['bob@example.com'], contributors: [] };
+      const f = ok(acl);
+      expect(await client().getACL()).toEqual(acl);
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/acl');
+    });
+
+    it('patchACL uses PATCH, because the verb is the semantics here', async () => {
+      // PUT cannot say "leave the other list alone", and the whole
+      // point of the endpoint is editing one grant without disturbing
+      // the other.
+      const f = ok({ owner: 'alice@example.com', viewers: ['bob@example.com'], contributors: [] });
+      await client().patchACL({ viewers: ['bob@example.com'] });
+      const [url, opts] = f.mock.calls[0];
+      expect(url).toBe('https://example/sessions/s1/acl');
+      expect(opts.method).toBe('PATCH');
+      expect(JSON.parse(opts.body)).toEqual({ viewers: ['bob@example.com'] });
+    });
+
+    it('patchACL sends only the lists it was given — an omission is not a clear', async () => {
+      // A caller adding a contributor must not silently wipe the
+      // viewers somebody set last week, so a key we weren't asked
+      // about must not appear on the wire at all.
+      let f = ok({});
+      await client().patchACL({ contributors: ['carol@example.com'] });
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ contributors: ['carol@example.com'] });
+
+      // And an explicit [] IS a clear, so it has to survive the trip.
+      f = ok({});
+      await client().patchACL({ viewers: [] });
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ viewers: [] });
+
+      // Anything that isn't a list is dropped rather than forwarded:
+      // the server's answer to `{"viewers": "bob"}` is a 400, and
+      // guessing at the caller's meaning would be worse.
+      f = ok({});
+      await client().patchACL({ viewers: 'bob@example.com', owner: 'mallory@example.com' });
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({});
+    });
+
+    it('surfaces the ACL’s 404 as permanent — it is also how a denial is spelled', async () => {
+      // Upstream answers 404 for "not yours" as well as "no such
+      // session", deliberately, so the API can't be probed. The client
+      // cannot tell them apart and must not pretend to.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve('not found'),
+      });
+      await expect(client().getACL()).rejects.toBeInstanceOf(AttachClient.PermanentStreamError);
+    });
+
+    it('setTitle posts the title, and an empty string survives as an instruction', async () => {
+      let f = ok({ session: 's1', title: 'Paging alert', persisted: false });
+      await client().setTitle('Paging alert');
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/title');
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ title: 'Paging alert' });
+
+      // '' means clear. It must not be dropped as falsy — an omitted
+      // key is a 400, and the operator's rename would vanish into it.
+      f = ok({ session: 's1', title: '', persisted: false });
+      await client().setTitle('');
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ title: '' });
+
+      // A non-string is coerced to the clear rather than serialized as
+      // null, which the server would reject as an omitted key.
+      f = ok({});
+      await client().setTitle(undefined);
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ title: '' });
+    });
+  });
+
+  describe('version gating for unflagged endpoints (v1.10.0)', () => {
+    function withCaps(caps) {
+      const c = new AttachClient({ endpoint: 'https://example', onEvent: () => {} });
+      c.capabilities = caps;
+      return c;
+    }
+
+    it('offers sharing and renaming only from v1.10.0 up', () => {
+      const v112 = withCaps({ protocol_version: '1.12.0', features: { pause: true } });
+      expect(v112.supportsACL()).toBe(true);
+      expect(v112.supportsTitle()).toBe(true);
+
+      const v17 = withCaps({ protocol_version: '1.7.0', features: { pause: true } });
+      expect(v17.supportsACL()).toBe(false);
+      expect(v17.supportsTitle()).toBe(false);
+    });
+
+    it('hides them when the version is unknown, unlike every features-based gate', () => {
+      // These two routes carry no feature flag — checked against
+      // core-agent's events.go, not assumed — so the additive
+      // read-silence-as-on rule does not apply and must not be
+      // borrowed. Offering a Share button that 404s is worse than not
+      // offering one.
+      expect(withCaps(null).supportsACL()).toBe(false);
+      expect(withCaps({ features: { pause: true } }).supportsTitle()).toBe(false);
+    });
+
+    it('exposes the raw gate so a caller can ask about a version we haven’t named', () => {
+      const c = withCaps({ protocol_version: '1.12.0' });
+      expect(c.protocolAtLeast('1.11.0')).toBe(true);
+      expect(c.protocolAtLeast('1.13.0')).toBe(false);
     });
   });
 

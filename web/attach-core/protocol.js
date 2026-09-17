@@ -39,6 +39,10 @@
 //   hasFeature(caps, name)
 //     — Did this server advertise this feature flag? Different
 //       question from emitsEvent; see the note above the two.
+//   protocolAtLeast(caps, want)
+//     — Is the negotiated protocol version at least `want`? The third
+//       gating question, and the only one that answers for endpoints
+//       nobody flagged; see the note above it.
 
 window.AttachCoreProtocol = (function () {
   'use strict';
@@ -157,5 +161,64 @@ window.AttachCoreProtocol = (function () {
     return !!features[name];
   }
 
-  return { fanoutAgentFrame, parseCapabilities, emitsEvent, hasFeature };
+  // ── Version gating ─────────────────────────────────────────────────
+  //
+  // The third question, and the one the two above cannot answer:
+  // "does this endpoint exist?"
+  //
+  // `features` only covers capabilities somebody thought to flag, and
+  // several do not have a flag at all — the v1.10.0 ACL and title
+  // routes are gated on the protocol version and nothing else
+  // (core-agent has no featureACL / featureTitle; checked, not
+  // assumed). For those, the negotiated version is the only thing on
+  // the wire that says whether the route is there.
+  //
+  // Probing is not an alternative for the ACL. A caller who may not
+  // administer a session gets 404, not 403, deliberately — upstream
+  // makes an unauthorized session indistinguishable from a missing one
+  // (handlers_acl.go's note on authorize) — so "404" means either "old
+  // server" or "not yours", and a client that feature-detects by
+  // trying cannot tell the two apart. Read the version instead. Title
+  // is the friendlier case: it answers 501 when the capability isn't
+  // registered, which IS safe to detect on, but it still needs the
+  // version to know the route exists to answer at all.
+  //
+  // Comparison is numeric per component, not lexicographic: "1.10.0"
+  // sorts BEFORE "1.7.0" as a string, which would hide every endpoint
+  // this function exists to unlock.
+  //
+  // An absent or unparseable version means a producer too old to have
+  // declared one (pre-v1.1.0) — false, i.e. offer nothing new. That is
+  // the opposite default from hasFeature, and deliberately so: there,
+  // silence is a producer that predates a flag for a feature it does
+  // have; here, silence is a producer that predates the route.
+  function parseVersion(v) {
+    if (typeof v !== 'string') return null;
+    const parts = v.trim().split('.');
+    if (parts.length === 0 || parts.length > 3) return null;
+    const out = [0, 0, 0];
+    for (let i = 0; i < parts.length; i++) {
+      // Tolerate a pre-release suffix ("1.12.0-rc1") on the last
+      // component: the release it is a candidate for is the honest
+      // answer, and refusing to parse it would switch off every route
+      // against a daemon built from a tag.
+      const n = parseInt(parts[i], 10);
+      if (!Number.isInteger(n) || n < 0) return null;
+      out[i] = n;
+    }
+    return out;
+  }
+
+  function protocolAtLeast(caps, want) {
+    if (!caps || typeof caps !== 'object') return false;
+    const got = parseVersion(caps.protocol_version);
+    const min = parseVersion(want);
+    if (!got || !min) return false;
+    for (let i = 0; i < 3; i++) {
+      if (got[i] !== min[i]) return got[i] > min[i];
+    }
+    return true;
+  }
+
+  return { fanoutAgentFrame, parseCapabilities, emitsEvent, hasFeature, protocolAtLeast };
 })();

@@ -17,6 +17,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,6 +72,36 @@ type pauseGate struct {
 	// "the loop just won't start", which is the first thing an operator
 	// asks. Carried on the pause event and on GET /status.
 	interrupted bool
+	// turnInFlight is the mock's model of a turn actually executing.
+	//
+	// It exists for v1.12.0 (core-agent#896), which made `state:
+	// "running"` reachable and added `turn_in_flight` beside it. Both
+	// are unmodellable without SOMETHING here that starts and stops,
+	// and a mock that can only ever answer "idle" teaches a consumer
+	// that running doesn't happen — which is the shape of the bug
+	// #896 itself was: a state declared from the start and never
+	// produced, so every client's mid-turn path went untested.
+	//
+	// The transitions are deliberate rather than timed, so a test
+	// never races them:
+	//
+	//   inject / wake, gate open   → true   (a turn starts)
+	//   inject / wake, gate closed → unchanged (queued behind it)
+	//   interrupt, hold=false      → false  (cancelled, loop free)
+	//   interrupt, hold=true       → unchanged — THE INTERESTING ONE.
+	//                                A turn cancelled on the way into a
+	//                                hold is still unwinding, which is
+	//                                the paused-and-running window the
+	//                                bool was added to express.
+	//   pause                      → unchanged (a quiet hold over a
+	//                                running turn is a real state)
+	//   resume steer / continue    → true   (back to work)
+	//   resume abandon             → false  (gate open, work dropped)
+	//
+	// Nothing clears it on its own: the mock has no loop that finishes.
+	// A spec that wants an idle session resumes with abandon or clears
+	// the gates through DELETE /_mock/pause-gates.
+	turnInFlight bool
 }
 
 // pauseGates holds every session's gate. Sessions are created lazily:
@@ -216,9 +248,11 @@ type interruptRequest struct {
 // cancel the in-flight turn, and — unless the caller explicitly says
 // otherwise — park the loop behind the gate.
 //
-// The mock has no turn to cancel, so `interrupted` reports false and
-// the legacy X-Interrupted header still says nothing-in-flight. The
-// hold half is real.
+// Both halves are real now. Whether there was a turn to cancel is
+// pauseGate.turnInFlight, which an inject or a wake sets: the mock
+// still has no loop, but it has a model of one, and `interrupted`
+// answering a constant false made the whole cancelled-mid-hold case
+// (v1.12.0 #896) untestable.
 func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid string) {
 	var req interruptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -230,16 +264,37 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 	// an absent flag means hold.
 	hold := req.Hold == nil || *req.Hold
 
-	// Nothing is ever in flight here — the mock replays a fixture, it
-	// doesn't run a loop — so an interrupt never cancels anything.
-	const interrupted = false
+	prev := h.gates.get(sid)
+	interrupted := prev.turnInFlight
 
 	now := time.Now()
 	if hold {
-		gate := pauseGate{paused: true, since: now, reason: defaultPauseReason, interrupted: interrupted}
-		if wasPaused := h.gates.set(sid, gate); !wasPaused {
-			h.hub.publish(sid, pauseFrame(pauseStatePaused, gate.reason, "", interrupted, now))
+		// turnInFlight rides through the hold rather than being cleared
+		// by it: a cancelled turn takes time to unwind, and "parked,
+		// and the thing you killed is still running" is exactly the
+		// window #896 added a field for.
+		gate := pauseGate{
+			paused:       true,
+			since:        now,
+			reason:       defaultPauseReason,
+			interrupted:  interrupted,
+			turnInFlight: prev.turnInFlight,
 		}
+		if prev.paused {
+			// Don't restamp a gate that was already closed.
+			gate.since = prev.since
+			gate.reason = prev.reason
+			gate.interrupted = prev.interrupted || interrupted
+		}
+		if wasPaused := h.gates.set(sid, gate); !wasPaused {
+			h.hub.publish(sid, pauseFrame(pauseStatePaused, gate.reason, "", gate.interrupted, now))
+		}
+	} else {
+		// Cancel only. The turn is gone and the loop is free to start
+		// another one, which is what makes this the safe Stop (#73).
+		next := prev
+		next.turnInFlight = false
+		h.gates.set(sid, next)
 	}
 
 	for k, v := range corsHeaders() {
@@ -249,7 +304,11 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 	// Keep it accurate rather than dropping it — a consumer that hasn't
 	// caught up should still get a true answer to the question it knows
 	// how to ask.
-	w.Header().Set("X-Interrupted", "nothing-in-flight")
+	if interrupted {
+		w.Header().Set("X-Interrupted", "yes")
+	} else {
+		w.Header().Set("X-Interrupted", "nothing-in-flight")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session":     sid,
 		"interrupted": interrupted,
@@ -273,7 +332,15 @@ func (h *mockHandler) pause(w http.ResponseWriter, r *http.Request, sid string) 
 
 	now := time.Now()
 	prev := h.gates.get(sid)
-	gate := pauseGate{paused: true, since: now, reason: reason, interrupted: prev.interrupted}
+	// A /pause cancels nothing, so a turn already running keeps running
+	// behind the closed gate — the quiet-hold-over-a-live-turn case.
+	gate := pauseGate{
+		paused:       true,
+		since:        now,
+		reason:       reason,
+		interrupted:  prev.interrupted,
+		turnInFlight: prev.turnInFlight,
+	}
 	if prev.paused {
 		// Already closed — don't restamp `since`, an operator watching
 		// "paused for 4m" shouldn't see it jump back to zero because
@@ -303,13 +370,33 @@ func (h *mockHandler) pause(w http.ResponseWriter, r *http.Request, sid string) 
 //
 // Resuming a session that isn't paused is a 200 with resumed:false, not
 // an error, for the same idempotency reason /pause has.
+//
+// The two 400s are modelled rather than waved through. Upstream rejects
+// an unknown mode and a steer with no text (handlers_pause.go:105-115),
+// and a mock that accepted both would let a client ship a steer box
+// that submits empty and only fails against a real backend — which is
+// the exact class of bug the drift guard in mock_spec_test.go exists
+// for. Refusing here is what makes the client's own validation
+// testable.
 func (h *mockHandler) resume(w http.ResponseWriter, r *http.Request, sid string) {
 	var req struct {
 		Mode  string `json:"mode"`
 		Steer string `json:"steer"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	mode := req.Mode
+	req.Steer = strings.TrimSpace(req.Steer)
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	switch mode {
+	case "", resumeModeSteer, resumeModeContinue, resumeModeAbandon:
+	default:
+		writeError(w, http.StatusBadRequest,
+			"resume: unknown mode "+strconv.Quote(mode)+" (want steer, continue, or abandon)\n")
+		return
+	}
+	if mode == resumeModeSteer && req.Steer == "" {
+		writeError(w, http.StatusBadRequest, "resume: mode=steer requires non-empty 'steer' text\n")
+		return
+	}
 	if mode == "" {
 		if req.Steer != "" {
 			mode = resumeModeSteer
@@ -319,7 +406,9 @@ func (h *mockHandler) resume(w http.ResponseWriter, r *http.Request, sid string)
 	}
 
 	prev := h.gates.get(sid)
-	h.gates.set(sid, pauseGate{})
+	// Steer and continue put the loop back to work; abandon opens the
+	// gate and drops the held work, leaving the session idle.
+	h.gates.set(sid, pauseGate{turnInFlight: prev.paused && mode != resumeModeAbandon})
 	now := time.Now()
 	if prev.paused {
 		h.hub.publish(sid, pauseFrame(pauseStateResumed, "", mode, false, now))

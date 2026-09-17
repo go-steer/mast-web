@@ -308,6 +308,62 @@ describe('state/session', () => {
       expect(session.get().pause.paused).toBe(true);
     });
   });
+
+  // v1.12.0 §GET /status (core-agent#896). `state` has one slot and
+  // pause outranks running in it, so "parked, and the turn you
+  // cancelled is still unwinding" has no spelling without a second
+  // field — and that window is exactly when an operator is staring at
+  // the screen wondering whether Stop worked.
+  describe('turn_in_flight (v1.12.0)', () => {
+    it('starts false, because we have not asked yet', () => {
+      expect(session.get().status.turnInFlight).toBe(false);
+    });
+
+    it('applyStatusSnapshot records the turn and the gate from one poll', () => {
+      session.applyStatusSnapshot({
+        state: 'running',
+        turn_state: 'streaming',
+        turn_in_flight: true,
+        paused: false,
+      });
+      expect(session.get().status.turnInFlight).toBe(true);
+      expect(session.get().pause.paused).toBe(false);
+    });
+
+    it('carries a turn that is still unwinding behind a closed gate', () => {
+      // Both true at once. A client that read `paused` as "nothing is
+      // running" would tell the operator their Stop had landed while
+      // the tool call it aimed at was still going.
+      session.applyStatusSnapshot({
+        state: 'paused',
+        turn_state: 'paused',
+        turn_in_flight: true,
+        paused: true,
+        paused_since: '2026-08-19T14:31:02Z',
+        interrupted: true,
+      });
+      expect(session.get().pause.paused).toBe(true);
+      expect(session.get().status.turnInFlight).toBe(true);
+    });
+
+    it('reads a pre-v1.12.0 status as no turn rather than leaving the last one up', () => {
+      // Absent is not "still running". An older daemon never sets the
+      // key, and a spinner that stays lit forever is worse than one
+      // that never appears.
+      session.applyStatusSnapshot({ state: 'running', turn_in_flight: true });
+      session.applyStatusSnapshot({ state: 'active', model: 'gemini-3.1-pro' });
+      expect(session.get().status.turnInFlight).toBe(false);
+    });
+
+    it('is poll-only: a status-update frame must not touch it', () => {
+      // The field rides on GET /status and NOT on the SSE frame, which
+      // maps it into turn_state:'streaming' at the source. Wiring the
+      // frame into it would invent a fact the server did not send.
+      session.applyStatusSnapshot({ turn_in_flight: true });
+      session.applyPauseStatus({ turn_state: 'idle' });
+      expect(session.get().status.turnInFlight).toBe(true);
+    });
+  });
 });
 
 // v0.4: the module exports a factory and nothing else. A room full of

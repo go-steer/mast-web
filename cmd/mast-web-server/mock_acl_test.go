@@ -115,7 +115,8 @@ func TestMockACL_VisibleRowsCarryTheOwnerAsUser(t *testing.T) {
 		for _, s := range visibleSessions(mockCaller{identity: who, source: "mock"}) {
 			row := s.(map[string]any)
 			sid := row["sessionID"].(string)
-			if owner := mockSessionACLs[sid].owner; row["user"] != owner {
+			seeded, _ := mockACLs.get(sid)
+			if owner := seeded.owner; row["user"] != owner {
 				t.Fatalf("%s: row %s has user %v but owner %s", who, sid, row["user"], owner)
 			}
 			if row["user"] == who {

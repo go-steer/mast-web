@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // attach-core/client — JavaScript consumer of mast / core-agent's
-// attach protocol (HTTP/SSE per spec v1.7.0). Replaces the phase-A
+// attach protocol (HTTP/SSE per spec v1.12.0). Replaces the phase-A
 // mock `mast` object the phase-A shell carried with a real backend
 // connection.
 //
@@ -40,6 +40,30 @@
 // advertised it since core-agent#670 without a bump, which the §2.1
 // additive rule permits.
 //
+// 2026-09-17 sync (docs/v0.5-plan.md): 1.7.0 → 1.12.0, five bumps, of
+// which two are behaviour changes rather than additions.
+//   1.8.0  — turn-error gains the `canceled` kind. Costs us nothing:
+//            nothing under web/ reads `retryable`.
+//   1.9.0  — configured-subagent rows carry optional `tools`. ABSENT
+//            MEANS UNKNOWN, not "granted nothing": it is omitted both
+//            by a pre-1.9.0 daemon and for a subagent with no grant.
+//   1.10.0 — GET/PATCH /sessions/{sid}/acl (#797), POST
+//            /sessions/{sid}/title (#808), `wake: false` on inject
+//            (#698), `prompt_id` on the inject/wake responses (#840),
+//            and `by`/`approver` on permission frames (#830).
+//   1.11.0 — AN INJECT NO LONGER RELEASES A HOLD (#878). Through
+//            1.10.0 it implicitly resumed, which is what kept a parked
+//            session recoverable from a client with no resume(). It
+//            does not any more, so this file has one — see resume().
+//   1.12.0 — `state: "running"` is finally reachable on GET /status
+//            and `turn_in_flight` arrives beside it (#896); subagent
+//            stop reports what it did rather than what was asked
+//            (#897). See stopSubagent() for what changed in `stopped`.
+//
+// Two of these routes have no feature flag upstream and are gated on
+// the negotiated version alone — see protocolAtLeast in protocol.js
+// for why probing is not a substitute for reading it.
+//
 // Depends on sibling modules (loaded ahead of this file by each shell):
 //   attach-core/errors.js    — PermanentStreamError, BackendDrainingError
 //   attach-core/protocol.js  — fanoutAgentFrame (legacy agent demux)
@@ -51,6 +75,12 @@
 //   POST /sessions/{sid}/inject                 → queue operator prompt
 //   POST /sessions/{sid}/wake                   → resume agent after inject
 //   POST /sessions/{sid}/interrupt               → cancel in-flight turn
+//   POST /sessions/{sid}/pause                  → park the loop (1.5.0)
+//   POST /sessions/{sid}/resume                 → release a hold (1.5.0)
+//   GET  /sessions/{sid}/acl                    → who else may reach it (1.10.0)
+//   PATCH /sessions/{sid}/acl                   → amend viewers/contributors
+//   POST /sessions/{sid}/title                  → rename a session (1.10.0)
+//   POST /sessions/{sid}/agents/{n}/stop        → halt one subagent
 //   GET  /sessions/{sid}/status                 → current state snapshot
 //   GET  /sessions/{sid}/tools                  → registered tools
 //   GET  /sessions/{sid}/agents                 → registered (live) agents
@@ -64,7 +94,7 @@
 // tells the SPA where <endpoint> is in the first place, so it is a
 // static on the class — see discoverConfig.
 //
-// SSE event types (per spec v1.7.0 §2):
+// SSE event types (per spec v1.12.0 §2):
 //   capabilities    — first frame; protocol_version + event_types +
 //                     server + (since 1.4.0) features / slash_commands
 //                     / agent / caller_id. Consumers cache the whole
@@ -115,6 +145,8 @@ window.AttachClient = (function () {
     (window.AttachCoreProtocol && window.AttachCoreProtocol.fanoutAgentFrame) || null;
   const emitsEvent = (window.AttachCoreProtocol && window.AttachCoreProtocol.emitsEvent) || null;
   const hasFeature = (window.AttachCoreProtocol && window.AttachCoreProtocol.hasFeature) || null;
+  const protocolAtLeast =
+    (window.AttachCoreProtocol && window.AttachCoreProtocol.protocolAtLeast) || null;
   const ReplayFilter = (window.AttachCoreReplay && window.AttachCoreReplay.ReplayFilter) || null;
   if (
     !PermanentStreamError ||
@@ -122,6 +154,7 @@ window.AttachClient = (function () {
     !fanoutAgentFrame ||
     !emitsEvent ||
     !hasFeature ||
+    !protocolAtLeast ||
     !ReplayFilter
   ) {
     throw new Error(
@@ -298,8 +331,23 @@ window.AttachClient = (function () {
     }
 
     async _post(path, body) {
+      return this._send('POST', path, body);
+    }
+
+    // PATCH exists for exactly one endpoint (the v1.10.0 ACL) and the
+    // verb is load-bearing there: an omitted list means "leave it
+    // alone" and `[]` means "clear it", which is a distinction PUT
+    // cannot make. Everything else about the exchange — the drain 503,
+    // the permanent-status classification, the tolerated empty body —
+    // is identical to a POST, so the two share one path rather than
+    // growing a second copy that drifts.
+    async _patch(path, body) {
+      return this._send('PATCH', path, body);
+    }
+
+    async _send(method, path, body) {
       const r = await fetch(this.endpoint + path, {
-        method: 'POST',
+        method,
         headers: { ...this._headers(), 'Content-Type': 'application/json' },
         body: body ? JSON.stringify(body) : null,
       });
@@ -313,7 +361,7 @@ window.AttachClient = (function () {
       }
       if (!r.ok) {
         const text = await r.text();
-        const msg = `POST ${path} → HTTP ${r.status}: ${text}`;
+        const msg = `${method} ${path} → HTTP ${r.status}: ${text}`;
         if (PermanentStreamError.isPermanentStatus(r.status)) {
           throw new PermanentStreamError(msg, r.status);
         }
@@ -637,12 +685,46 @@ window.AttachClient = (function () {
 
     // ─── Operator input ─────────────────────────────────────────────
 
-    async inject(message) {
-      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/inject', {
-        message,
-      });
+    // POST /sessions/{sid}/inject — queue an operator message.
+    //
+    // Response (v1.10.0): { injected, session, woke, prompt_id? }.
+    //
+    //   woke      — which delivery this actually got. Present on both
+    //               paths, so a client can confirm rather than infer.
+    //               ABSENT means a pre-1.10.0 daemon, which always woke.
+    //   prompt_id — the inbox id this message was filed under: the same
+    //               id that comes back on the `inbox` frame and
+    //               eventually names a turn on `turn-complete` (#840).
+    //               Omitted when the registrant can't name one, so a
+    //               caller has to handle its absence whatever it does
+    //               with it. Nothing consumes it yet — the only surface
+    //               with a correlation problem is the batch runner and
+    //               it doesn't have one (v0.5 plan OQ 3).
+    //
+    // `wake: false` (#698) queues without waking and needs a registrant
+    // that implements DeferredInjector — a daemon that can't defer
+    // answers 501 rather than waking anyway, because the caller asked
+    // for the one behaviour it can't get. Omitted entirely by default:
+    // the distinction upstream draws is "said nothing" vs. "said
+    // false", and a pre-1.10.0 daemon rejects an unknown key.
+    //
+    // What an inject no longer does, since v1.11.0 (#878): release a
+    // hold. Through 1.10.0 typing into a parked session implicitly
+    // resumed it; that shim is gone, so a message sent to a held
+    // session queues behind a gate that only resume() opens.
+    async inject(message, opts) {
+      const body = { message };
+      if (opts && opts.wake === false) body.wake = false;
+      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/inject', body);
     }
 
+    // POST /sessions/{sid}/wake — run the loop now.
+    //
+    // Response: { woken, prompt, prompt_id? }. A wake carrying a prompt
+    // IS an inject and reports `prompt_id` on the same terms; a bare
+    // wake queues nothing and reports nothing.
+    //
+    // Like inject, this does not open a closed gate.
     async wake(prompt) {
       const body = prompt ? { prompt } : {};
       return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/wake', body);
@@ -672,14 +754,21 @@ window.AttachClient = (function () {
     // screen saying a resume is owed. The spec's §4 requires producers to
     // keep honouring an explicit `hold: false` precisely so pre-1.5.0
     // clients can keep the old semantics — we are the client that has to
-    // ask. Offering a *deliberate* hold is go-steer/mast-web#70, and when
-    // that lands this flag becomes a parameter rather than a constant.
-    async interrupt() {
+    // ask.
+    //
+    // `interrupt({ hold: true })` is the deliberate version — cancel the
+    // turn AND park the loop, atomically — which is what an operator
+    // means by "stop and let me look". It stays opt-in and off by
+    // default: Stop is the gesture on screen today and it must keep
+    // meaning what it has always meant. The gate closes only where
+    // something also offers the way out of it (#70).
+    async interrupt(opts) {
+      const hold = !!(opts && opts.hold);
       const path = '/sessions/' + encodeURIComponent(this.sessionId) + '/interrupt';
       const r = await fetch(this.endpoint + path, {
         method: 'POST',
         headers: { ...this._headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hold: false }),
+        body: JSON.stringify({ hold }),
       });
       if (r.status === 412) {
         // Agent doesn't implement InterruptProvider. Not an error
@@ -710,10 +799,12 @@ window.AttachClient = (function () {
       // running_subagents, stopped_subagents}. Two reasons to read it:
       //
       //   - `paused` is the post-condition gate state, so it tells us
-      //     whether the hold: false above was actually honoured rather
-      //     than leaving us to trust it. A true here against our request
-      //     is a producer bug, and callers can say so instead of leaving
-      //     the operator with a silently wedged session.
+      //     whether the `hold` we sent was actually honoured rather than
+      //     leaving us to trust it. It disagreeing with what we asked
+      //     for is a producer bug either way round, and callers can say
+      //     so instead of leaving the operator with a session that is
+      //     silently wedged (true for a false) or silently running on
+      //     (false for a true).
       //   - `interrupted` is the same fact the header carries but with
       //     better semantics: it stays true while a cancelled turn is
       //     still unwinding, so an operator pressing Stop twice because
@@ -736,6 +827,168 @@ window.AttachClient = (function () {
         if (typeof body.paused === 'boolean') out.paused = body.paused;
       }
       return out;
+    }
+
+    // ─── The hold (spec v1.5.0 §4) ──────────────────────────────────
+    //
+    // Two routes, and until v1.11.0 a client could get away with
+    // neither. An inject used to release a hold as a side effect, so a
+    // session parked by anyone — another tab, an embedded core-tui, a
+    // scheduler, a cost ceiling — came back the moment an operator
+    // typed. #878 removed that shim on the grounds that "callers carry
+    // an identity, not a species", which is right and which makes
+    // resume() the only way out of a gate this client did not close.
+    //
+    // Gate the CONTROLS on supportsPause(), not on emitsPauseEvents():
+    // a server lists the `pause` event whether or not the agent behind
+    // it implements PauseController, and calling either route without
+    // one is a 501.
+
+    // POST /sessions/{sid}/pause — close the gate without touching the
+    // turn in flight. `reason` is shown verbatim to whoever finds the
+    // session later, so it is worth writing for them rather than for a
+    // log. Idempotent: `transitioned` is false when it was already
+    // held, which is a 200 and not a failure.
+    //
+    // Returns { session, paused, transitioned, state, since?, reason? }.
+    async pause(reason) {
+      const body = reason ? { reason } : {};
+      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/pause', body);
+    }
+
+    // POST /sessions/{sid}/resume — open the gate, with a disposition.
+    //
+    //   'continue' — carry on from where it stopped. The default, and
+    //                what an empty body means.
+    //   'steer'    — carry on, but with this correction injected first,
+    //                framed as an interrupt-steer so the model knows
+    //                its last turn was killed. `steer` text is
+    //                REQUIRED and non-empty; an empty one is a 400,
+    //                not a silent downgrade to continue.
+    //   'abandon'  — open the gate and drop the held work.
+    //
+    // Idempotent by design: `resumed: false` with a 200 means it wasn't
+    // paused, so two operator surfaces racing the same click don't
+    // produce a spurious failure.
+    //
+    // Returns { session, resumed, mode, state }. `mode` is the mode
+    // actually applied after defaulting, which is the one to report —
+    // an empty request comes back naming 'continue'.
+    async resume(mode, steer) {
+      const body = {};
+      if (mode) body.mode = mode;
+      if (steer) body.steer = steer;
+      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/resume', body);
+    }
+
+    // POST /sessions/{sid}/agents/{name}/stop — halt one background
+    // subagent. Interrupting the parent only cancels the parent's turn;
+    // a runaway loop inside a subagent survives every /interrupt an
+    // operator can send, which is why this route exists.
+    //
+    // Returns { session, agent, stopped, status? }.
+    //
+    // READ THE 200 AS "it is no longer running", and `stopped` only as
+    // "this call is what did it" (v1.12.0 #897). Through 1.11.0 the
+    // route could not tell "I stopped it" from "it had already
+    // finished" and answered true to both, so an operator stopping a
+    // subagent that completed thirty seconds earlier was told they had
+    // stopped it. `status` is what it terminated as, and is omitted by
+    // a pre-1.12.0 daemon rather than being empty for a live one.
+    //
+    // 404 means the manager has never registered that name — the
+    // operator aimed at something that does not exist. It is NOT the
+    // answer for a subagent that finished on its own.
+    async stopSubagent(name) {
+      return this._post(
+        '/sessions/' +
+          encodeURIComponent(this.sessionId) +
+          '/agents/' +
+          encodeURIComponent(name) +
+          '/stop',
+        {}
+      );
+    }
+
+    // ─── Sharing and naming (spec v1.10.0) ──────────────────────────
+
+    // GET /sessions/{sid}/acl — who else may reach this session.
+    // Returns { owner, viewers, contributors }; the two lists are never
+    // omitted, so `[]` genuinely means nobody rather than "unreported".
+    //
+    // Gated on ActionSessionAdmin — owner or admin — and the READ is
+    // gated as hard as the write on purpose: the ACL names the other
+    // people who can see an incident, and letting a contributor
+    // enumerate their co-responders is a disclosure the matrix doesn't
+    // otherwise grant. So a share dialog can only ever be populated
+    // for a session you own.
+    //
+    // A caller who may not administer it gets 404, not 403 — upstream
+    // makes an unauthorized session indistinguishable from a missing
+    // one on purpose. Which means you cannot feature-detect this route
+    // by trying it: ask supportsACL() first.
+    async getACL() {
+      return this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/acl');
+    }
+
+    // PATCH /sessions/{sid}/acl — amend the lists.
+    //
+    // A PATCH and not a PUT because omitted and empty have to stay
+    // different: a field you don't send is left alone, and `[]` clears
+    // it. Sending only `{contributors: [...]}` through a PUT-shaped
+    // endpoint would wipe the viewers somebody set last week.
+    //
+    // `viewers` and `contributors` are different words for different
+    // grants and must not be collapsed in the UI that calls this:
+    // a viewer can watch, a contributor can write into the session.
+    // Contributors is the escalation case the endpoint was filed for —
+    // a watcher agent opens a session, pages a human, and the human's
+    // reply arrives under their own identity and has to be allowed to
+    // land.
+    //
+    // Owner is deliberately not a parameter. The endpoint accepts the
+    // key only so it can refuse it with a reason; transfer is not a
+    // thing this API does, and quietly dropping the field would let a
+    // caller go on believing it is.
+    //
+    // Returns the stored result, so render the echo rather than what
+    // you sent.
+    async patchACL(patch) {
+      const body = {};
+      if (patch && Array.isArray(patch.viewers)) body.viewers = patch.viewers;
+      if (patch && Array.isArray(patch.contributors)) body.contributors = patch.contributors;
+      return this._patch('/sessions/' + encodeURIComponent(this.sessionId) + '/acl', body);
+    }
+
+    // POST /sessions/{sid}/title — rename a session.
+    //
+    // The `title` key is REQUIRED, and "clear it" and "leave it alone"
+    // are different requests: `""` clears the name and re-arms
+    // inference, an omitted key is a 400. So this method takes the
+    // string and always sends it, including the empty one — which is
+    // why it does not have an `if (title)` guard like wake() does.
+    //
+    // Returns { session, title, persisted, detail? }.
+    //
+    //   title     — what was STORED, after normalization (a 60-rune cap
+    //               and a decorative-quote strip). Render this, not the
+    //               string you sent; they differ often enough.
+    //   persisted — whether the name survives a restart. FALSE IS NOT
+    //               AN ERROR and is in fact the norm: a session with no
+    //               ACL row has nowhere durable to write, and the
+    //               rename did take effect for as long as the process
+    //               lives. `detail` distinguishes the other case — a
+    //               store that was wired and failed — and is the only
+    //               one worth telling an operator about.
+    //
+    // 501 when the registrant has no title capability, which unlike the
+    // ACL's 404 IS safe to feature-detect on. Gated on
+    // ActionSessionWrite rather than Admin: a title is a display
+    // string, not an authorization decision.
+    async setTitle(title) {
+      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/title', {
+        title: typeof title === 'string' ? title : '',
+      });
     }
 
     // ─── Read-only inspection ───────────────────────────────────────
@@ -795,9 +1048,15 @@ window.AttachClient = (function () {
     //
     // Thin reads over the cached capabilities frame. They exist as
     // named methods rather than inline `client.capabilities.features &&
-    // ...` at each call site because the two questions below look
+    // ...` at each call site because the questions below look
     // interchangeable and are not, and a name is the cheapest place to
     // put that distinction where someone will see it.
+    //
+    // Three questions, not two, since v1.10.0: does the stream carry
+    // it (emitsEvent), did the backend flag it (hasFeature), and is the
+    // route even there (protocolAtLeast). The last one is not a nicety
+    // — the ACL and title endpoints have no feature flag upstream to
+    // read, so the version is all there is.
 
     // Will pause state arrive on the stream? Gate RENDERING on this.
     emitsPauseEvents() {
@@ -811,6 +1070,34 @@ window.AttachClient = (function () {
     // themselves are #70.)
     supportsPause() {
       return hasFeature(this.capabilities, 'pause');
+    }
+
+    // Is the negotiated protocol at least `want`? The raw version
+    // question, exposed because callers outside this file need it for
+    // routes nobody flagged.
+    protocolAtLeast(want) {
+      return protocolAtLeast(this.capabilities, want);
+    }
+
+    // Can this session's ACL be read and amended? Version only —
+    // core-agent ships no `acl` feature flag, and the route's 404 for
+    // an unauthorized caller means trying it tells you nothing (an old
+    // server and somebody else's session answer identically).
+    //
+    // A true here is not a promise that the call will succeed: it says
+    // the route exists, not that you administer this session. The
+    // share gesture belongs on sessions you own, which the browser
+    // already derives — see state/daemons.js ownership().
+    supportsACL() {
+      return protocolAtLeast(this.capabilities, '1.10.0');
+    }
+
+    // Can this session be renamed? Version for the route, and then the
+    // call's own 501 for whether the registrant implements it — unlike
+    // the ACL, title's refusal is honest about being a capability gap,
+    // so a caller may reasonably try and handle the 501.
+    supportsTitle() {
+      return protocolAtLeast(this.capabilities, '1.10.0');
     }
 
     // Can the operator read and reset a tripped watchdog without
@@ -881,10 +1168,20 @@ window.AttachClient = (function () {
     // LIVE roster of subagent instances that have actually run).
     // Always 200; empty array when the agent has no
     // SubagentCatalogProvider. Each entry:
-    //   { name, description?, model?, root?, modes }
+    //   { name, description?, model?, root?, modes, tools? }
     // modes elements are 'sync' | 'async' (async-only for sessions
     // created via POST /sessions, since core-agent#741).
-    // See core-agent pkg/attach/handlers.go:759-770.
+    //
+    // `tools` (v1.9.0, core-agent#768) is the specialist's own grant,
+    // and ABSENT MEANS UNKNOWN RATHER THAN NONE. It is omitted by a
+    // pre-1.9.0 daemon and equally by one describing a subagent
+    // configured with no tools of its own, so a renderer that prints
+    // "no tools" for a missing key is guessing — and guessing wrong
+    // against every older backend. The three the runtime wires into
+    // every subagent regardless (return_result, report_alert,
+    // schedule_next_turn) are never listed: they are a property of the
+    // runtime, not of this configuration.
+    // See core-agent pkg/attach/handlers.go:759-770, state.go:120-135.
     async listConfiguredSubagents() {
       const out = await this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/subagents');
       return out.subagents || [];

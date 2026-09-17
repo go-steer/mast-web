@@ -62,7 +62,7 @@ window.MastState.createSession = (function () {
     endpoint: '/',
     label: '',
 
-    // capabilities first-frame (spec v1.7.0). Null until the server
+    // capabilities first-frame (spec v1.12.0). Null until the server
     // sends it; consumers should treat null as "backend hasn't
     // advertised yet" and fall through to defaults.
     capabilities: null,
@@ -75,6 +75,23 @@ window.MastState.createSession = (function () {
       turnState: 'idle',
       contextPct: null,
       permMode: '',
+      // Is a turn executing right now? (spec v1.12.0 §GET /status,
+      // core-agent#896.) Deliberately NOT folded into turnState, and
+      // deliberately not the same fact as `pause.paused`.
+      //
+      // Upstream's `state` is one field and pause outranks running in
+      // it, so a session parked mid-turn reports "paused" while the
+      // turn the park interrupted is still executing. That window is
+      // exactly the one an operator needs to see — a hold banner over
+      // 226 more seconds of turn is the bug this came from — and it is
+      // unrepresentable in a single field. Two fields, therefore: the
+      // gate, and whether anything is still running behind it.
+      //
+      // Poll-only. It rides on GET /sessions/{sid}/status and NOT on
+      // the status-update SSE frame, which maps it into
+      // turn_state:'streaming' at the source. Set through
+      // applyStatusSnapshot; a status-update never touches it.
+      turnInFlight: false,
     },
 
     // Cumulative usage from usage-update events + the per-turn
@@ -296,6 +313,33 @@ window.MastState.createSession = (function () {
       });
     }
 
+    // applyStatusSnapshot consumes a GET /sessions/{sid}/status body —
+    // the poll, not the SSE frame. The two surfaces do not carry the
+    // same fields and conflating them is how a client ends up reading
+    // a key that is never there:
+    //
+    //   status-update (SSE) — model / provider / turn_state /
+    //     context_pct, plus the pause projection. No turn_in_flight:
+    //     the broadcaster maps it into turn_state:'streaming' before
+    //     the frame leaves (broadcaster.go:620).
+    //   GET /status         — StatusInfo: state / turn_in_flight /
+    //     the pause fields. The only surface carrying the bool, and
+    //     the only way a client attaching to an already-held session
+    //     learns about a transition that predates it.
+    //
+    // So this routes the shared half through applyPauseStatus (settle
+    // window and all) and takes turn_in_flight from here alone.
+    // Omitted means false: the field is `omitempty` on a bool, so a
+    // 1.12.0 daemon with no turn running sends nothing, and treating
+    // absence as "unknown, leave it" would pin a stale true forever.
+    // A pre-1.12.0 daemon is the same shape and the same answer — it
+    // never reported one, which is not a claim that one is running.
+    function applyStatusSnapshot(status) {
+      const st = status || {};
+      applyPauseStatus(st);
+      patchStatus({ turnInFlight: !!st.turn_in_flight });
+    }
+
     // recordWake consumes a `wake` frame (v1.7.0 §2.9). Timestamp only,
     // by design — see the note on lastWakeAt.
     function recordWake(at) {
@@ -383,6 +427,7 @@ window.MastState.createSession = (function () {
       setWhoami,
       applyPauseEvent,
       applyPauseStatus,
+      applyStatusSnapshot,
       recordWake,
       setSessions,
       setCurrentSession,

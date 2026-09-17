@@ -291,7 +291,7 @@ func TestMock_InjectEmitsWake(t *testing.T) {
 	frames, closeStream := openStream(t, srv, "smoke-session")
 	defer closeStream()
 
-	postJSON(t, srv, "/sessions/smoke-session/inject", `{"text": "hello"}`)
+	postJSON(t, srv, "/sessions/smoke-session/inject", `{"message": "hello"}`)
 
 	fr := awaitFrame(t, frames, "wake")
 	// The payload is deliberately just a timestamp: a wake says "look
@@ -317,7 +317,7 @@ func TestMock_PauseEventIsScopedToItsSession(t *testing.T) {
 	// before it on the server, so by the time the wake lands a leaked
 	// pause would already have landed too — reading until the marker
 	// and failing on a pause along the way is a real check, not a race.
-	postJSON(t, srv, "/sessions/ops-triage/inject", `{"text": "marker"}`)
+	postJSON(t, srv, "/sessions/ops-triage/inject", `{"message": "marker"}`)
 
 	deadline := time.After(3 * time.Second)
 	for {

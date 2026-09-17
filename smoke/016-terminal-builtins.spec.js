@@ -239,6 +239,7 @@ test.describe('smoke: 016-terminal-builtins', () => {
       '/pause',
       '/continue',
       '/abandon',
+      '/share',
       '/model',
       '/usage',
       '/whoami',
@@ -262,6 +263,10 @@ test.describe('smoke: 016-terminal-builtins', () => {
   // Fixture 005 declares mcp:false and says nothing about guardrails,
   // so it covers both halves of the rule at once: an explicit false
   // hides, and an absent key stays on (protocol §2.1, additive).
+  //
+  // It also negotiates 1.4.0, which makes it the version gate's case
+  // too: /share's route landed in 1.10.0 and no feature flag mentions
+  // it, so the version is the only thing that can hide it (#91).
   test.describe('capability gating', () => {
     const GATED = '005-capabilities-forward-compat';
 
@@ -270,9 +275,12 @@ test.describe('smoke: 016-terminal-builtins', () => {
       await run(page, screen, '/help');
       const help = screen.locator('.message.system').last();
 
-      await expect(help).toContainText('Not supported by this backend: /mcp');
+      await expect(help).toContainText(
+        'Not supported by this backend: /mcp, /pause, /continue, /abandon, /share'
+      );
       // Named in the footer, absent from the list itself.
       await expect(help).not.toContainText('MCP servers and what each contributes');
+      await expect(help).not.toContainText('Who else may reach this session');
       // Absent from `features` entirely, so still on.
       await expect(help).toContainText('/guardrails');
       // Explicitly true.

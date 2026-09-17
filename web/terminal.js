@@ -44,8 +44,8 @@
 // externally-driven turns, the hold — banner, controls, and steer
 // (v1.5.0 §2.8) — and the client-side built-in slash commands: /help,
 // /clear, /export, /tools, /mcp, /subagents, /specialists, /sessions,
-// /guardrails, /pause, /continue, /abandon, /model, /usage, /whoami —
-// each of them gated on what the backend says it can serve.
+// /guardrails, /pause, /continue, /abandon, /share, /model, /usage,
+// /whoami — each of them gated on what the backend says it can serve.
 //
 // The commands that act on the window rather than on a session —
 // /theme, /layout, /attach, /batch, /shortcuts — are not here, and are
@@ -2024,6 +2024,175 @@ window.MastTerminal = (function () {
       ]);
     }
 
+    // /share [viewer|contributor <identity>] | [revoke <identity>]
+    // — who else may reach this session (v1.10.0 ACL, core-agent#797).
+    //
+    // ─── Why this is a command and not a sidebar dialog ──────────────
+    //
+    // v0.5 plan OQ 1 asked sidebar or palette, and named the sidebar as
+    // the place per-session gestures live (delete is there). The answer
+    // is the palette — meaning here, in the table every shell's palette
+    // reads — and it is forced by the two facts the route carries:
+    //
+    //   1. The ACL is session-scoped, and the sidebar's client is not.
+    //      One AttachClient per DAEMON does the listing; the session id
+    //      belongs to the panel.
+    //   2. The gate is the negotiated protocol version, and the version
+    //      only exists in a `capabilities` frame — core-agent stamps
+    //      X-Attach-Protocol-Version on /events and on nothing else
+    //      (pkg/attach/protocol.go:95, the only caller). A sidebar row
+    //      for a session nobody has opened has never seen one.
+    //
+    // So the sidebar would have to guess on both counts, and the plan
+    // is explicit that guessing here means feature-detecting on a 404,
+    // which for this route cannot be done: denial and "no such route"
+    // are the same status by design. A panel has a bound session and a
+    // negotiated version, so the gate is a fact rather than a guess.
+    // One gesture, listed once, in both shells' palettes.
+    //
+    // The ownership rule falls out rather than being enforced twice:
+    // both verbs are ActionSessionAdmin, so a session you do not own
+    // 404s, and with the version already known that 404 has exactly one
+    // remaining meaning — which is what the miss below says.
+    //
+    // Viewer and contributor stay different words, here and on the
+    // wire. A viewer watches; a contributor writes into the session,
+    // which is the escalation case the endpoint was filed for: a
+    // watcher agent pages a human and the human's reply arrives under
+    // their own identity and has to be allowed to land.
+    const SHARE_ROLES = { viewer: 'viewers', contributor: 'contributors' };
+
+    const SHARE_USAGE =
+      '/share to see who it is shared with, ' +
+      '/share viewer <identity> or /share contributor <identity> to grant, ' +
+      '/share revoke <identity> to take it back.';
+
+    function shareMiss(e, prefix) {
+      // 404 is the ACL's denial as well as its absence, but the command
+      // is version-gated, so the absence is already ruled out: what is
+      // left is a session this caller does not administer (or one that
+      // has just been deleted). Saying that is the whole value of
+      // having gated on the version rather than on a probe.
+      if (e && e.status === 404) {
+        return (
+          'Only the owner can see or change who a session is shared with — ' +
+          'this one is not yours, or it is gone.'
+        );
+      }
+      return describeError(e, prefix);
+    }
+
+    function renderACL(acl, note) {
+      const me = (sess().whoami || {}).identity || '';
+      const list = (names) =>
+        (names || []).map((n) => ({ name: n, tags: n && n === me ? ['you'] : [] }));
+      const viewers = (acl && acl.viewers) || [];
+      const contributors = (acl && acl.contributors) || [];
+      const owner = (acl && acl.owner) || '(unreported)';
+      renderList(
+        'Shared: ' + (sess().currentSession || 'this session'),
+        [
+          { header: `Viewers (${viewers.length})`, items: list(viewers) },
+          { header: `Contributors (${contributors.length})`, items: list(contributors) },
+        ],
+        {
+          summary:
+            'owner ' +
+            owner +
+            (owner === me ? ' (you)' : '') +
+            ' · viewers watch, contributors can also send turns' +
+            (note ? ' · ' + note : ''),
+        }
+      );
+    }
+
+    async function cmdShare(args) {
+      const verb = (args[0] || '').toLowerCase();
+      // An identity is one token, but a paste with a stray space should
+      // not become "no identity given" — join and trim rather than
+      // reading args[1] and ignoring the rest.
+      const who = args.slice(1).join(' ').trim();
+
+      if (!verb) {
+        try {
+          renderACL(await client.getACL());
+        } catch (e) {
+          addSystemMessage(shareMiss(e, '/share failed: '));
+        }
+        return;
+      }
+      const revoking = verb === 'revoke';
+      if (!revoking && !SHARE_ROLES[verb]) {
+        addSystemMessage('Unknown /share verb "' + verb + '". ' + SHARE_USAGE);
+        return;
+      }
+      if (!who) {
+        addSystemMessage('Who? /share ' + verb + ' <identity>');
+        return;
+      }
+
+      // Read-modify-write, and only the lists that actually change go
+      // in the PATCH: the fields are pointers upstream so an omitted
+      // one is left alone and `[]` clears it, and sending a list we did
+      // not touch would hand a stale snapshot back to the server — to
+      // an authorization decision, which is the worst place to lose a
+      // concurrent edit.
+      let acl;
+      try {
+        acl = await client.getACL();
+      } catch (e) {
+        addSystemMessage(shareMiss(e, '/share failed: '));
+        return;
+      }
+      if (who === (acl && acl.owner)) {
+        addSystemMessage('The owner already has every grant, and cannot be demoted or removed.');
+        return;
+      }
+
+      const before = {
+        viewers: ((acl && acl.viewers) || []).slice(),
+        contributors: ((acl && acl.contributors) || []).slice(),
+      };
+      const after = {
+        viewers: before.viewers.filter((n) => n !== who),
+        contributors: before.contributors.filter((n) => n !== who),
+      };
+      // A grant is a grant, not a second one: moving somebody from
+      // viewer to contributor takes them out of the list they were in.
+      // Both lists satisfy Read upstream, so an identity in both is a
+      // display that says two things about one permission.
+      if (!revoking) after[SHARE_ROLES[verb]].push(who);
+
+      const patch = {};
+      const changed = [];
+      ['viewers', 'contributors'].forEach((k) => {
+        if (before[k].length === after[k].length && before[k].every((n, i) => n === after[k][i])) {
+          return;
+        }
+        patch[k] = after[k];
+        changed.push(k);
+      });
+      if (changed.length === 0) {
+        addSystemMessage(
+          revoking
+            ? who + ' was not on the ACL — nothing to revoke.'
+            : who + ' is already a ' + verb + '.'
+        );
+        return;
+      }
+
+      try {
+        // Render the echo, not what we sent: the 200 answers with what
+        // was stored.
+        renderACL(
+          await client.patchACL(patch),
+          revoking ? 'revoked ' + who : who + ' is now a ' + verb
+        );
+      } catch (e) {
+        addSystemMessage(shareMiss(e, '/share failed: '));
+      }
+    }
+
     // /model — what this session is running. Read-only because there is
     // nothing to write to: verified again 2026-09-12, core-agent has no
     // model-switch endpoint (pkg/attach/handlers_operator.go), and the
@@ -2273,10 +2442,11 @@ window.MastTerminal = (function () {
     }
 
     // The table. `feature` names the capability flag a command needs;
-    // `offline` marks the ones that don't need a backend at all;
-    // `midTurn` marks the ones that may be typed while a turn is
-    // running; `aliases` are extra spellings that dispatch but are not
-    // listed separately.
+    // `minVersion` the protocol version its route landed in, for the
+    // routes nobody flagged; `offline` marks the ones that don't need a
+    // backend at all; `midTurn` marks the ones that may be typed while
+    // a turn is running; `aliases` are extra spellings that dispatch
+    // but are not listed separately.
     //
     // Commands with no `feature` are ungated because there is nothing
     // to gate them on — `features` has no key for a tool catalog or an
@@ -2339,11 +2509,17 @@ window.MastTerminal = (function () {
         feature: 'guardrails',
         run: cmdGuardrails,
       },
+      // Both gates, and they catch different backends: `features.pause`
+      // is a 1.5.0+ server whose agent implements no PauseController,
+      // and the version is a server old enough to have no /pause route
+      // at all — where the absent flag would otherwise read as on
+      // (§2.1) and offer three commands that can only 404.
       {
         name: 'pause',
         usage: '/pause [reason]',
         help: 'Hold the loop — no new turn starts until it is released',
         feature: 'pause',
+        minVersion: '1.5.0',
         midTurn: true,
         run: cmdPause,
       },
@@ -2353,6 +2529,7 @@ window.MastTerminal = (function () {
         usage: '/continue',
         help: 'Release a hold and carry on (alias /cont)',
         feature: 'pause',
+        minVersion: '1.5.0',
         midTurn: true,
         run: cmdContinue,
       },
@@ -2361,8 +2538,19 @@ window.MastTerminal = (function () {
         usage: '/abandon',
         help: 'Release a hold and drop the held work',
         feature: 'pause',
+        minVersion: '1.5.0',
         midTurn: true,
         run: cmdAbandon,
+      },
+      {
+        name: 'share',
+        usage: '/share [viewer|contributor <identity> | revoke <identity>]',
+        help: 'Who else may reach this session',
+        // Version, not a feature flag: core-agent ships no `acl` key,
+        // and the route's 404 covers both "old server" and "not yours"
+        // so a probe answers nothing. See cmdShare.
+        minVersion: '1.10.0',
+        run: cmdShare,
       },
       { name: 'model', usage: '/model', help: 'Model this session is running', run: cmdModel },
       { name: 'usage', usage: '/usage', help: 'Session token + cost totals', run: cmdUsage },
@@ -2415,9 +2603,17 @@ window.MastTerminal = (function () {
     // Absent `features` map, or absent key within it, means on: the
     // protocol's §2.1 additive rule, and the reason a 2026-02 backend
     // doesn't lose /mcp for never having heard of the flag.
+    // `minVersion` is the third question and it fails the other way
+    // round: an absent flag means on (a producer that predates the
+    // flag still has the feature), but an absent or older version
+    // means off (a producer that predates the route does not have it).
+    // Both gates apply when a row carries both.
     function available(b) {
-      if (!b.feature) return true;
       const P = window.AttachCoreProtocol;
+      if (b.minVersion && P && P.protocolAtLeast) {
+        if (!P.protocolAtLeast(sess().capabilities, b.minVersion)) return false;
+      }
+      if (!b.feature) return true;
       return !P || !P.hasFeature ? true : P.hasFeature(sess().capabilities, b.feature);
     }
 

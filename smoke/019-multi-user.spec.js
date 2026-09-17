@@ -45,7 +45,7 @@ const BOB = 'bob@example.com';
 // the same reason the other helpers do it: a saved tab layout would
 // restore sessions this case did not ask for — and in this file that
 // could mean restoring a tab the operator is not allowed to have.
-async function visitAs(page, baseURL, who) {
+async function visitAs(page, baseURL, who, fixture) {
   await page.context().addCookies([{ name: 'mock_caller', value: who, url: baseURL }]);
   await page.addInitScript(() => {
     try {
@@ -54,11 +54,39 @@ async function visitAs(page, baseURL, who) {
       /* blocked storage — the shell falls back to same-origin anyway */
     }
   });
-  await page.goto('/solo.html');
+  await page.goto(fixture ? `/solo.html?fixture=${encodeURIComponent(fixture)}` : '/solo.html');
   await expect(page.locator('.side-session').first()).toBeVisible();
 }
 
+// The sharing cases pass one. Without it, mock.go's sessionFixtures
+// gives ops-triage and repo-indexer old conformance captures (1.2.0,
+// 1.4.0) — and /share is gated on 1.10.0, so the panel correctly
+// refuses it. That gate is 016's business; here the fixture only has
+// to be a backend new enough to have the route, and which transcript
+// is on screen has nothing to do with who is on the roster.
+const MODERN = '001-happy-turn';
+
 const rowFor = (page, sid) => page.locator(`.side-session[title*="${sid}"]`);
+
+// Type into whichever panel is in front. The ACL gestures are terminal
+// commands (see cmdShare's note on why the sidebar cannot honestly own
+// them), so a sharing case has to open a session first.
+async function run(page, command) {
+  const input = page.locator('#solo-body .term:visible .term-prompt');
+  await input.fill(command);
+  await input.press('Enter');
+}
+
+const lastOutput = (page) => page.locator('#solo-body .term:visible .message.system').last();
+
+// The ACL is mutable now, so it is state a case can leave behind — and
+// an ACL leaking into the next spec would hand somebody a session they
+// are supposed to be unable to see, which is the one thing this file
+// exists to catch.
+test.beforeEach(async ({ page }) => {
+  const res = await page.request.delete('/_mock/share-state');
+  expect(res.ok()).toBeTruthy();
+});
 
 test.describe('two operators on one daemon', () => {
   // The one that matters. Everything else here is presentation; this is
@@ -139,6 +167,77 @@ test.describe('two operators on one daemon', () => {
     await rowFor(page, 'docs-writer').click();
     await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
     await expect(page.locator('#hud-identity')).toHaveText(`${BOB} (via mock)`);
+  });
+
+  // ─── Sharing (#91) ───────────────────────────────────────────────
+  //
+  // The case this file was built for and could not make until the ACL
+  // had a write verb: bob cannot see a session, smoke@ shares it, bob
+  // can. Both halves are asserted in one test on purpose — a grant
+  // that is never read back from the other identity is a grant that
+  // proves only that a PATCH returned 200.
+  test('a granted session appears in the other operator’s roster', async ({ page, baseURL }) => {
+    await visitAs(page, baseURL, SMOKE, MODERN);
+    await expect(page.locator('.side-session')).toHaveCount(4);
+
+    // repo-indexer is smoke@'s, and bob has never been able to see it.
+    await rowFor(page, 'repo-indexer').click();
+    await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
+
+    // "(you)" is only sayable once /whoami has landed, and it arrives
+    // in the background after the capabilities frame — so wait for the
+    // HUD slot rather than race it.
+    await expect(page.locator('#hud-identity')).toHaveText(`${SMOKE} (via mock)`);
+
+    await run(page, '/share');
+    await expect(lastOutput(page)).toContainText(`owner ${SMOKE} (you)`);
+    await expect(lastOutput(page)).toContainText('Viewers (0)');
+
+    // Contributor, not viewer: the escalation grant, and the whole
+    // reason the two words stay separate through the UI.
+    await run(page, `/share contributor ${BOB}`);
+    await expect(lastOutput(page)).toContainText(`${BOB} is now a contributor`);
+    await expect(lastOutput(page)).toContainText('Contributors (1)');
+
+    // Now be bob. The roster is filtered by the server per caller, so
+    // this is the assertion with teeth: three rows where there were
+    // two, and the new one is the session that was just granted.
+    await visitAs(page, baseURL, BOB, MODERN);
+    await expect(page.locator('.side-session')).toHaveCount(3);
+    await expect(rowFor(page, 'repo-indexer')).toBeVisible();
+    // Shared, not his — derived from `user`, which the grant did not
+    // change and must not appear to have changed.
+    await expect(rowFor(page, 'repo-indexer')).toHaveAttribute('data-own', 'shared');
+    await expect(page.locator('[aria-label="Delete session repo-indexer"]')).toHaveCount(0);
+  });
+
+  test('revoking takes the session back out of their roster', async ({ page, baseURL }) => {
+    await visitAs(page, baseURL, SMOKE, MODERN);
+    // ops-triage is seeded with bob as a viewer, so this one starts
+    // from a grant somebody else made rather than one this test did.
+    await rowFor(page, 'ops-triage').click();
+    await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
+    await run(page, `/share revoke ${BOB}`);
+    await expect(lastOutput(page)).toContainText(`revoked ${BOB}`);
+    await expect(lastOutput(page)).toContainText('Viewers (0)');
+
+    await visitAs(page, baseURL, BOB, MODERN);
+    await expect(rowFor(page, 'ops-triage')).toHaveCount(0);
+    await expect(page.locator('.side-session')).toHaveCount(1);
+  });
+
+  // Both ACL verbs are ActionSessionAdmin and denial is a 404, so a
+  // session somebody shared with you cannot even be inspected. The
+  // command is version-gated rather than probe-gated precisely so this
+  // 404 has one meaning left, and can be reported as the one it has.
+  test('a shared session will not tell its guest who else is on it', async ({ page, baseURL }) => {
+    await visitAs(page, baseURL, BOB, MODERN);
+    await rowFor(page, 'ops-triage').click();
+    await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
+
+    await run(page, '/share');
+    await expect(lastOutput(page)).toContainText('Only the owner can see or change');
+    await expect(lastOutput(page)).not.toContainText(SMOKE);
   });
 
   // Creating a session is what makes you its owner, so the affordance

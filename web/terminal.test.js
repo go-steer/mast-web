@@ -34,6 +34,11 @@ const load = (rel) => new Function('window', readFileSync(join(here, rel), 'utf8
 // stubbing it is enough to run every built-in end to end.
 function stubClient() {
   const calls = [];
+  // The ACL is stored rather than fixed, because the endpoint's own
+  // contract is that a PATCH echoes what was STORED — a stub that
+  // answered with the request body would let a command that renders
+  // its own optimism pass.
+  const acl = { owner: 'alice@example.com', viewers: ['bob@example.com'], contributors: [] };
   const record =
     (name, value) =>
     async (...args) => {
@@ -91,6 +96,26 @@ function stubClient() {
       state: 'running',
     })),
     getStatus: record('getStatus', { state: 'paused', turn_in_flight: false }),
+    // The 1.10.0 ACL. Both lists are always present on the wire, so
+    // they are always present here.
+    acl,
+    getACL: record('getACL', () => ({
+      owner: acl.owner,
+      viewers: acl.viewers.slice(),
+      contributors: acl.contributors.slice(),
+    })),
+    patchACL: record('patchACL', (patch) => {
+      // Absent means leave alone, which is the half of PATCH a PUT
+      // would lose — modelled here so a caller that sends a list it
+      // did not touch is not silently indistinguishable.
+      if (patch && Array.isArray(patch.viewers)) acl.viewers = patch.viewers.slice();
+      if (patch && Array.isArray(patch.contributors)) acl.contributors = patch.contributors.slice();
+      return {
+        owner: acl.owner,
+        viewers: acl.viewers.slice(),
+        contributors: acl.contributors.slice(),
+      };
+    }),
     protocolAtLeast: () => true,
     _post: record('_post', { _render: 'text', body: 'ok' }),
     disconnect() {},
@@ -101,7 +126,13 @@ function stubClient() {
 // redraw when it lands (refreshTurnInFlight).
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-function mount({ features, slashCommands, commands } = {}) {
+// The version the mock speaks, and the one the version-gated rows in
+// the table are written against. A test that wants an older backend
+// passes `protocol` — that is the whole difference between a daemon
+// with the 1.10.0 ACL routes and one without.
+const WIRE_VERSION = '1.12.0';
+
+function mount({ features, slashCommands, commands, protocol } = {}) {
   const client = stubClient();
   globalThis.AttachClient = function (opts) {
     // Keep the frame sink the terminal handed us, so a test can push a
@@ -117,6 +148,7 @@ function mount({ features, slashCommands, commands } = {}) {
   document.body.appendChild(term.el);
   term.connection.setState('connected');
   term.session.setCapabilities({
+    protocol_version: protocol === undefined ? WIRE_VERSION : protocol,
     features: features,
     slash_commands: slashCommands || [],
   });
@@ -722,6 +754,19 @@ describe('MastTerminal built-ins', () => {
       expect(client.calls.map((c) => c.name)).not.toContain('resume');
     });
 
+    // The other half of the same gate. A pre-1.5.0 server has no
+    // /pause route and no `pause` flag either, and an absent flag
+    // reads as on — so without the version the three commands would be
+    // offered to a backend that can only 404 at them.
+    it('is not offered by a backend that predates the route', async () => {
+      const { term, client, text } = mount({ protocol: '1.4.0' });
+      await term.submit('/help');
+      expect(text()).toContain('/pause, /continue, /abandon');
+      await term.submit('/pause');
+      expect(text()).toContain('/pause is not supported by this backend.');
+      expect(client.calls).toEqual([]);
+    });
+
     // resumed:false with a 200 is the idempotent answer from two
     // surfaces racing the same click, not a failure.
     it('reports a resume that found no hold, without claiming one', async () => {
@@ -743,6 +788,144 @@ describe('MastTerminal built-ins', () => {
       expect(text()).toContain('Resume failed');
       expect(hold().hidden).toBe(false);
       expect(term.state.paused).toBe(true);
+    });
+  });
+
+  // ─── /share (#91) ──────────────────────────────────────────────────
+  //
+  // The three things the ACL contract makes easy to get wrong, and
+  // which are therefore what this block is about: the gate is the
+  // protocol version and not a probe, a PATCH sends only the lists it
+  // touched, and viewer and contributor are two grants rather than one
+  // with a volume knob.
+  describe('/share', () => {
+    const lastPatch = (client) =>
+      client.calls.filter((c) => c.name === 'patchACL').map((c) => c.args[0]);
+
+    it('lists the owner and both grants, counted separately', async () => {
+      const { term, text } = mount();
+      await term.submit('/share');
+      expect(text()).toContain('owner alice@example.com');
+      expect(text()).toContain('Viewers (1)');
+      expect(text()).toContain('bob@example.com');
+      expect(text()).toContain('Contributors (0)');
+      // An empty list is a fact, not an absence — renderList prints it.
+      expect(text()).toContain('(none)');
+    });
+
+    it('marks the caller, so "owner" answers "is that me"', async () => {
+      const { term, text } = mount();
+      term.session.setWhoami({ identity: 'alice@example.com' });
+      await term.submit('/share');
+      expect(text()).toContain('owner alice@example.com (you)');
+    });
+
+    it('grants a viewer by sending only the list it touched', async () => {
+      const { term, client, text } = mount();
+      await term.submit('/share viewer carol@example.com');
+      expect(lastPatch(client)).toEqual([{ viewers: ['bob@example.com', 'carol@example.com'] }]);
+      // Contributors is absent rather than `[]`: this edit has nothing
+      // to say about it, and `[]` would clear it.
+      expect(Object.keys(lastPatch(client)[0])).toEqual(['viewers']);
+      expect(text()).toContain('carol@example.com is now a viewer');
+    });
+
+    it('promotes rather than double-lists, and says both lists changed', async () => {
+      const { term, client, text } = mount();
+      await term.submit('/share contributor bob@example.com');
+      expect(lastPatch(client)).toEqual([{ viewers: [], contributors: ['bob@example.com'] }]);
+      expect(text()).toContain('Viewers (0)');
+      expect(text()).toContain('Contributors (1)');
+      expect(text()).toContain('bob@example.com is now a contributor');
+    });
+
+    it('renders what was stored, not what was sent', async () => {
+      const { term, client, text } = mount();
+      // A server that normalizes — here, by refusing to keep anybody at
+      // all. Rendering the request would claim carol is a viewer.
+      client.patchACL = async () => ({ owner: 'alice@example.com', viewers: [], contributors: [] });
+      await term.submit('/share viewer carol@example.com');
+      expect(text()).toContain('Viewers (0)');
+      expect(text()).not.toContain('carol@example.com\n');
+    });
+
+    it('revokes from whichever list the identity was in', async () => {
+      const { term, client, text } = mount();
+      await term.submit('/share revoke bob@example.com');
+      expect(lastPatch(client)).toEqual([{ viewers: [] }]);
+      expect(text()).toContain('revoked bob@example.com');
+    });
+
+    it('does not spend a PATCH on a no-op', async () => {
+      const { term, client, text } = mount();
+      await term.submit('/share viewer bob@example.com');
+      expect(text()).toContain('already a viewer');
+      await term.submit('/share revoke nobody@example.com');
+      expect(text()).toContain('was not on the ACL');
+      expect(client.calls.map((c) => c.name)).not.toContain('patchACL');
+    });
+
+    // Transfer is not this endpoint's job, and neither is demoting the
+    // owner to a viewer of their own session.
+    it('refuses to grant or revoke the owner', async () => {
+      const { term, client, text } = mount();
+      await term.submit('/share viewer alice@example.com');
+      expect(text()).toContain('cannot be demoted or removed');
+      expect(client.calls.map((c) => c.name)).not.toContain('patchACL');
+    });
+
+    it('answers a missing or unknown argument with the usage', async () => {
+      const { term, client, text } = mount();
+      await term.submit('/share viewer');
+      expect(text()).toContain('Who? /share viewer <identity>');
+      await term.submit('/share admin carol@example.com');
+      expect(text()).toContain('Unknown /share verb "admin"');
+      expect(text()).toContain('/share revoke <identity> to take it back');
+      expect(client.calls.map((c) => c.name)).not.toContain('getACL');
+    });
+
+    // The reason the command is version-gated: with the route's
+    // existence already established, a 404 has one meaning left, and
+    // it is not "this backend is old".
+    it('reads a 404 as "not yours", because the version already ruled out "no route"', async () => {
+      const { term, client, text } = mount();
+      const gone = new Error('session not found');
+      gone.status = 404;
+      client.getACL = async () => {
+        throw gone;
+      };
+      await term.submit('/share');
+      expect(text()).toContain('Only the owner can see or change who a session is shared with');
+      expect(text()).not.toContain('session not found');
+    });
+
+    it('reports any other failure as itself', async () => {
+      const { term, client, text } = mount();
+      client.getACL = async () => {
+        throw new Error('socket died');
+      };
+      await term.submit('/share');
+      expect(text()).toContain('/share failed: socket died');
+    });
+
+    // The version gate, from both ends: hidden in /help and refused by
+    // name, with no request either way. A 1.7.0 daemon has no route.
+    it('is absent from a pre-1.10.0 backend, and refuses without probing', async () => {
+      const { term, client, text } = mount({ protocol: '1.7.0' });
+      await term.submit('/help');
+      expect(text()).toContain('Not supported by this backend: /share');
+      expect(text()).not.toContain('Who else may reach this session');
+
+      await term.submit('/share');
+      expect(text()).toContain('/share is not supported by this backend.');
+      expect(client.calls).toEqual([]);
+    });
+
+    it('is offered by a 1.10.0 backend, which is the version that has it', async () => {
+      const { term, text } = mount({ protocol: '1.10.0' });
+      await term.submit('/help');
+      expect(text()).toContain('/share');
+      expect(text()).not.toContain('Not supported by this backend');
     });
   });
 });

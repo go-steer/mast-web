@@ -43,9 +43,9 @@
 // commands, grounded-source strips, observer-mode rendering of
 // externally-driven turns, the hold — banner, controls, and steer
 // (v1.5.0 §2.8) — and the client-side built-in slash commands: /help,
-// /clear, /export, /tools, /mcp, /subagents, /specialists, /sessions,
-// /guardrails, /pause, /continue, /abandon, /share, /model, /usage,
-// /whoami — each of them gated on what the backend says it can serve.
+// /clear, /export, /tools, /mcp, /subagents, /perms, /specialists,
+// /sessions, /guardrails, /pause, /continue, /abandon, /share, /model,
+// /usage, /whoami — each gated on what the backend says it can serve.
 //
 // The commands that act on the window rather than on a session —
 // /theme, /layout, /attach, /batch, /shortcuts — are not here, and are
@@ -634,10 +634,42 @@ window.MastTerminal = (function () {
       const pr = connection.getPrompter();
       if (!pr) return;
       try {
-        await pr.respond(frame.id, decision);
+        const out = await pr.respond(frame.id, decision);
+        recordApprover(div, out);
       } catch (e) {
         addSystemMessage(describeError(e, 'perms respond failed: '));
       }
+    }
+
+    // What the daemon wrote in the audit log for the click that just
+    // happened (v1.10.0, core-agent#830). Three answers, and they are
+    // three because collapsing any two loses the one thing worth
+    // saying:
+    //
+    //   a name          — this decision is attributable to that
+    //                     identity, which on a shared session is not
+    //                     necessarily the person at this keyboard.
+    //   unattributed    — the backend can attribute and did not, so
+    //                     the log will not name anyone. Worth knowing
+    //                     at the moment of clicking rather than during
+    //                     the incident review that goes looking.
+    //   nothing         — a pre-1.10.0 backend, where the field does
+    //                     not exist. "Unattributed" there would be
+    //                     inventing a fact about a daemon that was
+    //                     never asked.
+    //
+    // Never this browser's own identity. It is the likeliest author
+    // and the most damaging to assume, since the whole value of the
+    // line is that it was not assumed.
+    function recordApprover(div, out) {
+      const attributes =
+        typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.10.0');
+      if (!attributes) return;
+      const by = out && typeof out.approver === 'string' ? out.approver : '';
+      const el = div.querySelector('.perms-outcome');
+      if (!el) return;
+      const note = mk('span', 'perms-approver', by ? 'by ' + by : 'unattributed');
+      el.after(note);
     }
 
     // The perms stream is a SECOND EventSource, opened alongside the
@@ -1881,10 +1913,16 @@ window.MastTerminal = (function () {
 
     // /subagents [list]                — the configured/spawnable roster
     // /subagents events <name> [since] — that subagent's persisted turns
-    // core-agent#627/#634 (catalog) + #638/#687 (drill-down).
+    // /subagents stop <name>           — halt one running subagent
+    // core-agent#627/#634 (catalog) + #638/#687 (drill-down) + #897.
     async function cmdSubagents(args) {
-      if ((args[0] || 'list').toLowerCase() === 'events') {
+      const verb = (args[0] || 'list').toLowerCase();
+      if (verb === 'events') {
         await subagentEvents(args.slice(1));
+        return;
+      }
+      if (verb === 'stop') {
+        await stopSubagent(args.slice(1));
         return;
       }
       let subs;
@@ -1909,8 +1947,57 @@ window.MastTerminal = (function () {
             })),
           },
         ],
-        { summary: '/subagents events <name> [since] to drill in' }
+        { summary: '/subagents events <name> [since] to drill in · stop <name> to halt one' }
       );
+    }
+
+    // /subagents stop <name> — the only way to reach a runaway
+    // subagent. Interrupting the parent cancels the parent's turn and
+    // leaves the loop inside a spawned subagent running, which is why
+    // the route exists at all.
+    //
+    // READ THE 200, NOT `stopped`. Through v1.11.0 both "I killed it"
+    // and "it had already finished" answered `stopped: true`, so an
+    // operator who stopped a subagent that completed thirty seconds
+    // earlier was told they had stopped it. v1.12.0 (core-agent#897)
+    // split them, and the split only means something on a backend old
+    // enough to be asked — hence the version gate on the wording. The
+    // claim the 200 itself makes is the same either way: it is not
+    // running now.
+    //
+    // 404 is a miss, not a finished subagent: the manager has never
+    // registered that name.
+    async function stopSubagent(args) {
+      const name = args[0];
+      if (!name) {
+        addSystemMessage('Usage: /subagents stop <name>');
+        return;
+      }
+      let out;
+      try {
+        out = await client.stopSubagent(name);
+      } catch (e) {
+        addSystemMessage(describeError(e, `/subagents stop ${name} failed: `));
+        return;
+      }
+      const honest =
+        typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.12.0');
+      const ended = out && typeof out.status === 'string' && out.status ? out.status : '';
+      const as = ended ? ` It ended as "${ended}".` : '';
+      if (!honest) {
+        // The backend cannot distinguish, so neither will we. Only the
+        // post-condition is claimed.
+        addSystemMessage(`Subagent "${name}" is no longer running.`);
+        return;
+      }
+      if (out && out.stopped === false) {
+        addSystemMessage(
+          `Subagent "${name}" had already finished before the stop arrived — this call did not ` +
+            `stop it.${as}`
+        );
+        return;
+      }
+      addSystemMessage(`Stopped subagent "${name}".${as}`);
     }
 
     // The subagent-events path is qualified by app, and a terminal is
@@ -2108,12 +2195,16 @@ window.MastTerminal = (function () {
       );
     }
 
-    // /specialists — the same catalog /subagents lists, with the model
-    // and the modes each one runs in. app.js kept both names for the
-    // same endpoint (core-agent#627/#634) and so do we: /subagents
-    // answers "what can I drill into", /specialists "what can I spawn
-    // and on what".
-    async function cmdSpecialists() {
+    // /specialists [name] — the same catalog /subagents lists, with the
+    // model, the modes each one runs in, and since v1.9.0
+    // (core-agent#768) the tools it was granted. app.js kept both names
+    // for the same endpoint (core-agent#627/#634) and so do we:
+    // /subagents answers "what can I drill into", /specialists "what
+    // can I spawn, on what, and with what reach".
+    //
+    // The grant's absence is the interesting case and the renderer
+    // handles it — see SlashRender.renderSpecialists.
+    async function cmdSpecialists(args) {
       let specs;
       try {
         specs = await client.listConfiguredSubagents();
@@ -2125,16 +2216,34 @@ window.MastTerminal = (function () {
         addSystemMessage('No specialists registered on the backend.');
         return;
       }
-      renderList(`Specialists (${specs.length})`, [
-        {
-          items: specs.map((s) => {
-            const tags = [];
-            if (s.model) tags.push(s.model);
-            if (s.modes && s.modes.length) tags.push(s.modes.join('/'));
-            return { name: s.name, tags, description: s.description || '' };
-          }),
-        },
-      ]);
+      const out = window.SlashRender.renderSpecialists(specs, (args && args[0]) || '');
+      if (out.html) addSystemMessageHTML(out.html);
+      else addSystemMessage(out.text);
+    }
+
+    // /perms — the permission posture, and the log of what was let
+    // through this session. The log is why the command exists: an
+    // allow-session granted an hour ago is invisible everywhere else,
+    // and since v1.10.0 (core-agent#830) the rows can name who granted
+    // it.
+    //
+    // The attribution gate is the version rather than a flag, because
+    // `by` is omitted on both sides of it — by a daemon too old to
+    // record one, and by a current daemon that verified no identity for
+    // the responder (an unauthenticated loopback listener, say). Only
+    // the second is worth printing "unattributed" for; the first is a
+    // backend that was never asked the question.
+    async function cmdPerms() {
+      let info;
+      try {
+        info = await client.getPerms();
+      } catch (e) {
+        addSystemMessage(describeError(e, '/perms failed: '));
+        return;
+      }
+      const attribution =
+        typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.10.0');
+      addSystemMessageHTML(window.SlashRender.renderPerms(info, { attribution: attribution }));
     }
 
     // /sessions — what else is on this backend. Read-only on purpose:
@@ -2637,14 +2746,21 @@ window.MastTerminal = (function () {
       },
       {
         name: 'subagents',
-        usage: '/subagents [...]',
-        help: 'Configured subagents; `events <name>` to drill in',
+        usage: '/subagents [events <name> | stop <name>]',
+        help: 'Configured subagents; `events` to drill in, `stop` to halt one',
         run: cmdSubagents,
       },
       {
+        name: 'perms',
+        aliases: ['permissions'],
+        usage: '/perms',
+        help: 'Permission mode, patterns, and who approved what',
+        run: cmdPerms,
+      },
+      {
         name: 'specialists',
-        usage: '/specialists',
-        help: 'Spawnable specialists, with model and modes',
+        usage: '/specialists [name]',
+        help: 'Spawnable specialists, with model, modes and tool grant',
         // core-agent's `specialists` flag means "can spawn one", not
         // "can list them" — a backend that reports false still answers
         // the catalog endpoint. Gated anyway: a roster of things this

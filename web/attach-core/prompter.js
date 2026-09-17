@@ -159,6 +159,24 @@ window.AttachCorePrompter = (function () {
     // wire-stable string per core-agent's DecisionFromWire mapping:
     //   "deny" | "allow-once" | "allow-session" | "allow-session-verb"
     //   | "allow-session-tool" | "allow-always"
+    //
+    // Answers { acknowledged, approver? } (v1.10.0, core-agent#830) —
+    // who the daemon RECORDED the decision as, which is the audit line
+    // this click just wrote. `approver` is omitted when it verified no
+    // identity, and that is a fact about the deployment rather than
+    // about the answer: the decision still lands, the log just cannot
+    // name who made it. Callers render that as unattributed and never
+    // as the current user; see the note on client.getPerms().
+    //
+    // The request body also accepts an `approver`, which the server
+    // CHECKS against its own verdict rather than believes (400 on a
+    // mismatch). Nothing here sends one: there is no identity this
+    // browser knows that the daemon does not already know better, so
+    // the field can only disagree.
+    //
+    // Returns the parsed body, or {} from a producer that sends none —
+    // the pre-1.10.0 200 was empty, and an absent body is not a
+    // failure to respond.
     async respond(id, decision) {
       const path = '/sessions/' + encodeURIComponent(this.sessionId) + '/perms/respond';
       const r = await fetch(this.endpoint + path, {
@@ -166,11 +184,16 @@ window.AttachCorePrompter = (function () {
         headers: { ...this._headers(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, decision }),
       });
+      const text = await r.text();
       if (!r.ok) {
-        const text = await r.text();
         throw new Error(`POST ${path} → HTTP ${r.status}: ${text}`);
       }
-      return true;
+      try {
+        const body = JSON.parse(text);
+        return body && typeof body === 'object' ? body : {};
+      } catch {
+        return {};
+      }
     }
 
     // POST /perms/allow — { patterns: […] } — batch allowlist add.

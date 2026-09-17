@@ -53,9 +53,42 @@ function stubClient() {
       { name: 'fs_read', source: 'builtin', description: 'Read files', gate_state: 'allowed' },
       { name: 'gh_pr_view', source: 'mcp', server: 'github', description: 'Show a PR' },
     ]),
+    // Two rows, one with a `tools` grant and one without, because the
+    // missing key is the case #768 is about: it means unknown, and a
+    // catalog where every row had one would let a renderer that prints
+    // "no tools" for a blank pass.
     listConfiguredSubagents: record('listConfiguredSubagents', [
-      { name: 'researcher', description: 'Research', model: 'm-1', modes: ['sync', 'async'] },
+      {
+        name: 'researcher',
+        description: 'Research',
+        model: 'm-1',
+        modes: ['sync', 'async'],
+        tools: [{ name: 'fs_read', source: 'builtin', description: 'Read files' }],
+      },
+      { name: 'implementer', description: 'Write code', modes: ['async'] },
     ]),
+    stopSubagent: record('stopSubagent', (name) => ({
+      session: 's1',
+      agent: name,
+      stopped: true,
+      status: 'stopped',
+    })),
+    // The approval log, with both attribution cases on it.
+    getPerms: record('getPerms', {
+      mode: 'ask',
+      allow: ['fs_read'],
+      deny: [],
+      approvals: [
+        {
+          tool: 'bash_exec',
+          key: 'git push',
+          decision: 'allow-session-tool',
+          by: 'ada@example.com',
+          at: '2026-09-17T10:00:00Z',
+        },
+        { tool: 'fs_write', decision: 'allow-once', at: '2026-09-17T10:05:00Z' },
+      ],
+    }),
     listSessions: record('listSessions', [
       { id: 's1', app: 'demo', status: 'active', lastTouchedAt: '2026-09-01T10:00:00Z', title: '' },
       {
@@ -192,6 +225,7 @@ describe('MastTerminal built-ins', () => {
         '/tools',
         '/mcp',
         '/subagents',
+        '/perms',
         '/specialists',
         '/sessions',
         '/guardrails',
@@ -1165,6 +1199,193 @@ describe('MastTerminal built-ins', () => {
       expect(term.state.runState).toBe('idle');
       expect(term.state.turnInFlight).toBe(false);
       expect(term.state.running).toBe(true);
+    });
+  });
+
+  // #94: absence means unknown, never none. Three reads that share
+  // nothing but that rule — who approved a tool call, what a
+  // specialist was granted, and whether a stop stopped anything.
+  describe('absence means unknown', () => {
+    describe('/perms', () => {
+      it('renders the log and names who approved what', async () => {
+        const { term, text } = mount();
+        await term.submit('/perms');
+        expect(text()).toContain('Permissions — mode ask');
+        expect(text()).toContain('bash_exec git push');
+        expect(text()).toContain('by ada@example.com');
+      });
+
+      // The row the daemon could not attribute. It says so; it does
+      // not borrow the identity of whoever is reading.
+      it('says unattributed for a row with no verified approver', async () => {
+        const { term, text } = mount();
+        await term.submit('/perms');
+        expect(text()).toContain('unattributed');
+        expect(text()).not.toContain('by alice@example.com');
+      });
+
+      // On a pre-1.10.0 backend every row would read "unattributed"
+      // and mean nothing. Say it once, about the backend.
+      it('drops per-row attribution on a backend that cannot attribute', async () => {
+        const { term, client, text } = mount();
+        client.protocolAtLeast = (v) => v !== '1.10.0';
+        await term.submit('/perms');
+        expect(text()).toContain('does not attribute approvals');
+        expect(text()).not.toContain('unattributed');
+        expect(text()).not.toContain('by ada@example.com');
+      });
+
+      it('reports a failed read rather than an empty log', async () => {
+        const { term, client, text } = mount();
+        client.getPerms = async () => {
+          throw new Error('HTTP 501: no PermsProvider');
+        };
+        await term.submit('/perms');
+        expect(text()).toContain('/perms failed');
+      });
+    });
+
+    describe('/specialists', () => {
+      it('summarizes the grant each specialist reports', async () => {
+        const { term, text } = mount();
+        await term.submit('/specialists');
+        expect(text()).toContain('Specialists (2)');
+        expect(text()).toContain('builtin 1');
+      });
+
+      // The missing key, which a 1.9.0 daemon sends for a specialist
+      // with no grant of its own and every older one sends for all of
+      // them.
+      it('reports a specialist with no reported grant as unknown', async () => {
+        const { term, text } = mount();
+        await term.submit('/specialists');
+        expect(text()).toContain('grant unknown');
+        expect(text()).not.toContain('no tools of its own');
+      });
+
+      it('drills into one specialist’s grant, grouped by source', async () => {
+        const { term, text } = mount();
+        await term.submit('/specialists researcher');
+        expect(text()).toContain('researcher — m-1 · sync/async');
+        expect(text()).toContain('Read files');
+      });
+    });
+
+    describe('/subagents stop', () => {
+      it('says this call is what stopped it', async () => {
+        const { term, client, text } = mount();
+        await term.submit('/subagents stop researcher');
+        expect(client.calls.at(-1)).toEqual({ name: 'stopSubagent', args: ['researcher'] });
+        expect(text()).toContain('Stopped subagent "researcher"');
+        expect(text()).toContain('ended as "stopped"');
+      });
+
+      // The case #897 was filed about. Through 1.11.0 this answered
+      // `stopped: true` and the operator was told they had stopped
+      // something that finished thirty seconds earlier.
+      it('says so when the subagent had already finished', async () => {
+        const { term, client, text } = mount();
+        client.stopSubagent = async () => ({
+          session: 's1',
+          agent: 'implementer',
+          stopped: false,
+          status: 'completed',
+        });
+        await term.submit('/subagents stop implementer');
+        expect(text()).toContain('had already finished before the stop arrived');
+        expect(text()).toContain('ended as "completed"');
+        expect(text()).not.toContain('Stopped subagent');
+      });
+
+      // A pre-1.12.0 daemon cannot tell the two apart, so neither do
+      // we: the 200 still means "it is not running now", and that is
+      // the only claim left worth making.
+      it('claims only the post-condition on a backend that cannot tell', async () => {
+        const { term, client, text } = mount();
+        client.protocolAtLeast = (v) => v !== '1.12.0';
+        client.stopSubagent = async () => ({ session: 's1', agent: 'researcher', stopped: true });
+        await term.submit('/subagents stop researcher');
+        expect(text()).toContain('is no longer running');
+        expect(text()).not.toContain('Stopped subagent');
+      });
+
+      it('surfaces a 404 as the miss it is', async () => {
+        const { term, client, text } = mount();
+        client.stopSubagent = async () => {
+          throw new Error('POST /agents/ghost/stop → HTTP 404: no subagent named "ghost"');
+        };
+        await term.submit('/subagents stop ghost');
+        expect(text()).toContain('/subagents stop ghost failed');
+      });
+
+      it('asks for a name rather than stopping something at random', async () => {
+        const { term, client, text } = mount();
+        await term.submit('/subagents stop');
+        expect(text()).toContain('Usage: /subagents stop <name>');
+        expect(client.calls).toEqual([]);
+      });
+    });
+
+    // The inline card, where the same question is asked about the
+    // click that just happened. Reaching it means opening the prompt
+    // stream, which is the terminal's second EventSource — stubbed
+    // here, since jsdom has no real one and the frame is what matters.
+    describe('the permission card', () => {
+      async function prompted(over) {
+        const { term, client, text } = mount();
+        globalThis.EventSource = class {
+          addEventListener() {}
+          close() {}
+        };
+        client.connect = async () => {};
+        client.autoSelectSession = async () => ({ id: 's1' });
+        load('attach-core/prompter.js');
+        await term.connect();
+        const pr = term.connection.getPrompter();
+        pr.respond = async () => over;
+        pr.onPrompt({ id: 'perms-1', kind: 'bash', tool: 'bash_exec', detail: 'rm -rf ./build' });
+        const card = term.el.querySelector('.perms-request');
+        return { term, client, text, card };
+      }
+
+      const allowOnce = (card) =>
+        [...card.querySelectorAll('button')].find((b) => b.textContent === 'ALLOW ONCE');
+
+      it('records who the daemon attributed the decision to', async () => {
+        const { card } = await prompted({ acknowledged: true, approver: 'ada@example.com' });
+        allowOnce(card).click();
+        await flush();
+        expect(card.querySelector('.perms-outcome').textContent).toBe('allow-once');
+        expect(card.querySelector('.perms-approver').textContent).toBe('by ada@example.com');
+      });
+
+      // Worth saying at the moment of clicking rather than during the
+      // review that goes looking: this decision lands in the log with
+      // nobody's name on it.
+      it('says unattributed when the daemon verified nobody', async () => {
+        const { card } = await prompted({ acknowledged: true });
+        allowOnce(card).click();
+        await flush();
+        expect(card.querySelector('.perms-approver').textContent).toBe('unattributed');
+      });
+
+      // Never the current user. `whoami` is one call away and it would
+      // be the wrong answer on any session with two people in it.
+      it('does not fill the blank in with this browser’s identity', async () => {
+        const { term, card } = await prompted({ acknowledged: true });
+        await term.submit('/whoami');
+        allowOnce(card).click();
+        await flush();
+        expect(card.querySelector('.perms-approver').textContent).not.toContain('alice');
+      });
+
+      it('adds nothing on a backend with no attribution to give', async () => {
+        const { client, card } = await prompted({});
+        client.protocolAtLeast = (v) => v !== '1.10.0';
+        allowOnce(card).click();
+        await flush();
+        expect(card.querySelector('.perms-approver')).toBeNull();
+      });
     });
   });
 });

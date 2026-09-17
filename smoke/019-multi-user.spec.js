@@ -45,7 +45,7 @@ const BOB = 'bob@example.com';
 // the same reason the other helpers do it: a saved tab layout would
 // restore sessions this case did not ask for — and in this file that
 // could mean restoring a tab the operator is not allowed to have.
-async function visitAs(page, baseURL, who) {
+async function visitAs(page, baseURL, who, fixture) {
   await page.context().addCookies([{ name: 'mock_caller', value: who, url: baseURL }]);
   await page.addInitScript(() => {
     try {
@@ -54,9 +54,17 @@ async function visitAs(page, baseURL, who) {
       /* blocked storage — the shell falls back to same-origin anyway */
     }
   });
-  await page.goto('/solo.html');
+  await page.goto(fixture ? `/solo.html?fixture=${encodeURIComponent(fixture)}` : '/solo.html');
   await expect(page.locator('.side-session').first()).toBeVisible();
 }
+
+// The sharing cases pass one. Without it, mock.go's sessionFixtures
+// gives ops-triage and repo-indexer old conformance captures (1.2.0,
+// 1.4.0) — and /share is gated on 1.10.0, so the panel correctly
+// refuses it. That gate is 016's business; here the fixture only has
+// to be a backend new enough to have the route, and which transcript
+// is on screen has nothing to do with who is on the roster.
+const MODERN = '001-happy-turn';
 
 const rowFor = (page, sid) => page.locator(`.side-session[title*="${sid}"]`);
 
@@ -169,7 +177,7 @@ test.describe('two operators on one daemon', () => {
   // that is never read back from the other identity is a grant that
   // proves only that a PATCH returned 200.
   test('a granted session appears in the other operator’s roster', async ({ page, baseURL }) => {
-    await visitAs(page, baseURL, SMOKE);
+    await visitAs(page, baseURL, SMOKE, MODERN);
     await expect(page.locator('.side-session')).toHaveCount(4);
 
     // repo-indexer is smoke@'s, and bob has never been able to see it.
@@ -194,7 +202,7 @@ test.describe('two operators on one daemon', () => {
     // Now be bob. The roster is filtered by the server per caller, so
     // this is the assertion with teeth: three rows where there were
     // two, and the new one is the session that was just granted.
-    await visitAs(page, baseURL, BOB);
+    await visitAs(page, baseURL, BOB, MODERN);
     await expect(page.locator('.side-session')).toHaveCount(3);
     await expect(rowFor(page, 'repo-indexer')).toBeVisible();
     // Shared, not his — derived from `user`, which the grant did not
@@ -204,7 +212,7 @@ test.describe('two operators on one daemon', () => {
   });
 
   test('revoking takes the session back out of their roster', async ({ page, baseURL }) => {
-    await visitAs(page, baseURL, SMOKE);
+    await visitAs(page, baseURL, SMOKE, MODERN);
     // ops-triage is seeded with bob as a viewer, so this one starts
     // from a grant somebody else made rather than one this test did.
     await rowFor(page, 'ops-triage').click();
@@ -213,7 +221,7 @@ test.describe('two operators on one daemon', () => {
     await expect(lastOutput(page)).toContainText(`revoked ${BOB}`);
     await expect(lastOutput(page)).toContainText('Viewers (0)');
 
-    await visitAs(page, baseURL, BOB);
+    await visitAs(page, baseURL, BOB, MODERN);
     await expect(rowFor(page, 'ops-triage')).toHaveCount(0);
     await expect(page.locator('.side-session')).toHaveCount(1);
   });
@@ -223,7 +231,7 @@ test.describe('two operators on one daemon', () => {
   // command is version-gated rather than probe-gated precisely so this
   // 404 has one meaning left, and can be reported as the one it has.
   test('a shared session will not tell its guest who else is on it', async ({ page, baseURL }) => {
-    await visitAs(page, baseURL, BOB);
+    await visitAs(page, baseURL, BOB, MODERN);
     await rowFor(page, 'ops-triage').click();
     await expect(page.locator('#solo-panel')).toHaveAttribute('data-conn', 'connected');
 

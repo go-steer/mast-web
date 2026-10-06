@@ -20,6 +20,13 @@ Then open <http://localhost:7778/>.
 
 `npm run dev` is the *other* server — `--mode=static`, no backend at all, for pointing the SPA at a live daemon. Every section here uses the mock, because the mock is the only backend that can be put into the states this document is about (nobody verified, a subagent that already finished, two identities) on demand.
 
+**If the mock is not on your laptop.** A Cloud Workstation, a devcontainer or an SSH box all work, because the mock serves the SPA *and* the attach API on one port — forward or proxy that one port and the browser is same-origin with its backend, which is the shape this SPA is built for. Substitute your forwarded origin for `localhost:7778` in every browser URL below; the `curl` commands stay as written, because they run **on the host the mock runs on**, not in your browser.
+
+Two things to know before you read a failure:
+
+- **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#10-known-not-to-work) on cross-origin backends.
+
 The mock speaks **protocol 1.12.0** by default and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#10-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
@@ -67,21 +74,63 @@ Clearing your browser's `localStorage` for the origin resets the shell preferenc
 
 **Setup:** mock on :7778, fresh `localStorage`.
 
+> **The reply is canned. It does not answer you.** `--mode=mock` replays
+> [`001-happy-turn.jsonl`](../web/attach-core/conformance/fixtures/001-happy-turn.jsonl)
+> frame by frame at 150ms, and there is no model behind it. Whatever you type,
+> the assistant says `Hello world` and then calls `fs_read` on `/etc/hostname`.
+> Your prompt *is* really posted — `/inject` is a live route and the tally in
+> the next section counts it — but the response is a recording.
+>
+> That is deliberate and it is what makes the rest of this document
+> checkable: every "Expected" below is a claim about **shape** — did it
+> stream, did it appear once, is the cost a real number — and a backend that
+> answered would make each of them depend on what a model felt like saying
+> that morning. Read every step here as "does the client handle this frame
+> correctly", never as "is the agent any good".
+
+> **Slow the mock down for this section and for [§4](#4-stop).** The default
+> pacing is 150ms per frame and the fixture is ten frames, so the whole turn
+> is over in about a second and a half — the gap between the two text chunks
+> is one 150ms tick, and the STOP button exists for barely longer. Neither is
+> observable by a human at that speed, which makes two of the checks below
+> unperformable as written. Restart with:
+>
+> ```
+> dev/tools/mock-backend --frame-delay-ms=800
+> ```
+>
+> An eight-second turn. Put it back to the default once you reach [§5](#5-the-hold) —
+> nothing after §4 depends on watching a frame land, and the slow pacing just
+> makes the rest tedious.
+>
+> **Hard-reload every open tab after any mock restart.** The SPA holds an
+> `EventSource` against a process that no longer exists, and it does not
+> always redraw as disconnected — but `submit()` refuses to dispatch when the
+> connection is not live, so prompts vanish with no turn, no `SEND` greying
+> out and no `STOP`. It looks exactly like a broken button. The tell is the
+> wire, not the screen: `curl localhost:7778/_mock/turn-requests` stays `{}`
+> because nothing was ever sent. This applies to every restart in this
+> document, not just this one.
+
 **Steps**
 
 1. Open <http://localhost:7778/>.
 2. Click the `smoke-session` row in the left sidebar.
-3. Type `what is the weather` into the composer and press Enter.
+3. Type anything into the composer and press Enter.
 4. Wait for the turn to finish.
 
 **Expected**
 
-- The sidebar lists four sessions. Two of them (`ops-triage`, `docs-writer`) arrive already titled, so those rows lead with the title and carry the session id on a second line; the other two lead with the id. The panel header shows the session and the connection goes to **connected** — not "connecting" that never resolves.
+- The sidebar lists four sessions. Two of them (`ops-triage`, `docs-writer`) arrive already titled, so those rows lead with the title and carry the session id in a small dimmed slot **at the right-hand end of the same row**; the other two lead with the id. The row is one flex line (`.side-session` in `chrome.css`) — nothing in the sidebar wraps to a second line.
+- The panel header shows the session, and the panel's **footer, bottom left**, reads **`⬤ connected`** — the glyph changes with the state (`◐ connecting`, `○ disconnected`), so what you are ruling out is a `◐` that never resolves. The window status bar carries the same state as a coloured dot for whichever panel is in front.
 - Your prompt appears as your own message, once. (Twice is core-agent#639; the mock counts posts so `curl localhost:7778/_mock/turn-requests` should show a single `inject`.)
-- Assistant text streams in progressively rather than appearing in one block at the end.
-- A **STOP** button appears next to the composer while the turn runs and disappears when it ends.
-- A turn footer lands at the bottom with token counts and a cost. The cost is a number, not `$undefined` or `$0.00` where a number was streamed.
-- The status bar at the bottom of the window shows the model and the daemon.
+- **`Hello world`**, arriving as two chunks — `Hello`, a visible beat, then ` world` joining it on the same line — rather than in one block at the end. Watching it appear in pieces is the check; the words are not. (This is the check the frame-delay note above exists for, and the one a buffering proxy breaks.)
+- Below it, a tool call rendered as a call and a result, not as raw JSON: `fs_read` with `{"path": "/etc/hostname"}`, answering `example.com`.
+- A **`STOP`** button appears for the duration of the turn: same row as the input box, immediately to the right of `SEND`, small and outlined with **red** text. It is `hidden` between turns rather than disabled, so you are looking for it to *appear*, not to light up. At `--frame-delay-ms=800` it is on screen for about eight seconds; at the default you will barely catch it. If you would rather not watch for it, `document.querySelector('.term:not([hidden]) .term-stop').hidden` is `false` mid-turn and `true` either side.
+
+  Worth knowing what it is bound to, because [§6](#6-status-truth) turns on the distinction: STOP follows `connection.isRunning` — *"this browser dispatched a turn"* — and not the session's actual run state. A turn another operator started will raise the status bar's running count without revealing STOP here, deliberately.
+- A turn footer with **`45 in / 8 out`**, a latency, and a cost of **`$0.000120`** — six decimal places, because the fixture's cost is $0.00012 and two would round it to the `$0.00` that looks like a bug. What would be wrong is `$undefined`, or a footer that never lands.
+- The window status bar along the bottom reads left to right: **`1 agent`**, the fleet counts, the session cost, and then the focused panel as `<session> · gemini-2.5-flash · T1` behind a connection dot. The model is shortened on purpose (a trailing `-20260101` date suffix is stripped). Hovering that segment gives the endpoint and the connection state as a tooltip. `mast-web-mock` — the daemon's `app` name — is the sidebar's group heading, not a status-bar field.
 
 **Why this matters:** every other section assumes streaming, one-turn-per-prompt and a live footer. A failure here is not a feature bug, it is the client.
 
@@ -283,7 +332,7 @@ Also worth a look while you are switched: the HUD names who you are, and the new
 
 **Expected**
 
-- Step 3: the row's primary line now reads **`tuesday incident`** and the session id **moves to the meta line underneath** rather than disappearing — the id is what correlates a row with a URL or a log.
+- Step 3: the row now leads with **`tuesday incident`** and the session id **moves into the dimmed meta slot at the right-hand end of the same row** rather than disappearing — the id is what correlates a row with a URL or a log. (One flex line, not two; the sidebar never wraps.)
 - Step 4: the row shows what the server **stored**, not what you typed — `spaced out`, trimmed.
 - Step 5: the name clears and the row falls back to the session id.
 - Step 6: nothing changes. A cancelled prompt is not an empty string.

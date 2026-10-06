@@ -29,7 +29,7 @@ message.
 
 Nothing yet.
 
-## [0.5.0] - 2026-09-17
+## [0.5.0] - 2026-10-06
 
 **Catching up to the wire, and the release where a parked session stopped
 being a dead end.**
@@ -166,7 +166,19 @@ release's plan, with the protocol drift enumerated item by item, is the
   carries no status, and the one place a running count crosses the wire is an
   interrupt response, which a hold is not.
   ([#106](https://github.com/go-steer/mast-web/issues/106))
-- Unchanged from v0.4 and all deliberately v0.6 or later:
+- **Upstream moved again before this tagged.** The work here is against
+  protocol 1.12.0. By the tag, core-agent was at **1.19.0**, and two of those
+  seven versions matter against a current daemon:
+  - **1.13.0 — guardrail trip reasons are not shown.** A trip now rides its
+    own `guardrail-trip` event instead of a `turn-error`, and this client does
+    not know the event. You get a bare `canceled`, or nothing. That drops the
+    one sentence that explains why the agent is about to refuse everything.
+  - **1.18.0 — the permission card can name a decision that was not
+    applied.** On auto mode's escalated prompts the daemon applies any allow
+    as allow-once and says so in its reply; the card shows what was clicked.
+
+  Both are the first items of the v0.6 catch-up.
+- Unchanged from v0.4 and now v0.7 or later, behind the v0.6 catch-up:
   **`--auth-mode=oidc`** ([#86](https://github.com/go-steer/mast-web/issues/86)),
   the **Kind job running the mock rather than a real `core-agent`**
   ([#66](https://github.com/go-steer/mast-web/issues/66)), the **hosted SPA**
@@ -179,7 +191,11 @@ release's plan, with the protocol drift enumerated item by item, is the
   embedded version; against a daemon older than the route a control is hidden
   rather than broken. What you get by *also* being on a current daemon:
   ≥1.10.0 for `/share` and rename, ≥1.12.0 for running counts that include
-  turns this browser did not start.
+  turns this browser did not start. **The ceiling is the other direction:**
+  embedded in a ≥1.13.0 daemon, guardrail trip reasons go missing (see Known
+  gaps). That is no worse than v0.4.0 in the same binary, which did not know
+  the event either. But it is the case to check before shipping it inside a
+  current `core-agent`.
 - *[hosting]* No new flags. Sharing grants to whatever identity string you
   type, and the agent enforces it against the caller it verified — so under
   `--auth-mode=none` every browser reaches the agent as the same caller and a

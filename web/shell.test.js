@@ -474,6 +474,25 @@ describe('MastShell', () => {
       expect(rows[1].at(-1)).toBe('done');
     });
 
+    // Stopping a prompt is not the prompt failing. Red "error" in the
+    // table would send the operator looking for a fault that isn't
+    // there — the same misreading as "Error: canceled" in the transcript.
+    it('records a stopped turn as stopped, not as an error', async () => {
+      const shell = mount();
+      term.results = [
+        { ok: false, canceled: true, error: 'turn canceled' },
+        { ok: true, totalMs: 10, ttfbMs: 5, tokens: { in: 1, out: 1 }, costUSD: 0 },
+      ];
+      await runBatch(shell, 'stopped\ngood');
+      const rows = rowsOf();
+      expect(rows[0]).toEqual(['stopped', 'stopped before it finished', 'canceled']);
+      const cell = document
+        .querySelectorAll('#batch-results tbody tr')[0]
+        .querySelectorAll('td')[1];
+      expect(cell.style.color).toBe('');
+      expect(rows[1].at(-1)).toBe('done');
+    });
+
     it('explains a turn that never started', async () => {
       const shell = mount();
       term.results = [null];

@@ -27,7 +27,20 @@ message.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The mock now runs a turn when you send it a prompt, and STOP ends it.**
+  `mast-web-server --mode=mock` used to replay its fixture once, when a
+  stream opened, and answer every inject with a `wake` frame and nothing else.
+  A prompt only looked like it worked when the attach-time replay happened to
+  still be draining. Slowed to a pace a person could watch, the prompt opened
+  a turn that nothing closed. STOP couldn't close it either: the interrupt
+  handler cleared its own state but never sent the `canceled` turn-error a
+  real daemon does. Now an inject (or a resume that puts the loop back to
+  work) plays the fixture's turn on the live stream and ends it, an interrupt
+  that cuts a turn sends `canceled`, and `POST /_mock/turns {"open":true}`
+  restores the open-ended turn for testing a turn somebody else is running.
+  Found by the first live run of the manual walkthrough.
 
 ## [0.5.0] - 2026-10-06
 

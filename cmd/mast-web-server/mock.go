@@ -88,6 +88,10 @@ type mockHandler struct {
 	// reason the gate keeps some: an audit log with nothing in it
 	// cannot be got wrong.
 	perms mockPermsLog
+
+	// Turns that run because somebody asked for one, and the switch
+	// that keeps them open instead. See mock_play.go.
+	turns mockTurns
 }
 
 // countPost tallies one write against an endpoint name.
@@ -395,6 +399,11 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// so nothing it replays can reach for one — see raisePrompt.
 	mux.HandleFunc("POST /_mock/perms-prompt", h.raisePrompt)
 	mux.HandleFunc("DELETE /_mock/perms-log", h.resetPermsLog)
+	// Whether an injected turn plays and ends, or stays open until
+	// something stops it. See mock_play.go.
+	mux.HandleFunc("GET /_mock/turns", h.setTurns)
+	mux.HandleFunc("POST /_mock/turns", h.setTurns)
+	mux.HandleFunc("DELETE /_mock/turns", h.setTurns)
 
 	// Session-agnostic endpoints.
 	mux.HandleFunc("GET /whoami", h.whoami)
@@ -829,11 +838,9 @@ func (h *mockHandler) injectOrWake(w http.ResponseWriter, r *http.Request, sid, 
 		// The loop actually runs. Since v1.7.0 the agent says so on the
 		// stream, and publishing it here is what lets a consumer be
 		// tested against a wake it caused — there is no other way to
-		// provoke one from outside.
-		next := gate
-		next.turnInFlight = true
-		h.gates.set(sid, next)
+		// provoke one from outside. Then the turn itself (mock_play.go).
 		h.hub.publish(sid, wakeFrame(time.Now()))
+		h.startTurn(sid, promptID)
 	}
 
 	out := map[string]any{"session": sid, "woke": woke}

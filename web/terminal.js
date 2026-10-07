@@ -2703,30 +2703,77 @@ window.MastTerminal = (function () {
       applyObserverMode((sess().capabilities || {}).features);
     }
 
+    // /help is a two-column table: usage, then what it does. It used to
+    // be faked with padEnd() inside a pre-wrap message, which lined up
+    // until a description outgrew the line and wrapped back to the left
+    // edge, under the names — found on the first live walkthrough run.
+    // A grid wraps each description inside its own column. The text is
+    // the same either way, so a reader matching on content (the smoke
+    // suite does) sees no difference.
     function cmdHelp() {
       const rows = COMMANDS.filter(available);
-      const width = rows.reduce((w, b) => Math.max(w, b.usage.length), 0);
-      const describe = (b) => b.usage.padEnd(width) + '  — ' + b.help;
-      const lines = rows.filter((b) => !b.shell).map(describe);
       // The shell's commands are listed apart because they answer a
       // different question: /clear is about this panel, /layout is about
       // every panel on the page. Same table, same gate, two headings.
+      const sections = [{ rows: rows.filter((b) => !b.shell) }];
       const shellRows = rows.filter((b) => b.shell);
-      if (shellRows.length) {
-        lines.push('', 'This shell:');
-        shellRows.forEach((b) => lines.push(describe(b)));
-      }
+      if (shellRows.length) sections.push({ heading: 'This shell:', rows: shellRows });
       const advertised = advertisedNames();
-      if (advertised.length) {
-        lines.push('', 'Advertised by this agent:');
-        advertised.forEach((n) => lines.push('/' + n));
-      } else {
-        lines.push('', 'This agent advertises no slash commands.');
-      }
       const hidden = COMMANDS.filter((b) => !available(b)).map((b) => '/' + b.name);
-      if (hidden.length) {
-        lines.push('', 'Not supported by this backend: ' + hidden.join(', '));
+      const notes = [];
+      if (advertised.length) {
+        notes.push({ heading: 'Advertised by this agent:', names: advertised.map((n) => '/' + n) });
+      } else {
+        notes.push({ text: 'This agent advertises no slash commands.' });
       }
+      if (hidden.length)
+        notes.push({ text: 'Not supported by this backend: ' + hidden.join(', ') });
+
+      const SR = window.SlashRender;
+      if (SR && typeof SR.escapeHTML === 'function') {
+        const esc = SR.escapeHTML;
+        const html = [];
+        sections.forEach((sec) => {
+          if (sec.heading) html.push(`<div class="help-heading">${esc(sec.heading)}</div>`);
+          html.push('<div class="help-table">');
+          sec.rows.forEach((b) => {
+            html.push(
+              `<div class="help-usage">${esc(b.usage)}</div>` +
+                `<div class="help-desc">${esc(b.help)}</div>`
+            );
+          });
+          html.push('</div>');
+        });
+        notes.forEach((n) => {
+          if (n.heading) {
+            html.push(`<div class="help-heading">${esc(n.heading)}</div>`);
+            html.push(`<div class="help-names">${n.names.map(esc).join('<br>')}</div>`);
+          } else {
+            html.push(`<div class="help-note">${esc(n.text)}</div>`);
+          }
+        });
+        addSystemMessageHTML(html.join(''));
+        return;
+      }
+
+      // No renderer loaded: the old aligned text, which is still correct
+      // for every description short enough to fit.
+      const width = rows.reduce((w, b) => Math.max(w, b.usage.length), 0);
+      const describe = (b) => b.usage.padEnd(width) + '  — ' + b.help;
+      const lines = [];
+      sections.forEach((sec) => {
+        if (sec.heading) lines.push('', sec.heading);
+        sec.rows.forEach((b) => lines.push(describe(b)));
+      });
+      notes.forEach((n) => {
+        lines.push('');
+        if (n.heading) {
+          lines.push(n.heading);
+          n.names.forEach((name) => lines.push(name));
+        } else {
+          lines.push(n.text);
+        }
+      });
       addSystemMessage(lines.join('\n'));
     }
 

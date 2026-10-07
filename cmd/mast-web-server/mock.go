@@ -834,6 +834,13 @@ func (h *mockHandler) injectOrWake(w http.ResponseWriter, r *http.Request, sid, 
 	// requested disposition, and the gate is what decides whether the
 	// loop acts on it.
 	woke := req.Wake == nil || *req.Wake
+	if woke && gate.paused && text != "" {
+		// Queued behind the closed gate (1.11.0: an inject no longer
+		// opens it). Recorded so a later continue knows there is held
+		// work to resume rather than guessing.
+		gate.queued = true
+		h.gates.set(sid, gate)
+	}
 	if woke && !gate.paused {
 		// The loop actually runs. Since v1.7.0 the agent says so on the
 		// stream, and publishing it here is what lets a consumer be

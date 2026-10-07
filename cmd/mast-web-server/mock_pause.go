@@ -97,7 +97,11 @@ type pauseGate struct {
 	//                                play mode: false, with `canceled`.
 	//   pause                      → unchanged (a quiet hold over a
 	//                                running turn is a real state)
-	//   resume steer / continue    → true   (back to work)
+	//   resume steer               → true   (the correction runs)
+	//   resume continue            → true if a message was queued
+	//                                behind the gate or a turn was
+	//                                still in flight; otherwise false
+	//                                (nothing held, nothing to resume)
 	//   resume abandon             → false  (gate open, work dropped)
 	//   a played turn runs out     → false  (play mode only)
 	//
@@ -107,6 +111,12 @@ type pauseGate struct {
 	// mode, the default, a started turn plays the fixture and ends. See
 	// mock_play.go for why both exist.
 	turnInFlight bool
+	// queued records that a message arrived while the gate was closed
+	// and is waiting behind it. It is the difference between a continue
+	// that has held work to resume and one that just opens the gate:
+	// without it the mock could only guess, and guessing "yes" played a
+	// turn nobody asked for every time an operator pressed CONTINUE.
+	queued bool
 }
 
 // pauseGates holds every session's gate. Sessions are created lazily:
@@ -295,6 +305,7 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 			reason:       defaultPauseReason,
 			interrupted:  interrupted,
 			turnInFlight: prev.turnInFlight && !ends,
+			queued:       prev.queued,
 		}
 		if prev.paused {
 			// Don't restamp a gate that was already closed.
@@ -366,6 +377,7 @@ func (h *mockHandler) pause(w http.ResponseWriter, r *http.Request, sid string) 
 		reason:       reason,
 		interrupted:  prev.interrupted,
 		turnInFlight: prev.turnInFlight,
+		queued:       prev.queued,
 	}
 	if prev.paused {
 		// Already closed — don't restamp `since`, an operator watching
@@ -432,26 +444,37 @@ func (h *mockHandler) resume(w http.ResponseWriter, r *http.Request, sid string)
 	}
 
 	prev := h.gates.get(sid)
-	// Steer and continue put the loop back to work; abandon opens the
-	// gate and drops the held work, leaving the session idle.
-	working := prev.paused && mode != resumeModeAbandon
-	h.gates.set(sid, pauseGate{})
+	// What happens to the held work, by mode:
+	//
+	//   steer    — a new turn, always: the correction IS work, and it
+	//              runs whatever was or wasn't waiting.
+	//   continue — resumes what was held and nothing more. A message
+	//              queued behind the gate runs; a turn still in flight
+	//              carries on; and with neither, the gate opens on an
+	//              idle session. Inventing a turn here played the
+	//              fixture at an operator who had paused an idle
+	//              session and pressed CONTINUE.
+	//   abandon  — drops all of it, leaving the session idle.
+	stillRunning := prev.turnInFlight && mode != resumeModeAbandon
+	newTurn := prev.paused &&
+		(mode == resumeModeSteer || (mode == resumeModeContinue && prev.queued && !prev.turnInFlight))
+	h.gates.set(sid, pauseGate{turnInFlight: stillRunning})
 	if mode == resumeModeAbandon {
 		h.turns.stop(sid)
 	}
 	now := time.Now()
 	if prev.paused {
 		h.hub.publish(sid, pauseFrame(pauseStateResumed, "", mode, false, now))
-		// A steer or continue puts the loop back to work, and the agent
-		// signals that with a wake (v1.7.0). Abandon doesn't — it opens
-		// the gate and leaves the session idle.
-		if mode != resumeModeAbandon {
+		// The loop going back to work is signalled with a wake (v1.7.0).
+		// Only when it actually does: a continue with nothing held, and
+		// an abandon, open the gate on an idle session.
+		if newTurn || stillRunning {
 			h.hub.publish(sid, wakeFrame(now))
 		}
 	}
-	if working {
+	if newTurn {
 		// In play mode the work actually runs and ends (mock_play.go);
-		// in open mode it stays in flight, as it always did.
+		// in open mode it stays in flight until something stops it.
 		h.startTurn(sid, "")
 	}
 

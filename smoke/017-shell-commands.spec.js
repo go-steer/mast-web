@@ -43,17 +43,25 @@
 //      live terminal pointed at a session that no longer exists would
 //      look fine in the sidebar.
 //
-// The batch runner's measurements are not asserted here. The mock
-// answers /inject with a wake frame and streams its fixture at connect
-// time, so a prompt typed during a test never produces a turn-complete
-// and never closes a turn. What a browser can say about the runner is
-// that its drawer lands on screen and its prompts reach the terminal;
-// the columns are pinned in web/shell.test.js instead.
+// The batch runner's measurements are not asserted here; the columns
+// are pinned in web/shell.test.js. What this file says about the runner
+// is that its drawer lands on screen and its first prompt reaches the
+// terminal and stays in flight, which needs the mock's open turn mode:
+// by default an injected turn plays its fixture and ends
+// (cmd/mast-web-server/mock_play.go), and at the suite's pacing the
+// first row would be done before the assertion could see it running.
 
 import { test, expect } from '@playwright/test';
 import { openSoloSession, openSpatialSession } from './helpers.js';
 
 const OPS = 'ops-triage';
+
+// The one case that opens turns puts the switch back, whether or not
+// it passed, so no other spec inherits a turn that never ends.
+test.afterEach(async ({ page }) => {
+  const res = await page.request.delete('/_mock/turns');
+  expect(res.ok()).toBeTruthy();
+});
 
 test.describe('smoke: 017-shell-commands', () => {
   test('the command palette offers what the prompt would accept', async ({ page }) => {
@@ -97,9 +105,8 @@ test.describe('smoke: 017-shell-commands', () => {
 
     // The prompt comes last on purpose. The fixture transcript has no
     // user turn to align, so one has to be typed — and submit() refuses
-    // anything typed while a turn is running, slash commands included.
-    // The mock never closes this one, so a command after it is a
-    // command swallowed.
+    // anything typed while a turn is running, slash commands included,
+    // so a command sent before this turn ends would be swallowed.
     await input.fill('does this land on the right?');
     await input.press('Enter');
     // The rule these shells inherit from styles.css — .term-out is a
@@ -152,6 +159,10 @@ test.describe('smoke: 017-shell-commands', () => {
   });
 
   test('the batch drawer lands on screen and reaches the terminal', async ({ page }) => {
+    // See the header: the first prompt has to still be running when
+    // it is asserted on.
+    const open = await page.request.post('/_mock/turns', { data: { open: true } });
+    expect(open.ok()).toBeTruthy();
     await openSoloSession(page, '001-happy-turn');
     const input = page.locator('#solo-body .term:visible .term-prompt');
 
@@ -170,8 +181,8 @@ test.describe('smoke: 017-shell-commands', () => {
     await page.locator('#batch-input').fill('first prompt\nsecond prompt');
     await page.locator('.batch-actions button').first().click();
 
-    // The first prompt is in flight — the mock never closes the turn,
-    // so this is as far as the run gets, and as far as this test asks.
+    // The first prompt is in flight, and in open mode stays there, so
+    // this is as far as the run gets and as far as this test asks.
     await expect(page.locator('#batch-results tbody tr')).toHaveCount(2);
     await expect(page.locator('#batch-results tbody tr').first()).toContainText('running');
     await expect(page.locator('#solo-body .term:visible .message.user')).toContainText(

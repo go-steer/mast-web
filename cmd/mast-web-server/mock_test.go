@@ -32,7 +32,25 @@ import (
 // pre-populated with two fixtures — a happy turn and a cost-ceiling.
 // Returns the httptest.Server + a cleanup that shuts it down. Frame
 // delay is 0 so tests aren't slow.
+// newMockServer starts a mock in OPEN turn mode: a started turn stays
+// in flight until a test stops it, so every turn-state transition is
+// deliberate and nothing races. Play mode — turns that run and end —
+// has its own tests and its own constructor, newPlayingMockServer.
 func newMockServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := newMockServerWithDelay(t, 0)
+	postJSON(t, srv, "/_mock/turns", `{"open":true}`)
+	return srv
+}
+
+// newPlayingMockServer starts a mock in the default PLAY mode, paced at
+// delayMs between frames.
+func newPlayingMockServer(t *testing.T, delayMs int) *httptest.Server {
+	t.Helper()
+	return newMockServerWithDelay(t, delayMs)
+}
+
+func newMockServerWithDelay(t *testing.T, delayMs int) *httptest.Server {
 	t.Helper()
 	fixDir := t.TempDir()
 	happy := `{"event":"capabilities","data":{"protocol_version":"1.4.0","event_types":["capabilities"],"server":"test"}}
@@ -48,7 +66,7 @@ func newMockServer(t *testing.T) *httptest.Server {
 		mode:         modeMock,
 		fixturesDir:  fixDir,
 		fixture:      "001-happy-turn",
-		frameDelayMs: 0,
+		frameDelayMs: delayMs,
 		apiPrefix:    "/attach",
 	}
 	handler, err := buildMux(context.Background(), cfg)

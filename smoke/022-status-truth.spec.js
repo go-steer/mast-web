@@ -53,11 +53,26 @@ async function clearGates(page) {
   expect(res.ok()).toBeTruthy();
 }
 
+// These cases are about a turn somebody ELSE is running, watched
+// arriving in a status poll up to ten seconds later. In the mock's
+// default play mode an injected turn plays its fixture and ends within
+// ~100ms at the suite's pacing, which no poll could catch — so turns
+// here stay open until a case stops them (cmd/mast-web-server/
+// mock_play.go), and the switch is put back for every spec after.
+async function openTurns(page, open) {
+  const res = open
+    ? await page.request.post('/_mock/turns', { data: { open: true } })
+    : await page.request.delete('/_mock/turns');
+  expect(res.ok()).toBeTruthy();
+}
+
 test.beforeEach(async ({ page }) => {
   await clearGates(page);
+  await openTurns(page, true);
 });
 
 test.afterEach(async ({ page }) => {
+  await openTurns(page, false);
   await clearGates(page);
 });
 

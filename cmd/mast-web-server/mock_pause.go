@@ -82,25 +82,30 @@ type pauseGate struct {
 	// #896 itself was: a state declared from the start and never
 	// produced, so every client's mid-turn path went untested.
 	//
-	// The transitions are deliberate rather than timed, so a test
-	// never races them:
+	// The transitions:
 	//
 	//   inject / wake, gate open   → true   (a turn starts)
 	//   inject / wake, gate closed → unchanged (queued behind it)
-	//   interrupt, hold=false      → false  (cancelled, loop free)
-	//   interrupt, hold=true       → unchanged — THE INTERESTING ONE.
-	//                                A turn cancelled on the way into a
-	//                                hold is still unwinding, which is
-	//                                the paused-and-running window the
-	//                                bool was added to express.
+	//   interrupt, hold=false      → false  (cancelled, loop free; a
+	//                                `canceled` turn-error is sent)
+	//   interrupt, hold=true       → open mode: unchanged — THE
+	//                                INTERESTING ONE. A turn cancelled
+	//                                on the way into a hold is still
+	//                                unwinding, which is the paused-
+	//                                and-running window the bool was
+	//                                added to express.
+	//                                play mode: false, with `canceled`.
 	//   pause                      → unchanged (a quiet hold over a
 	//                                running turn is a real state)
 	//   resume steer / continue    → true   (back to work)
 	//   resume abandon             → false  (gate open, work dropped)
+	//   a played turn runs out     → false  (play mode only)
 	//
-	// Nothing clears it on its own: the mock has no loop that finishes.
-	// A spec that wants an idle session resumes with abandon or clears
-	// the gates through DELETE /_mock/pause-gates.
+	// In open mode (POST /_mock/turns {"open":true}) nothing clears it
+	// on its own and every transition is deliberate rather than timed,
+	// so a test never races them; the Go tests run that way. In play
+	// mode, the default, a started turn plays the fixture and ends. See
+	// mock_play.go for why both exist.
 	turnInFlight bool
 }
 
@@ -143,6 +148,7 @@ func (g *pauseGates) reset() {
 // turn-request tally it sits next to; the underscore marks it as the
 // mock's own rather than anything a real backend serves.
 func (h *mockHandler) resetGates(w http.ResponseWriter, _ *http.Request) {
+	h.turns.stopAll()
 	h.gates.reset()
 	writeEmpty(w, http.StatusNoContent)
 }
@@ -167,7 +173,9 @@ type mockHub struct {
 // its own unsubscribe. The channel is buffered so a publisher never
 // waits on a reader that is mid-flush.
 func (b *mockHub) subscribe(sid string) (<-chan frame, func()) {
-	ch := make(chan frame, 8)
+	// Deep enough for a whole played turn (mock_play.go) to queue
+	// behind an attach-time replay that is still draining.
+	ch := make(chan frame, 64)
 	b.mu.Lock()
 	if b.subs == nil {
 		b.subs = make(map[string]map[chan frame]struct{})
@@ -264,8 +272,16 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 	// an absent flag means hold.
 	hold := req.Hold == nil || *req.Hold
 
+	// Whatever is playing stops here, held or not: both forms cancel
+	// the turn. What differs is whether it has finished unwinding.
+	h.turns.stop(sid)
 	prev := h.gates.get(sid)
 	interrupted := prev.turnInFlight
+	// In play mode a cut turn ends: there is no loop left to unwind
+	// it, and a turn the mock leaves in flight forever is a turn the
+	// browser waits on forever. Open mode keeps the unwind window
+	// below, because smoke/022 is about exactly that window.
+	ends := interrupted && !h.turns.isOpen()
 
 	now := time.Now()
 	if hold {
@@ -278,13 +294,16 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 			since:        now,
 			reason:       defaultPauseReason,
 			interrupted:  interrupted,
-			turnInFlight: prev.turnInFlight,
+			turnInFlight: prev.turnInFlight && !ends,
 		}
 		if prev.paused {
 			// Don't restamp a gate that was already closed.
 			gate.since = prev.since
 			gate.reason = prev.reason
 			gate.interrupted = prev.interrupted || interrupted
+		}
+		if ends {
+			h.hub.publish(sid, canceledFrame())
 		}
 		if wasPaused := h.gates.set(sid, gate); !wasPaused {
 			h.hub.publish(sid, pauseFrame(pauseStatePaused, gate.reason, "", gate.interrupted, now))
@@ -295,6 +314,13 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 		next := prev
 		next.turnInFlight = false
 		h.gates.set(sid, next)
+		// And the turn says so. A real daemon ends a cancelled turn with
+		// a `canceled` turn-error (1.8.0); without it the browser's STOP
+		// clears the server's state and leaves the composer waiting on a
+		// terminal frame that is never sent.
+		if interrupted {
+			h.hub.publish(sid, canceledFrame())
+		}
 	}
 
 	for k, v := range corsHeaders() {
@@ -408,7 +434,11 @@ func (h *mockHandler) resume(w http.ResponseWriter, r *http.Request, sid string)
 	prev := h.gates.get(sid)
 	// Steer and continue put the loop back to work; abandon opens the
 	// gate and drops the held work, leaving the session idle.
-	h.gates.set(sid, pauseGate{turnInFlight: prev.paused && mode != resumeModeAbandon})
+	working := prev.paused && mode != resumeModeAbandon
+	h.gates.set(sid, pauseGate{})
+	if mode == resumeModeAbandon {
+		h.turns.stop(sid)
+	}
 	now := time.Now()
 	if prev.paused {
 		h.hub.publish(sid, pauseFrame(pauseStateResumed, "", mode, false, now))
@@ -418,6 +448,11 @@ func (h *mockHandler) resume(w http.ResponseWriter, r *http.Request, sid string)
 		if mode != resumeModeAbandon {
 			h.hub.publish(sid, wakeFrame(now))
 		}
+	}
+	if working {
+		// In play mode the work actually runs and ends (mock_play.go);
+		// in open mode it stays in flight, as it always did.
+		h.startTurn(sid, "")
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -238,6 +238,27 @@ describe('MastTerminal built-ins', () => {
       expect(text()).not.toContain('Not supported by this backend');
     });
 
+    // A real two-column table, not padEnd() text: a long description
+    // used to wrap back to the left edge under the names. Each command
+    // is a usage cell and a description cell, so the browser can wrap
+    // the second inside its own column.
+    it('lays /help out as usage and description cells', async () => {
+      const { term } = mount({ features: { guardrails: true } });
+      await term.submit('/help');
+      const table = term.out.querySelector('.message.system:last-child .help-table');
+      expect(table).not.toBeNull();
+      const usages = [...table.querySelectorAll('.help-usage')].map((el) => el.textContent);
+      const descs = table.querySelectorAll('.help-desc');
+      expect(usages.length).toBe(descs.length);
+      expect(usages).toContain('/help');
+      // Usage text with angle brackets is text, not markup.
+      const share = [...table.querySelectorAll('.help-usage')].find((el) =>
+        el.textContent.startsWith('/share')
+      );
+      expect(share.textContent).toContain('<identity>');
+      expect(share.querySelector('identity')).toBeNull();
+    });
+
     // §2.1's additive rule: silence is consent. A 2026-02 backend that
     // has never heard of the flag keeps the command.
     it('treats an absent features map, and an absent key, as on', async () => {

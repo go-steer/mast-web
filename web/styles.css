@@ -987,6 +987,36 @@ body[data-layout='chat'] .message.user {
   font-size: 12px;
 }
 
+/* /help: usage beside what it does, as a real two-column grid so a long
+   description wraps inside its own column instead of back under the
+   names. The usage column is capped so one long usage (/share's) cannot
+   squeeze the descriptions to nothing in a narrow panel; past the cap
+   it wraps too. white-space resets the pre-wrap .message.system needs
+   for padEnd()-aligned text, which this is no longer. */
+.message.system .help-table {
+  display: grid;
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  gap: 2px 1.5em;
+  white-space: normal;
+}
+
+.message.system .help-usage {
+  color: var(--blue);
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+
+.message.system .help-heading,
+.message.system .help-note {
+  margin-top: 0.8em;
+  white-space: normal;
+}
+
+.message.system .help-names {
+  color: var(--blue);
+  font-style: normal;
+}
+
 /* Timestamp gutter shared by tool + builtin-tool rows. */
 .tool-ts {
   color: var(--text-dim);

@@ -526,6 +526,11 @@ window.MastShell = (function () {
           cell.colSpan = 5;
           cell.style.color = 'var(--red)';
           tr.appendChild(cell);
+        } else if (e.status === 'canceled') {
+          // Stopped on purpose, so not red: nothing went wrong.
+          const cell = mk('td', null, 'stopped before it finished');
+          cell.colSpan = 5;
+          tr.appendChild(cell);
         } else {
           const cell = mk('td', null, '—');
           cell.colSpan = 5;
@@ -579,6 +584,8 @@ window.MastShell = (function () {
           };
         } else if (r.ok) {
           entries[i] = { prompt: entries[i].prompt, status: 'done', result: r };
+        } else if (r.canceled) {
+          entries[i] = { prompt: entries[i].prompt, status: 'canceled' };
         } else {
           entries[i] = { prompt: entries[i].prompt, status: 'error', error: r.error };
         }

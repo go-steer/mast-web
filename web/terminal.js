@@ -135,6 +135,17 @@ window.MastTerminal = (function () {
     return Number.isNaN(Number(d)) ? null : clockStamp(d);
   }
 
+  // A turn that ended because somebody stopped it. Its own type, so the
+  // places that catch a failed turn can tell "it broke" from "it was
+  // asked to stop" without matching on a message string.
+  class TurnCanceled extends Error {
+    constructor() {
+      super('turn canceled');
+      this.name = 'TurnCanceled';
+    }
+  }
+  const CANCELED_LINE = 'Turn canceled.';
+
   function describeError(e, prefix) {
     const Drain = window.AttachClient && window.AttachClient.BackendDrainingError;
     if (Drain && e instanceof Drain) {
@@ -1696,11 +1707,22 @@ window.MastTerminal = (function () {
           // footer.
           flushTurnClose();
           const te = ev.data || {};
+          const failing = connection.getActiveTurn();
+          // A cancel is not a failure (1.8.0, core-agent#816): somebody
+          // asked for it — this operator's STOP, another operator's, a
+          // shutdown. It ends the turn without a result, and it says so
+          // in words that do not read as something having gone wrong.
+          // Who cancelled is not on the frame, by design, so neither
+          // line guesses.
+          if (te.kind === 'canceled') {
+            if (failing) failing.finish(null, new TurnCanceled());
+            else addSystemMessage(CANCELED_LINE);
+            return;
+          }
           const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
           if (te.kind === 'cost_ceiling') {
             addSystemMessage('Cost ceiling reached — session paused until /guardrails reset.');
           }
-          const failing = connection.getActiveTurn();
           if (failing) failing.finish(null, new Error(msg));
           else addSystemMessage('Turn error: ' + msg);
           return;
@@ -3083,6 +3105,10 @@ window.MastTerminal = (function () {
         // look, and handed back for a caller that is driving a queue
         // rather than watching one. Deliberately not rethrown: every
         // other call site is a keypress with nobody to catch it.
+        if (e instanceof TurnCanceled) {
+          addSystemMessage(CANCELED_LINE);
+          return { ok: false, canceled: true, error: 'turn canceled' };
+        }
         addSystemMessage(describeError(e));
         return { ok: false, error: describeError(e) };
       } finally {

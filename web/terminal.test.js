@@ -603,6 +603,58 @@ describe('MastTerminal built-ins', () => {
     });
   });
 
+  // 1.8.0's `canceled` kind (core-agent#816). Somebody asked for the
+  // turn to stop — this operator's STOP, another operator's, a shutdown
+  // — and that is not something having gone wrong. It used to render as
+  // "Error: canceled: turn canceled", found on the first run of the
+  // walkthrough once the mock started sending the frame a real daemon
+  // sends.
+  describe('a canceled turn is not an error', () => {
+    const canceled = {
+      kind: 'canceled',
+      code: 'CANCELED',
+      message: 'turn canceled',
+      retryable: false,
+    };
+
+    it("ends this browser's turn with a plain line and reports it to the caller", async () => {
+      const { term, client, text } = mount({ features: {} });
+      client.inject = async () => {};
+      const pending = term.submit('hello');
+      client.feed({ type: 'turn-error', data: canceled });
+      const r = await pending;
+
+      expect(text()).toContain('Turn canceled.');
+      expect(text()).not.toContain('Error:');
+      // The batch runner reads this, so a stop has to be distinguishable
+      // from a failure there too — not just in the transcript.
+      expect(r).toMatchObject({ ok: false, canceled: true });
+      // And the composer is back.
+      expect(term.el.querySelector('.term-send').disabled).toBe(false);
+    });
+
+    it('says the same about a turn somebody else was running', () => {
+      const { client, text } = mount({ features: {} });
+      client.feed({ type: 'turn-error', data: canceled });
+      expect(text()).toContain('Turn canceled.');
+      expect(text()).not.toContain('Turn error');
+    });
+
+    // The other side of the line: an actual failure still reads as one.
+    it('leaves a real failure reading as an error', async () => {
+      const { term, client, text } = mount({ features: {} });
+      client.inject = async () => {};
+      const pending = term.submit('hello');
+      client.feed({
+        type: 'turn-error',
+        data: { kind: 'rate_limited', code: '429', message: 'quota exceeded', retryable: true },
+      });
+      const r = await pending;
+      expect(text()).toContain('Error: rate_limited: quota exceeded');
+      expect(r.canceled).toBeUndefined();
+    });
+  });
+
   // #70. A hold is the one piece of session state that changes what
   // every other control means, so the tests below are mostly about
   // which surface says what: the banner draws the state, the `pause`

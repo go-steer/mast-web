@@ -41,6 +41,15 @@ message.
   that cuts a turn sends `canceled`, and `POST /_mock/turns {"open":true}`
   restores the open-ended turn for testing a turn somebody else is running.
   Found by the first live run of the manual walkthrough.
+- **A stopped turn no longer reads as an error.** A `turn-error` of kind
+  `canceled` (protocol 1.8.0) went down the same path as a real failure, so
+  pressing STOP printed `Error: canceled: turn canceled`, and a turn somebody
+  else stopped printed `Turn error: canceled: …`. A cancel is something
+  somebody asked for. It now reads `Turn canceled.` in both cases, and the
+  batch runner records the prompt as `canceled` ("stopped before it
+  finished") rather than as a red `error`. Who cancelled isn't on the frame,
+  so neither line guesses. This affects every 1.8.0+ daemon, not only the
+  mock.
 
 ## [0.5.0] - 2026-10-06
 

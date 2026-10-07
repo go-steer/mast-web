@@ -172,21 +172,52 @@ func TestMockPlay_StopWithNothingInFlightSendsNothing(t *testing.T) {
 	}
 }
 
-// Without this, CONTINUE left the status bar reading "1 running" for
-// the rest of the session: resume marked a turn in flight and nothing
-// in play mode or open mode ever ended it.
-func TestMockPlay_ContinueRunsATurnThatEnds(t *testing.T) {
-	srv := newPlayingMockServer(t, 0)
-	frames, closeStream := attached(t, srv, "smoke-session")
-	defer closeStream()
+// CONTINUE runs held work and ends; with nothing held it opens the gate
+// on an idle session. Before #118 the mock marked any continue as a turn
+// in flight that nothing ended ("1 running" for the rest of the
+// session); #118 then played a turn for every continue, held work or
+// not. Both halves pinned here.
+func TestMockPlay_ContinueResumesOnlyHeldWork(t *testing.T) {
+	t.Run("a queued message runs and the turn ends", func(t *testing.T) {
+		srv := newPlayingMockServer(t, 0)
+		frames, closeStream := attached(t, srv, "smoke-session")
+		defer closeStream()
 
-	postJSON(t, srv, "/sessions/smoke-session/pause", `{}`)
-	postJSON(t, srv, "/sessions/smoke-session/resume", `{"mode":"continue"}`)
-	awaitFrame(t, frames, "wake")
+		postJSON(t, srv, "/sessions/smoke-session/pause", `{}`)
+		postJSON(t, srv, "/sessions/smoke-session/inject", `{"message":"while you were out"}`)
+		postJSON(t, srv, "/sessions/smoke-session/resume", `{"mode":"continue"}`)
+		awaitFrame(t, frames, "wake")
 
-	eventually(t, "the continued turn to end", func() bool {
-		state, _, inFlight := statusOf(t, srv, "smoke-session")
-		return state == "idle" && !inFlight
+		eventually(t, "the continued turn to end", func() bool {
+			state, _, inFlight := statusOf(t, srv, "smoke-session")
+			return state == "idle" && !inFlight
+		})
+	})
+
+	t.Run("nothing held, no turn", func(t *testing.T) {
+		srv := newPlayingMockServer(t, 0)
+		frames, closeStream := attached(t, srv, "smoke-session")
+		defer closeStream()
+
+		postJSON(t, srv, "/sessions/smoke-session/pause", `{}`)
+		awaitFrame(t, frames, "pause")
+		postJSON(t, srv, "/sessions/smoke-session/resume", `{"mode":"continue"}`)
+		awaitFrame(t, frames, "pause") // the resumed transition
+
+		deadline := time.After(200 * time.Millisecond)
+		for {
+			select {
+			case fr := <-frames:
+				if fr.Event == "wake" || fr.Event == "turn-complete" {
+					t.Fatalf("a turn nobody asked for: %s %#v", fr.Event, fr.Data)
+				}
+			case <-deadline:
+				if state, _, inFlight := statusOf(t, srv, "smoke-session"); state != "idle" || inFlight {
+					t.Fatalf("state=%q in_flight=%v after an empty continue, want idle", state, inFlight)
+				}
+				return
+			}
+		}
 	})
 }
 

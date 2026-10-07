@@ -263,19 +263,30 @@ func TestMockTurn_LegacyHeaderReportsWhetherThereWasATurn(t *testing.T) {
 // the difference an operator is actually choosing between.
 func TestMockTurn_ResumeModeDecidesWhetherATurnFollows(t *testing.T) {
 	for _, tc := range []struct {
+		name      string
+		queue     bool // a message arrives while the gate is closed
 		body      string
 		wantState string
 	}{
-		{`{"mode":"continue"}`, "running"},
-		{`{"mode":"steer","steer":"try the other branch"}`, "running"},
+		// Continue resumes what was held and nothing more. With
+		// nothing queued and nothing running there is nothing to
+		// resume, and inventing a turn here played the fixture at an
+		// operator who paused an idle session and pressed CONTINUE.
+		{"continue, nothing held", false, `{"mode":"continue"}`, "idle"},
+		{"continue, a message queued", true, `{"mode":"continue"}`, "running"},
+		// A steer is new work whatever was waiting.
+		{"steer", false, `{"mode":"steer","steer":"try the other branch"}`, "running"},
 		// Abandon drops the turn on the floor. That is the mode's
 		// entire point, and a client that showed a spinner afterwards
 		// would be waiting for output that is never coming.
-		{`{"mode":"abandon"}`, "idle"},
+		{"abandon, a message queued", true, `{"mode":"abandon"}`, "idle"},
 	} {
-		t.Run(tc.body, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			srv := newMockServer(t)
 			postJSON(t, srv, "/sessions/smoke-session/pause", `{}`)
+			if tc.queue {
+				postJSON(t, srv, "/sessions/smoke-session/inject", `{"message":"while you were out"}`)
+			}
 			postJSON(t, srv, "/sessions/smoke-session/resume", tc.body)
 
 			state, _, inFlight := statusOf(t, srv, "smoke-session")

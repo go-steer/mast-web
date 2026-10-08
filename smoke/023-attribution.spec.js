@@ -187,7 +187,8 @@ test.describe('smoke: 023-attribution', () => {
     // And a name the manager never registered stays a miss, not a
     // silent success.
     await run(page, '/subagents stop ghost');
-    await expect(lastOutput(screen)).toContainText('/subagents stop ghost failed');
+    await expect(lastOutput(screen)).toContainText('No subagent named "ghost" on this session.');
+    await expect(lastOutput(screen)).not.toContainText('HTTP 404');
 
     expect(await turnRequests(page)).toEqual({});
   });

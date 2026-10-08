@@ -1481,13 +1481,33 @@ describe('MastTerminal built-ins', () => {
         expect(text()).not.toContain('Stopped subagent');
       });
 
-      it('surfaces a 404 as the miss it is', async () => {
+      // One meaning, said in words: a typo, not a fault. The miss is still
+      // reported — never a silent success — just without the HTTP line.
+      it('surfaces a 404 as the miss it is, in words', async () => {
         const { term, client, text } = mount();
         client.stopSubagent = async () => {
-          throw new Error('POST /agents/ghost/stop → HTTP 404: no subagent named "ghost"');
+          const e = new Error('POST /agents/ghost/stop → HTTP 404: no subagent named "ghost"');
+          e.status = 404;
+          throw e;
         };
         await term.submit('/subagents stop ghost');
-        expect(text()).toContain('/subagents stop ghost failed');
+        expect(text()).toContain('No subagent named "ghost" on this session.');
+        expect(text()).toContain('/subagents lists the ones it has');
+        expect(text()).not.toContain('HTTP 404');
+      });
+
+      // Anything else keeps the detail: an unexplained failure is where
+      // the raw text earns its place.
+      it('keeps the full detail for any other failure', async () => {
+        const { term, client, text } = mount();
+        client.stopSubagent = async () => {
+          const e = new Error('POST /agents/researcher/stop → HTTP 500: manager unavailable');
+          e.status = 500;
+          throw e;
+        };
+        await term.submit('/subagents stop researcher');
+        expect(text()).toContain('/subagents stop researcher failed');
+        expect(text()).toContain('HTTP 500: manager unavailable');
       });
 
       it('asks for a name rather than stopping something at random', async () => {

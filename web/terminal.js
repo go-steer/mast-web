@@ -2027,7 +2027,20 @@ window.MastTerminal = (function () {
       try {
         out = await client.stopSubagent(name);
       } catch (e) {
-        addSystemMessage(describeError(e, `/subagents stop ${name} failed: `));
+        // 404 has exactly one meaning on this route (1.12.0, core-agent
+        // #897): this session never registered a subagent by that name.
+        // So it gets a sentence and the way to find the right name, not
+        // the method, path and status line — found on the first live
+        // walkthrough run, where that read as a fault rather than a
+        // typo. Any other failure keeps the full detail, because there
+        // the raw text is the only clue.
+        if (e && e.status === 404) {
+          addSystemMessage(
+            `No subagent named "${name}" on this session. /subagents lists the ones it has.`
+          );
+        } else {
+          addSystemMessage(describeError(e, `/subagents stop ${name} failed: `));
+        }
         return;
       }
       const honest =

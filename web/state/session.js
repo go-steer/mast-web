@@ -360,10 +360,17 @@ window.MastState.createSession = (function () {
     function applyStatusSnapshot(status) {
       const st = status || {};
       applyPauseStatus(st);
-      patchStatus({
+      const patch = {
         turnInFlight: !!st.turn_in_flight,
         runState: typeof st.state === 'string' ? st.state : '',
-      });
+      };
+      // The poll's turn_state is the same field the status-update frame
+      // carries, answered now. Taking it is what makes the poll an actual
+      // backstop for a frame-carried 'streaming' that nothing retracted;
+      // it used to be read past, so a stuck one stayed stuck. Absent
+      // leaves the frame's value alone: no answer is not 'idle'.
+      if (typeof st.turn_state === 'string') patch.turnState = st.turn_state;
+      patchStatus(patch);
     }
 
     // recordWake consumes a `wake` frame (v1.7.0 §2.9). Timestamp only,

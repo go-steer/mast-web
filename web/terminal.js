@@ -970,6 +970,25 @@ window.MastTerminal = (function () {
     // said" look alike, and treating the pair as a veto over a running
     // turn we can see locally would make a 2026-02 daemon look idle
     // mid-stream.
+    // A turn is over, whoever started it and however it ended. A real
+    // backend says so again in the next status-update, but not every
+    // producer sends one — the 001 capture is a status-update:'streaming'
+    // and then a turn-complete, with nothing to retract it — and a
+    // turn_state left at 'streaming' is a panel that claims to be working
+    // forever (#93). Called from BOTH terminal frames: it used to be
+    // turn-complete alone, so a turn that ended in an error or a STOP
+    // left the window saying "1 running" until reload. Found on the first
+    // live walkthrough run, on repo-indexer, whose capture ends its turn
+    // with a cost_ceiling turn-error. The status poll is the backstop on
+    // a 1.12.0+ daemon (applyStatusSnapshot); this is the frame that
+    // already knows.
+    function turnEnded() {
+      if (sess().status.turnState === 'streaming') {
+        session.patchStatus({ turnState: 'idle' });
+        renderRunning();
+      }
+    }
+
     function serverRunning(s) {
       const st = s.status;
       return !!st.turnInFlight || st.runState === 'running' || st.turnState === 'streaming';
@@ -1691,17 +1710,7 @@ window.MastTerminal = (function () {
 
         case 'turn-complete': {
           const tc = ev.data || {};
-          // That turn is over, whoever started it. A real backend says
-          // so again in the next status-update, but not every producer
-          // sends one — the 001 capture is a status-update:'streaming'
-          // and then this, with nothing to retract it — and a
-          // turn_state left at 'streaming' is a panel that claims to be
-          // working forever (#93). The poll is the backstop; this is the
-          // frame that already knows.
-          if (sess().status.turnState === 'streaming') {
-            session.patchStatus({ turnState: 'idle' });
-            renderRunning();
-          }
+          turnEnded();
           const open = connection.getActiveTurn();
           if (open) {
             // Measured to *now* rather than to close time — the grace
@@ -1722,6 +1731,9 @@ window.MastTerminal = (function () {
           // is its own event, not a reason to void a completed turn's
           // footer.
           flushTurnClose();
+          // A turn-error ends the turn as surely as a turn-complete: the
+          // spec gives every turn exactly one of the two.
+          turnEnded();
           const te = ev.data || {};
           const failing = connection.getActiveTurn();
           // A cancel is not a failure (1.8.0, core-agent#816): somebody

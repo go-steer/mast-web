@@ -630,6 +630,47 @@ describe('MastTerminal built-ins', () => {
   // "Error: canceled: turn canceled", found on the first run of the
   // walkthrough once the mock started sending the frame a real daemon
   // sends.
+  // Every turn ends in exactly one terminal frame, turn-complete or
+  // turn-error, and either one means the turn_state a status-update left
+  // at 'streaming' is over. Only turn-complete used to clear it, so a
+  // turn that ended in an error or a STOP left the window saying
+  // "1 running" until reload — found on the first live walkthrough run,
+  // on repo-indexer, whose capture ends in a cost_ceiling turn-error.
+  describe('any turn end clears "running"', () => {
+    const streaming = { type: 'status-update', data: { turn_state: 'streaming' } };
+
+    it('a turn somebody else was running ends in an error', () => {
+      const { term, client } = mount({ features: {} });
+      client.feed(streaming);
+      expect(term.state.running).toBe(true);
+      client.feed({
+        type: 'turn-error',
+        data: { kind: 'cost_ceiling', message: 'blocked', retryable: false },
+      });
+      expect(term.state.running).toBe(false);
+    });
+
+    it("this browser's own turn is stopped", async () => {
+      const { term, client } = mount({ features: {} });
+      client.inject = async () => {};
+      const pending = term.submit('hello');
+      client.feed(streaming);
+      client.feed({
+        type: 'turn-error',
+        data: { kind: 'canceled', code: 'CANCELED', message: 'turn canceled', retryable: false },
+      });
+      await pending;
+      expect(term.state.running).toBe(false);
+    });
+
+    it('a turn-complete still clears it, as before', () => {
+      const { term, client } = mount({ features: {} });
+      client.feed(streaming);
+      client.feed({ type: 'turn-complete', data: { tokens_in: 1, tokens_out: 1 } });
+      expect(term.state.running).toBe(false);
+    });
+  });
+
   describe('a canceled turn is not an error', () => {
     const canceled = {
       kind: 'canceled',

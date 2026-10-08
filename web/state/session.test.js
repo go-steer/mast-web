@@ -346,6 +346,21 @@ describe('state/session', () => {
       expect(session.get().status.turnInFlight).toBe(true);
     });
 
+    // The poll is the backstop for a frame-carried 'streaming' that no
+    // terminal frame retracted. It used to read turn_state past, so a
+    // stuck one stayed stuck however often the server said otherwise.
+    it('lets the poll retract a turn_state the frames left at streaming', () => {
+      session.patchStatus({ turnState: 'streaming' });
+      session.applyStatusSnapshot({ state: 'idle', turn_state: 'idle', turn_in_flight: false });
+      expect(session.get().status.turnState).toBe('idle');
+    });
+
+    it('leaves turn_state alone when the poll does not say', () => {
+      session.patchStatus({ turnState: 'streaming' });
+      session.applyStatusSnapshot({ state: 'idle', turn_in_flight: false });
+      expect(session.get().status.turnState).toBe('streaming');
+    });
+
     it('reads a pre-v1.12.0 status as no turn rather than leaving the last one up', () => {
       // Absent is not "still running". An older daemon never sets the
       // key, and a spinner that stays lit forever is worse than one

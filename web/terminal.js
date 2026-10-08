@@ -312,6 +312,9 @@ window.MastTerminal = (function () {
     // outside the transcript can do anything with it: a DOM handle, a
     // half-priced turn, and two flags about how to draw the next row.
     const ui = {
+      // 'pause' or 'resume' while this tab's own request for that
+      // transition is in flight. See "The hold" for why.
+      holdRequest: null,
       lastUserPrompt: '',
       lastFooter: null,
       // Most recent usage-update.last_turn, held until a footer claims
@@ -999,6 +1002,15 @@ window.MastTerminal = (function () {
     // on every poll, so a second narrator would announce every park
     // twice — and an operator who sees "Session held" twice reasonably
     // concludes it happened twice.
+    //
+    // With one exception, which is the transition this tab asked for.
+    // /pause and every way out report their own result, in a line that
+    // names what to do next, and the server broadcasts the frame BEFORE
+    // it answers the request — so the frame usually lands first, sees a
+    // transition, and narrates it too. Two lines for one hold, found on
+    // the first live walkthrough run. While a request of ours is in
+    // flight (ui.holdRequest), the frame leaves that transition to the
+    // command. A hold set anywhere else is still narrated, once.
 
     const HOLD_NO_CONTROLS =
       'This backend advertises no resume route — the hold has to be lifted where it was set.';
@@ -1178,6 +1190,7 @@ window.MastTerminal = (function () {
       }
       contBtn.disabled = true;
       abandonBtn.disabled = true;
+      ui.holdRequest = 'resume';
       try {
         const r = (await client.resume(mode, steer)) || {};
         // `resumed: false` with a 200 is the idempotent answer, not a
@@ -1201,6 +1214,7 @@ window.MastTerminal = (function () {
         addSystemMessage(describeError(e, 'Resume failed: '));
         return null;
       } finally {
+        ui.holdRequest = null;
         contBtn.disabled = false;
         abandonBtn.disabled = false;
       }
@@ -1616,8 +1630,10 @@ window.MastTerminal = (function () {
           const p = sess().pause;
           // Only a transition is worth a line. An unchanged gate still
           // redraws — the reason or the timestamp may have moved — but
-          // it did not happen again.
-          if (p.paused !== was) narrateHold(p);
+          // it did not happen again. And not the one this tab asked for:
+          // its command reports that itself (see "The hold").
+          const ours = ui.holdRequest === (p.paused ? 'pause' : 'resume');
+          if (p.paused !== was && !ours) narrateHold(p);
           renderHold();
           // Freshly held: go and find out whether the turn it
           // interrupted is still running. That bool exists on one
@@ -2568,6 +2584,7 @@ window.MastTerminal = (function () {
     // is the third one, and the route keeps its own name in the client.
     async function cmdPause(args) {
       const reason = args.join(' ').trim();
+      ui.holdRequest = 'pause';
       try {
         const r = (await client.pause(reason)) || {};
         // Idempotent: already-held is a 200 with transitioned:false,
@@ -2598,6 +2615,8 @@ window.MastTerminal = (function () {
         }
       } catch (e) {
         addSystemMessage(describeError(e, '/pause failed: '));
+      } finally {
+        ui.holdRequest = null;
       }
     }
 

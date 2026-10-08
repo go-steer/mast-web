@@ -699,6 +699,64 @@ describe('MastTerminal built-ins', () => {
       expect(term.state.paused).toBe(true);
     });
 
+    // One line per transition, whichever arrives first. The server
+    // broadcasts the `pause` frame BEFORE it answers the request, so the
+    // frame usually wins the race — and used to narrate the transition
+    // this tab's own command was about to report. Two lines for one
+    // hold, found on the first live walkthrough run.
+    describe('one line per transition, in either arrival order', () => {
+      const lines = (term, re) =>
+        [...term.out.querySelectorAll('.message.system')]
+          .map((el) => el.textContent)
+          .filter((t) => re.test(t));
+
+      it('/pause: frame first, then the reply', async () => {
+        const { term, client } = mount({ features: { pause: true } });
+        const reply = client.pause;
+        client.pause = async (reason) => {
+          client.feed(paused({ reason: reason || 'operator hold' }));
+          return reply(reason);
+        };
+        await term.submit('/pause looking at the diff');
+        const held = lines(term, /held/i);
+        expect(held).toHaveLength(1);
+        // The command's line, because it names the ways out.
+        expect(held[0]).toContain('/continue');
+      });
+
+      it('/pause: reply first, then the frame', async () => {
+        const { term, client } = mount({ features: { pause: true } });
+        await term.submit('/pause looking at the diff');
+        client.feed(paused({ reason: 'looking at the diff' }));
+        expect(lines(term, /held/i)).toHaveLength(1);
+      });
+
+      it('/continue: frame first, then the reply', async () => {
+        const { term, client } = mount({ features: { pause: true } });
+        client.feed(paused({ reason: 'someone else' }));
+        const reply = client.resume;
+        client.resume = async (mode, steer) => {
+          client.feed({ type: 'pause', data: { state: 'resumed', mode: mode || 'continue' } });
+          return reply(mode, steer);
+        };
+        await term.submit('/continue');
+        const resumed = lines(term, /resumed/i);
+        expect(resumed).toHaveLength(1);
+        expect(resumed[0]).toContain('carrying on from where it stopped');
+      });
+
+      // The other side: a transition nobody here asked for is still
+      // news, and still gets exactly one line.
+      it('a hold set somewhere else is still narrated, once', () => {
+        const { term, client } = mount({ features: { pause: true } });
+        client.feed(paused({ reason: 'cost review' }));
+        client.feed(paused({ reason: 'cost review' }));
+        expect(lines(term, /held/i)).toEqual([
+          expect.stringContaining('Session held — cost review.'),
+        ]);
+      });
+    });
+
     // A bare /pause takes whatever reason the backend supplied, which
     // is the string the next operator to find this session will read.
     it('renders the reason the server stored, not the one we sent', async () => {

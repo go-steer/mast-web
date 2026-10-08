@@ -102,6 +102,12 @@ type mockPermsLog struct {
 	// counter-example, and it needs an explicit reset in every test
 	// because of it.
 	tools map[string]string
+	// keys is the same thing one level down: what the tool was going
+	// to act on (the command, the path). "allowed bash_exec" says
+	// nothing an operator reviewing the log can act on; "allowed
+	// bash_exec rm -rf ./build" does. A real daemon records it, and the
+	// seeded rows have it, so a raised prompt's row has to as well.
+	keys map[string]string
 }
 
 func (l *mockPermsLog) append(sid string, a mockApproval) {
@@ -124,20 +130,30 @@ func (l *mockPermsLog) reset() {
 	defer l.mu.Unlock()
 	l.rows = nil
 	l.tools = nil
+	l.keys = nil
 	l.seq = 0
 }
 
-// rememberTool records what a raised prompt was about; toolFor reads
-// it back at respond time. An id nobody raised (a spec answering a
-// prompt it invented) falls back to a placeholder rather than an empty
-// tool name, which would render as a blank row.
-func (l *mockPermsLog) rememberTool(id, tool string) {
+// rememberTool records what a raised prompt was about, tool and key;
+// toolFor and keyFor read them back at respond time. An id nobody
+// raised (a spec answering a prompt it invented) falls back to a
+// placeholder tool rather than an empty name, which would render as a
+// blank row, and to no key, which renders as the tool alone.
+func (l *mockPermsLog) rememberTool(id, tool, key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.tools == nil {
 		l.tools = make(map[string]string)
+		l.keys = make(map[string]string)
 	}
 	l.tools[id] = tool
+	l.keys[id] = key
+}
+
+func (l *mockPermsLog) keyFor(id string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.keys[id]
 }
 
 func (l *mockPermsLog) toolFor(id string) string {
@@ -243,6 +259,7 @@ func (h *mockHandler) permsRespond(w http.ResponseWriter, r *http.Request, sid s
 	}
 	h.perms.append(sid, mockApproval{
 		tool:     h.perms.toolFor(req.ID),
+		key:      h.perms.keyFor(req.ID),
 		decision: req.Decision,
 		by:       c.identity,
 		at:       time.Now(),
@@ -293,7 +310,7 @@ func (h *mockHandler) raisePrompt(w http.ResponseWriter, r *http.Request) {
 		detail = "rm -rf ./build"
 	}
 	id := h.perms.nextFrameID()
-	h.perms.rememberTool(id, tool)
+	h.perms.rememberTool(id, tool, detail)
 	payload := map[string]any{
 		"id":     id,
 		"kind":   kind,

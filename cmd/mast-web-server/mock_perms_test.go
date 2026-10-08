@@ -205,7 +205,7 @@ func TestMockPerms_RaisedPromptReachesTheStream(t *testing.T) {
 func TestMockPerms_AnsweredPromptLogsItsTool(t *testing.T) {
 	srv := newMockServer(t)
 	raise := asCaller(t, http.MethodPost, srv.URL+"/_mock/perms-prompt", mockDefaultCaller,
-		strings.NewReader(`{"session":"smoke-session","tool":"kube_apply"}`))
+		strings.NewReader(`{"session":"smoke-session","tool":"kube_apply","detail":"apply -f prod.yaml"}`))
 	var out struct {
 		ID string `json:"id"`
 	}
@@ -222,6 +222,13 @@ func TestMockPerms_AnsweredPromptLogsItsTool(t *testing.T) {
 	last := rows[len(rows)-1]
 	if last["tool"] != "kube_apply" {
 		t.Fatalf("want the answered prompt's tool in the log, got %v", last)
+	}
+	// And what it was going to act on. "allowed kube_apply" is not
+	// something an operator reviewing the log can act on; "allowed
+	// kube_apply apply -f prod.yaml" is — found on the first live
+	// walkthrough run, where the operator had to ask what they'd allowed.
+	if last["key"] != "apply -f prod.yaml" {
+		t.Fatalf("want the answered prompt's key in the log, got %v", last)
 	}
 }
 

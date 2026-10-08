@@ -235,6 +235,9 @@ test.describe('smoke: 023-attribution', () => {
     // correlation between a prompt and its decision is what makes the
     // log readable at all.
     await expect(out.locator('.list-item').last()).toContainText('kube_apply');
+    // And what it was about to act on, which is the half of the row an
+    // operator reviewing the log actually needs.
+    await expect(out.locator('.list-item').last()).toContainText('apply -f prod.yaml');
     await expect(out.locator('.list-item').last()).toContainText(`by ${SMOKE}`);
   });
 });

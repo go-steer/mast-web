@@ -985,7 +985,14 @@
   color: var(--text-dim);
 }
 
+/* A control at rest is --text (#62's colour rule). Said here on the base
+   class because a <button> does NOT inherit color: without it, a plain
+   .term-btn — the permission card's DENY / ALLOW ONCE / ALLOW SESSION —
+   rendered in the browser's default black, unreadable on a dark theme.
+   Found on the first live walkthrough run. The variants below (SEND,
+   STOP, CONTINUE, ABANDON) still set their own. */
 .term-btn {
+  color: var(--text);
   background: none;
   border: 1px solid var(--border-soft);
   border-radius: 3px;

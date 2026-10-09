@@ -129,6 +129,20 @@ describe('MastStatusBar', () => {
     expect(slot('status-fleet').textContent).toBe('2 terminals · 1 running');
   });
 
+  // v0.6 #111. A halt is a different wait from a hold — a reset, not a
+  // verb — so it is its own count, and a session can be both.
+  it('counts halted sessions beside held ones', () => {
+    const a = makeTerminal({ label: 'ops', halted: true });
+    const b = makeTerminal({ label: 'docs', paused: true, halted: true });
+    open = [a, b];
+    mount();
+    expect(slot('status-fleet').textContent).toBe('2 terminals · 1 held · 2 halted');
+
+    a.poke({ halted: false });
+    b.poke({ halted: false });
+    expect(slot('status-fleet').textContent).toBe('2 terminals · 1 held');
+  });
+
   it('sums the cost across the window rather than reading one session', () => {
     open = [
       makeTerminal({ costUSD: 0.0123 }),

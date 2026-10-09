@@ -655,6 +655,12 @@ body.side-hidden #app-sidebar {
   color: var(--yellow);
 }
 
+/* A session a guardrail halted (v0.6 #111). Red, to match its banner,
+   and because nobody chose it: every turn is refused until a reset. */
+.status-halted {
+  color: var(--red);
+}
+
 /* Dimmer than the rest of the bar until it is worth reading. Cost is
    the number you want to be able to find without it being the number
    you keep noticing. */

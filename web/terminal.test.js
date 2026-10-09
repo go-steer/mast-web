@@ -393,7 +393,9 @@ describe('MastTerminal built-ins', () => {
       // A reset that doesn't unfreeze the input hasn't reset anything
       // the operator can see.
       expect(term.session.get().costCeilingHit).toBe(false);
-      expect(client.calls.at(-1).args[0]).toEqual({
+      // The reset itself — it is no longer the last call, because a reset
+      // is followed by a GET /guardrails to take a halt banner down.
+      expect(client.calls.find((c) => c.name === 'resetGuardrails').args[0]).toEqual({
         guardrail: 'cost_ceiling',
         additionalBudgetUsd: 5,
       });
@@ -818,6 +820,195 @@ describe('MastTerminal built-ins', () => {
   // every other control means, so the tests below are mostly about
   // which surface says what: the banner draws the state, the `pause`
   // frame narrates the transition, and exactly one of them does each.
+  // v0.6 #111 — guardrail trips (1.13.0) and the halted session. The
+  // three facts stay apart: the trip is an announcement, the halt comes
+  // from GET /guardrails alone, and the cancel a cut causes is absorbed
+  // by the trip that explains it — once, and never across a turn.
+  describe('guardrail trips and the halt', () => {
+    const tripFrame = (over) => ({
+      type: 'guardrail-trip',
+      data: {
+        guardrail: 'watchdog',
+        reason:
+          'watchdog halted the agent (repeated-tool-call): looping on read_file with identical args. Clear it with /guardrail reset watchdog, or POST /sessions/{app}/{sid}/guardrails/reset.',
+        halted_turn: false,
+        ...over,
+      },
+    });
+    const canceled = {
+      kind: 'canceled',
+      code: 'CANCELED',
+      message: 'turn canceled',
+      retryable: false,
+    };
+    const halted = {
+      watchdog: {
+        mode: 'warn',
+        tripped: true,
+        reason: 'looping. Clear it with /guardrail reset watchdog.',
+      },
+      cost_ceiling: { tripped: false },
+      halted: true,
+    };
+    const finishOk = (term) =>
+      term.connection.getActiveTurn().finish({
+        totalMs: 10,
+        tokens: { in: 1, out: 1 },
+        costUSD: 0,
+        toolCalls: 0,
+      });
+
+    it('draws the trip as its own block, the reason verbatim', async () => {
+      const { term, client, text } = mount({ features: { guardrails: true } });
+      client.feed(tripFrame());
+      await flush();
+      const block = term.out.querySelector('.guardrail-trip');
+      expect(block.textContent).toContain('⚠ guardrail tripped · watchdog');
+      expect(block.textContent).toContain('Clear it with /guardrail reset watchdog');
+      // Nothing of ours appended: the producer names the reset.
+      expect(text()).not.toContain('Turn canceled.');
+      expect(term.session.get().lastGuardrailTrip.guardrail).toBe('watchdog');
+    });
+
+    it('absorbs the cancel a cut causes: the turn ends, and says nothing more', async () => {
+      const { term, client, text } = mount({ features: { guardrails: true } });
+      client.inject = async () => {};
+      const pending = term.submit('summarise everything');
+      client.feed(tripFrame({ guardrail: 'cost_ceiling', halted_turn: true }));
+      client.feed({ type: 'turn-error', data: canceled });
+      const r = await pending;
+      expect(r).toMatchObject({ ok: false, canceled: true });
+      expect(text()).not.toContain('Turn canceled.');
+      expect(term.el.querySelector('.term-send').disabled).toBe(false);
+    });
+
+    // The absorb is licensed by the cut, for the cancel the cut caused.
+    // Spent on the next turn-error whatever it is, so a rate limit that
+    // happens to follow still reaches the operator.
+    it('spends the absorb on the next turn-error, whatever its kind', async () => {
+      const { client, text } = mount({ features: { guardrails: true } });
+      client.feed(tripFrame({ halted_turn: true }));
+      client.feed({
+        type: 'turn-error',
+        data: { kind: 'rate_limited', message: 'quota exceeded' },
+      });
+      expect(text()).toContain('rate_limited: quota exceeded');
+      client.feed({ type: 'turn-error', data: canceled });
+      expect(text()).toContain('Turn canceled.');
+    });
+
+    // Left armed across the boundary, a trip would eat this operator's
+    // own STOP on some later turn — the one cancel that must always show.
+    it('drops the absorb at the turn boundary', async () => {
+      const { term, client, text } = mount({ features: { guardrails: true } });
+      client.feed(tripFrame({ halted_turn: true }));
+      client.feed({ type: 'turn-complete', data: { tokens_in: 1, tokens_out: 1 } });
+      client.inject = async () => {};
+      const pending = term.submit('next turn');
+      client.feed({ type: 'turn-error', data: canceled });
+      await pending;
+      expect(text()).toContain('Turn canceled.');
+    });
+
+    it('never infers halted_turn from absence', () => {
+      const { client, text } = mount({ features: { guardrails: true } });
+      client.feed(tripFrame({ halted_turn: undefined }));
+      client.feed({ type: 'turn-error', data: canceled });
+      expect(text()).toContain('Turn canceled.');
+    });
+
+    it('draws the halt from GET /guardrails, not from the trip', async () => {
+      const { term, client } = mount({ features: { guardrails: true } });
+      // A trip, and the server says not halted: a per-turn trip.
+      client.feed(tripFrame({ halts_session: false }));
+      await flush();
+      expect(term.el.querySelector('.term-halt').hidden).toBe(true);
+      expect(term.state.halted).toBe(false);
+
+      client.getGuardrails = async () => halted;
+      client.feed(tripFrame());
+      await flush();
+      const bar = term.el.querySelector('.term-halt');
+      expect(bar.hidden).toBe(false);
+      expect(bar.textContent).toContain('HALTED — watchdog');
+      expect(bar.textContent).toContain('/guardrail reset watchdog');
+      expect(term.state.halted).toBe(true);
+    });
+
+    // THE DEAD END, fixed: a prompt to a halted session is sent (it
+    // queues, and drains after the reset) without arming the turn.
+    it('queues a prompt sent to a halted session without arming the turn', async () => {
+      const { term, client, text } = mount({ features: { guardrails: true } });
+      client.getGuardrails = async () => halted;
+      client.feed(tripFrame());
+      await flush();
+      const sent = [];
+      client.inject = async (t) => {
+        sent.push(t);
+      };
+      const r = await term.submit('are you still there?');
+      expect(sent).toEqual(['are you still there?']);
+      expect(r).toMatchObject({ ok: false, queued: true });
+      expect(text()).toContain('your message is queued');
+      expect(term.el.querySelector('.term-send').disabled).toBe(false);
+      expect(term.el.querySelector('.term-stop').hidden).toBe(true);
+    });
+
+    // Sent before the panel knew: the halt read that follows closes it.
+    it('closes a turn sent just before the halt was known as queued', async () => {
+      const { term, client, text } = mount({ features: { guardrails: true } });
+      client.inject = async () => {};
+      const pending = term.submit('are you still there?');
+      expect(term.el.querySelector('.term-stop').hidden).toBe(false);
+      client.getGuardrails = async () => halted;
+      client.feed(tripFrame()); // halted_turn:false — nothing was cut
+      const r = await pending;
+      expect(r).toMatchObject({ queued: true });
+      expect(text()).toContain('your message is queued');
+      expect(term.el.querySelector('.term-stop').hidden).toBe(true);
+    });
+
+    // ...unless a cut is pending: then the turn really was running, and
+    // the cancel on its way is what ends it.
+    it('leaves a turn alone when a cut is on its way', async () => {
+      const { term, client } = mount({ features: { guardrails: true } });
+      client.inject = async () => {};
+      const pending = term.submit('summarise everything');
+      client.getGuardrails = async () => halted;
+      client.feed(tripFrame({ halted_turn: true }));
+      await flush();
+      expect(term.el.querySelector('.term-stop').hidden).toBe(false);
+      client.feed({ type: 'turn-error', data: canceled });
+      expect((await pending).canceled).toBe(true);
+    });
+
+    it('a reset re-reads the halt and the banner comes down', async () => {
+      const { term, client } = mount({ features: { guardrails: true } });
+      client.getGuardrails = async () => halted;
+      client.feed(tripFrame());
+      await flush();
+      expect(term.el.querySelector('.term-halt').hidden).toBe(false);
+      client.getGuardrails = async () => ({
+        ...halted,
+        halted: false,
+        watchdog: { tripped: false },
+      });
+      await term.submit('/guardrail reset watchdog');
+      await flush();
+      expect(term.el.querySelector('.term-halt').hidden).toBe(true);
+    });
+
+    // Before 1.13.0 a trip was a turn-error, which the cost_ceiling path
+    // still renders; there is nothing to poll for.
+    it('does not poll an older backend for a halt', async () => {
+      const { client } = mount({ features: { guardrails: true } });
+      client.protocolAtLeast = (v) => v !== '1.13.0';
+      client.feed(tripFrame());
+      await flush();
+      expect(client.calls.map((c) => c.name)).not.toContain('getGuardrails');
+    });
+  });
+
   describe('the hold', () => {
     const paused = (over) => ({ type: 'pause', data: { state: 'paused', ...over } });
 

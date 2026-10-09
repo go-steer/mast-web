@@ -895,6 +895,62 @@
   font-size: 10px;
 }
 
+/* The guardrail halt (v0.6 #111). The hold's shape, in red: a hold waits
+   for a verb, a halt refuses every turn until a reset, and the two must
+   not be mistaken for each other at a glance. */
+.term-halt {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 8px;
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--red) 12%, var(--bg-surface));
+  font-size: 11px;
+}
+
+/* Same [hidden] fix as .term-hold, same reason: display:flex beats the
+   UA rule, and a halt banner with no halt behind it would never leave. */
+.term-halt[hidden] {
+  display: none;
+}
+
+.term-halt-why {
+  color: var(--red);
+  letter-spacing: 0.06em;
+}
+
+.term-halt-detail {
+  color: var(--text);
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.term-halt-hint {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+/* A guardrail trip in the transcript: which guardrail, then the
+   producer's reason verbatim. The reason is the part to read, so it gets
+   the body colour, not the dim italic of an ordinary system line. */
+.term .guardrail-trip {
+  font-style: normal;
+  border-left: 2px solid var(--red);
+  padding-left: 8px;
+}
+
+.term .guardrail-trip-head {
+  color: var(--red);
+  letter-spacing: 0.04em;
+}
+
+.term .guardrail-trip-reason {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
 .term-input {
   flex: none;
   display: flex;

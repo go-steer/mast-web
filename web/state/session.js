@@ -170,6 +170,11 @@ window.MastState.createSession = (function () {
     // a cut (v0.6 plan §2). An absent key is stored as null — unknown.
     lastGuardrailTrip: null,
 
+    // Last GET /guardrails body, or null until one is read. Its `halted` is
+    // the only authority on whether the session refuses turns (v0.6 #111);
+    // the per-guardrail `tripped` / `reason` say which and why.
+    guardrails: null,
+
     // GET /whoami — who the backend thinks this caller is. Null until
     // someone asks; nobody asks automatically, because it is a second
     // round trip for a fact `capabilities.caller_id` already carries
@@ -395,6 +400,11 @@ window.MastState.createSession = (function () {
       store.set({ lastWakeAt: at || null });
     }
 
+    // applyGuardrails stores a GET /guardrails body verbatim.
+    function applyGuardrails(body) {
+      store.set({ guardrails: body && typeof body === 'object' ? { ...body } : null });
+    }
+
     // recordGuardrailTrip consumes a `guardrail-trip` frame (v1.13.0
     // §2.10). Stored, not interpreted — see the note on lastGuardrailTrip.
     function recordGuardrailTrip(data) {
@@ -494,6 +504,7 @@ window.MastState.createSession = (function () {
       applyStatusSnapshot,
       recordWake,
       recordGuardrailTrip,
+      applyGuardrails,
       setSessions,
       setCurrentSession,
       setCurrentModel,

@@ -25,9 +25,9 @@ Then open <http://localhost:7778/>.
 Two things to know before you read a failure:
 
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
-- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#12-known-not-to-work) on cross-origin backends.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#13-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#12-known-not-to-work).
+The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#13-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -303,7 +303,7 @@ Every turn in this section is started from **outside** the browser on purpose. A
 
 **Steps**
 
-1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#12-known-not-to-work) — and try it without the query once, on purpose.)
+1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#13-known-not-to-work) — and try it without the query once, on purpose.)
 2. Run `/share`.
 3. Run `/share viewer bob@example.com`.
 4. Switch to **bob@** (the console line above, which also reloads).
@@ -449,7 +449,7 @@ curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/j
 
 **Expected**
 
-- Step 1: the card shows **"Passed to you by the approver model claude-sonnet-5-5"**, then the reason as a **quotation**, *restarts production; the task did not ask for it*, signed **`— claude-sonnet-5-5`**. It must never read as the daemon's own words. There are **only two buttons, DENY and ALLOW ONCE**: on such a prompt the daemon applies any allow as once, so a wider button would misstate what it does.
+- Step 1: the card shows **"Passed to you by the approver model claude-sonnet-5-5"**, then the reason as a **quotation**, *restarts production; the task did not ask for it*, signed **`— claude-sonnet-5-5`**. It must never read as the daemon's own words. The buttons are **DENY, ALLOW ONCE and DENY…**, with **no ALLOW SESSION**: on such a prompt the daemon applies any allow as once, so a wider button would misstate what it does.
 - Step 2: the outcome reads **`allow-once`** and `by smoke@example.com`. (When the daemon applies something other than what was clicked, for example a session grant turned into once, the card says **`applied as allow-once (asked for allow-session-tool)`** rather than repeating the click.)
 - Step 3: the outcome turns red, **`not taken`**, and the transcript says **"Not taken: your answer arrived after the prompt expired, so the action did not run. Answer sooner, or raise approval_timeout."** A prompt whose turn was cut gets a different sentence ending *"look at why the turn ended"*, because answering sooner wouldn't have helped there.
 - Step 4: **`Permissions — mode auto`**, and a row **`fs_read docs/runbook.md [allow-once, allowed by the approver model, claude-sonnet-5-5]`**. A call no person approved is credited to the model, never to a person and never as `unattributed`.
@@ -458,7 +458,32 @@ curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/j
 
 ---
 
-## 12. Known not to work
+## 12. Deny with a reason, and the permission mode
+
+**Verifies:** v0.6 #113 (protocol 1.15.0, core-agent#1165; 1.16.0, #1168; `settable_modes`, 1.18.0).
+
+**Setup:** mock on :7778; `curl -X DELETE localhost:7778/_mock/perms-log` before and after (it also puts the mode back to `ask`).
+
+**Steps**
+
+1. Open `smoke-session` in solo and raise a prompt (§9 step 2's curl).
+2. Click **DENY…**, type `restart   the canary   first` (extra spaces on purpose), and press OK.
+3. Raise another prompt, click **DENY…**, and press **Cancel**.
+4. Run `/perms mode`, then `/perms mode yolo2`, then `/perms mode plan`, then `/perms`.
+5. As bob@ (§7's console line), open `/?shell=solo&fixture=001-happy-turn` and click `ops-triage`, which bob can read but doesn't own, then run `/perms mode plan`. (The fixture matters: `ops-triage` is otherwise pinned to a recording older than 1.16.0, and mast-web would correctly say that backend can't change modes at all.)
+
+**Expected**
+
+- Step 2: the outcome reads **`deny`**, and under it **`reason: restart the canary first`**, collapsed to one line, exactly as the agent will read it.
+- Step 3: nothing is sent. The card keeps its buttons, because DENY is the button for a deny without a reason.
+- Step 4: *"Permission mode: ask. This session can be set to: ask, auto, acceptEdits, plan, yolo."*; then *"\"yolo2\" is not a mode this session can be set to…"* with nothing sent; then **"Permission mode: plan (was ask). Other tabs and clients keep showing the old mode until they re-read /perms, and a change made mid-turn takes effect when the turn ends."**; then `/perms` heads **`Permissions — mode plan`**.
+- Step 5: **"Not changed: only this session's owner, or a daemon admin, can change its permission mode."** On this route the daemon refuses a non-owner with the same 404 as a session that doesn't exist; mast-web knows the version, so it can say what the 404 means.
+
+**Why this matters:** a deny without a reason leaves the model guessing, and it tends to retry something near-identical. And a mode switch that doesn't say other tabs won't see it would leave a second operator looking at the wrong mode.
+
+---
+
+## 13. Known not to work
 
 A walkthrough that only lists successes trains you to skim. These are gaps, not bugs — if you hit one, it is the doc working.
 
@@ -469,7 +494,7 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.
 - **Hosting is v0.7.** v0.6 became the protocol catch-up. Anything about deploying this somewhere with real users is not in this release.
-- **The mock speaks protocol 1.19.0; the browser is catching up through v0.6.** Guardrail trips and the halted session (§10, #111) and the permission card (§11, #112) are handled. Still to come: deny-with-reason and `/perms mode` ([#113](https://github.com/go-steer/mast-web/issues/113)), and replayed history still drops failures that happened before you attached ([#114](https://github.com/go-steer/mast-web/issues/114)).
+- **The mock speaks protocol 1.19.0; the browser is catching up through v0.6.** Guardrail trips (§10, #111), the permission card (§11, #112) and the permission verbs (§12, #113) are handled. Still to come: replayed history drops failures that happened before you attached ([#114](https://github.com/go-steer/mast-web/issues/114)).
 - **A real core-agent won't start token-less with `bash` any more** (core-agent#1266). `core-agent --attach-listen :7777` now exits 2 unless the listener is authenticated. This walkthrough is unaffected because it uses the mock. If you point it at a real daemon, pass a token (`--attach-token-file`) and give the same token to mast-web.
 
 ---

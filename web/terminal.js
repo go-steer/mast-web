@@ -698,6 +698,17 @@ window.MastTerminal = (function () {
         b.addEventListener('click', () => resolvePermsRequest(div, frame, decision));
         actions.appendChild(b);
       });
+      // Deny with a reason the model reads (v1.15.0, core-agent#1165).
+      // Offered only where it will be heard: an older daemon ACCEPTS the
+      // field and drops it, and a reason the operator typed that the model
+      // never saw is the UI lying to them. Escalated prompts get it too.
+      if (typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.15.0')) {
+        const b = mk('button', 'term-btn', 'DENY…');
+        b.type = 'button';
+        b.title = 'Deny, and tell the agent why';
+        b.addEventListener('click', () => denyWithReason(div, frame));
+        actions.appendChild(b);
+      }
       div.appendChild(actions);
 
       place(div);
@@ -708,20 +719,56 @@ window.MastTerminal = (function () {
     // Records the decision in the card before the POST, not after: the
     // operator gets immediate feedback, and a double-click can't send
     // two responses for one frame.
-    async function resolvePermsRequest(div, frame, decision) {
+    async function resolvePermsRequest(div, frame, decision, reason) {
       if (div.dataset.resolved) return;
       div.dataset.resolved = decision;
       const actions = div.querySelector('.perms-actions');
+      // Kept so a refused request can put them back: a 400 leaves the
+      // prompt pending upstream, and a card with no buttons on a prompt
+      // that is still waiting would be a dead end of its own.
+      const buttons = actions ? [...actions.childNodes] : [];
       if (actions) actions.replaceChildren(mk('span', 'perms-outcome', decision));
       const pr = connection.getPrompter();
       if (!pr) return;
       try {
-        const out = await pr.respond(frame.id, decision);
+        const out = await pr.respond(frame.id, decision, reason ? { reason } : undefined);
         recordApplied(div, decision, out);
         recordApprover(div, out);
+        if (reason) div.appendChild(mk('div', 'perms-reason', 'reason: ' + reason));
       } catch (e) {
+        if (e && e.status === 400) {
+          if (actions) actions.replaceChildren(...buttons);
+          delete div.dataset.resolved;
+          addSystemMessage(describeError(e, 'Not sent, and the prompt is still waiting: '));
+          return;
+        }
         recordNotTaken(div, e);
       }
+    }
+
+    // One line, at most 500 bytes once whitespace collapses — the
+    // server's own rule (MaxDenyReasonBytes), checked here so its 400 is
+    // a backstop rather than the experience. Cancel, or an empty box,
+    // sends nothing: DENY is the button for a deny without a reason.
+    const DENY_REASON_MAX_BYTES = 500;
+    function denyWithReason(div, frame) {
+      if (div.dataset.resolved) return;
+      const raw = window.prompt('Deny, with a reason the agent will read (one line):', '');
+      if (raw === null) return;
+      const reason = raw.split(/\s+/).filter(Boolean).join(' ');
+      if (!reason) return;
+      const bytes = new TextEncoder().encode(reason).length;
+      if (bytes > DENY_REASON_MAX_BYTES) {
+        addSystemMessage(
+          'That reason is ' +
+            bytes +
+            ' bytes; the limit is ' +
+            DENY_REASON_MAX_BYTES +
+            '. Nothing was sent, and the prompt is still waiting.'
+        );
+        return;
+      }
+      resolvePermsRequest(div, frame, 'deny', reason);
     }
 
     // What the daemon APPLIED, which is not always what was clicked
@@ -2565,7 +2612,11 @@ window.MastTerminal = (function () {
     // the responder (an unauthenticated loopback listener, say). Only
     // the second is worth printing "unattributed" for; the first is a
     // backend that was never asked the question.
-    async function cmdPerms() {
+    async function cmdPerms(args) {
+      if (((args && args[0]) || '').toLowerCase() === 'mode') {
+        await cmdPermsMode((args || []).slice(1));
+        return;
+      }
       let info;
       try {
         info = await client.getPerms();
@@ -2576,6 +2627,89 @@ window.MastTerminal = (function () {
       const attribution =
         typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.10.0');
       addSystemMessageHTML(window.SlashRender.renderPerms(info, { attribution: attribution }));
+    }
+
+    // /perms mode [<mode>] — show or switch this session's permission
+    // mode (v1.16.0, core-agent#1168; `auto` from v1.18.0). A command in
+    // the palette rather than a chip, for the reason /share is: the route
+    // is SessionAdmin-gated and refuses with 404, so only a panel, which
+    // knows the negotiated version, can read that 404 as "not yours".
+    //
+    // It offers exactly what GET /perms `settable_modes` lists (v1.18.0),
+    // so it never offers a mode it would be refused; before 1.18.0 there
+    // is no such list and the four 1.16.0 modes stand in. And it says the
+    // two things upstream documents that a person would otherwise assume
+    // wrong: no frame announces the change, so other tabs keep the old
+    // mode until they re-read; and a change made mid-turn lands when that
+    // turn ends.
+    const PRE_118_MODES = ['ask', 'acceptEdits', 'plan', 'yolo'];
+    async function cmdPermsMode(args) {
+      const can =
+        typeof client.setPermMode === 'function' &&
+        typeof client.protocolAtLeast === 'function' &&
+        client.protocolAtLeast('1.16.0');
+      if (!can) {
+        addSystemMessage(
+          'This backend cannot change the permission mode from here (v1.16.0 and up can). Change it where the session runs.'
+        );
+        return;
+      }
+      let info;
+      try {
+        info = (await client.getPerms()) || {};
+      } catch (e) {
+        addSystemMessage(describeError(e, '/perms mode failed: '));
+        return;
+      }
+      const settable =
+        Array.isArray(info.settable_modes) && info.settable_modes.length
+          ? info.settable_modes
+          : PRE_118_MODES;
+      const want = args[0];
+      if (!want) {
+        addSystemMessage(
+          'Permission mode: ' +
+            (info.mode || 'unknown') +
+            '. This session can be set to: ' +
+            settable.join(', ') +
+            '. /perms mode <mode> to change it.'
+        );
+        return;
+      }
+      if (!settable.includes(want)) {
+        addSystemMessage(
+          '"' +
+            want +
+            '" is not a mode this session can be set to. It can be: ' +
+            settable.join(', ') +
+            '.'
+        );
+        return;
+      }
+      try {
+        const r = (await client.setPermMode(want)) || {};
+        const now = r.mode || want;
+        if (r.previous && r.previous === now) {
+          addSystemMessage('Permission mode is already ' + now + '.');
+          return;
+        }
+        addSystemMessage(
+          'Permission mode: ' +
+            now +
+            (r.previous ? ' (was ' + r.previous + ')' : '') +
+            '. Other tabs and clients keep showing the old mode until they re-read /perms, and a change made mid-turn takes effect when the turn ends.'
+        );
+      } catch (e) {
+        if (e && e.status === 404) {
+          addSystemMessage(
+            "Not changed: only this session's owner, or a daemon admin, can change its permission mode."
+          );
+        } else if (e && e.status === 501) {
+          addSystemMessage('Not changed: this session has no permission gate.');
+        } else {
+          addSystemMessage(describeError(e, '/perms mode failed: '));
+        }
+      }
     }
 
     // /sessions — what else is on this backend. Read-only on purpose:
@@ -3138,8 +3272,8 @@ window.MastTerminal = (function () {
       {
         name: 'perms',
         aliases: ['permissions'],
-        usage: '/perms',
-        help: 'Permission mode, patterns, and who approved what',
+        usage: '/perms [mode [<mode>]]',
+        help: 'Permission mode, patterns, and who approved what; `mode` to see or change it',
         run: cmdPerms,
       },
       {

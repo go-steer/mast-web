@@ -229,8 +229,12 @@ that file.
 - **A refusal-storm row isn't drawn on its own.** Its metadata isn't
   documented upstream. The cancel it causes says `Turn canceled (cut by
   refusal_storm).`, which carries the same fact.
-- **The hold banner still doesn't count running subagents**: nothing on
-  the wire reports it truthfully yet.
+- **No view of running subagents yet**: no tasks bar like core-tui's, and
+  no count in the hold banner. The data is on the wire: `GET /agents` rows
+  carry `status` and `started_at`, and 1.20.0 adds progress and wake
+  fields. Earlier notes here and in 0.5.0 said otherwise. That came from
+  reading the mock, whose `/agents` had the configured roster's shape,
+  instead of the producer. It's v0.7's, together with 1.20.0.
   ([#106](https://github.com/go-steer/mast-web/issues/106))
 - **Inline `/` autocomplete** was optional for this release and didn't make
   it. ([#43](https://github.com/go-steer/mast-web/issues/43))

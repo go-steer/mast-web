@@ -177,16 +177,37 @@ window.AttachCorePrompter = (function () {
     // Returns the parsed body, or {} from a producer that sends none —
     // the pre-1.10.0 200 was empty, and an absent body is not a
     // failure to respond.
-    async respond(id, decision) {
+    //
+    // `opts.reason` (v1.15.0, core-agent#1165) rides only with a deny:
+    // the model reads it in the refused call's result. A reason on any
+    // other decision, or over 500 bytes after whitespace collapses, is a
+    // 400 that leaves the prompt pending. A pre-1.15.0 daemon ACCEPTS
+    // the field and drops it, so the status code cannot say whether it
+    // reached the model; the caller gates the affordance on the
+    // negotiated version, not on this call succeeding.
+    //
+    // The thrown error carries `status`. 410 (v1.14.0, core-agent#1088)
+    // means the prompt was there and is gone, and the action was NOT
+    // taken; its body says which way it ended. 404 means "already
+    // answered, or never issued here". Those lead to different next
+    // steps, so a caller has to read the number rather than parse the
+    // sentence we built around it.
+    async respond(id, decision, opts) {
       const path = '/sessions/' + encodeURIComponent(this.sessionId) + '/perms/respond';
+      const body = { id, decision };
+      const reason = opts && typeof opts.reason === 'string' ? opts.reason : '';
+      if (reason) body.reason = reason;
       const r = await fetch(this.endpoint + path, {
         method: 'POST',
         headers: { ...this._headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, decision }),
+        body: JSON.stringify(body),
       });
       const text = await r.text();
       if (!r.ok) {
-        throw new Error(`POST ${path} → HTTP ${r.status}: ${text}`);
+        const err = new Error(`POST ${path} → HTTP ${r.status}: ${text}`);
+        err.status = r.status;
+        err.body = text;
+        throw err;
       }
       try {
         const body = JSON.parse(text);

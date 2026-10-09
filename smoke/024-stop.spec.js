@@ -30,6 +30,21 @@ import { test, expect } from '@playwright/test';
 import { openSoloSession, resetTurnRequests, turnRequests } from './helpers.js';
 
 const term = (page) => page.locator('#solo-body .term:visible');
+
+// The mock replays its fixture when the stream opens, as live frames,
+// and the default fixture is a whole turn that ends in a turn-complete.
+// A prompt sent while that replay is still draining has its turn closed
+// by the REPLAY's turn-complete — STOP vanishes mid-test. On a fast
+// machine the replay always wins the race; on CI's runner it lost
+// (PR #128's first run, both attempts), and the screenshot showed the
+// replay's footer stamped under the test's own prompt. Wait for the
+// replayed turn to land, as a person would, before sending anything.
+async function openSettled(page) {
+  const screen = await openSoloSession(page);
+  await expect(screen.locator('.turn-footer')).toHaveCount(1);
+  return screen;
+}
+
 const stopBtn = (page) => term(page).locator('.term-stop');
 const sendBtn = (page) => term(page).locator('.term-send');
 const prompt = (page) => term(page).locator('.term-prompt');
@@ -58,7 +73,7 @@ test.afterEach(async ({ page }) => {
 
 test.describe('smoke: 024-stop', () => {
   test('STOP is there for the turn and only for the turn', async ({ page }) => {
-    await openSoloSession(page);
+    await openSettled(page);
     // Hidden, not disabled: between turns the composer offers SEND alone.
     await expect(stopBtn(page)).toBeHidden();
 
@@ -69,7 +84,7 @@ test.describe('smoke: 024-stop', () => {
   });
 
   test('STOP ends the turn, says so plainly, and does not park', async ({ page }) => {
-    const screen = await openSoloSession(page);
+    const screen = await openSettled(page);
     await send(page, 'take your time');
     await expect(stopBtn(page)).toBeVisible();
 
@@ -87,7 +102,7 @@ test.describe('smoke: 024-stop', () => {
   });
 
   test('the next prompt starts straight away', async ({ page }) => {
-    await openSoloSession(page);
+    await openSettled(page);
     await send(page, 'first');
     await stopBtn(page).click();
     await expect(sendBtn(page)).toBeEnabled();

@@ -27,7 +27,7 @@ Two things to know before you read a failure:
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
 - **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#10-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.12.0** by default and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#10-known-not-to-work).
+The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#10-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -49,7 +49,7 @@ The roster the two of them share:
 
 | session | owner | shared with | fixture |
 |---|---|---|---|
-| `smoke-session` | smoke@ | — | server default (1.12.0) |
+| `smoke-session` | smoke@ | — | server default (1.19.0) |
 | `ops-triage` | smoke@ | bob@ (viewer) | `003-tool-result-with-latency` |
 | `repo-indexer` | smoke@ | — | `002-cost-ceiling-mid-turn` |
 | `docs-writer` | bob@ | smoke@ (viewer) | `004-observer-mode-usage-update-only` |
@@ -64,6 +64,7 @@ curl -X DELETE localhost:7778/_mock/turns            # back to turns that play a
 curl -X DELETE localhost:7778/_mock/share-state      # ACL grants and renames
 curl -X DELETE localhost:7778/_mock/perms-log        # approval log
 curl -X DELETE localhost:7778/_mock/turn-requests    # inject/wake tally
+curl -X DELETE localhost:7778/_mock/guardrails       # guardrail trips (v0.6)
 ```
 
 **Clearing the browser side.** Run `localStorage.clear(); location.reload();` in the console. That resets the shell preference, tab layout and saved daemons, which is all mast-web keeps. **Don't** use DevTools' "Clear site data", and don't reach for an incognito window: a Cloud Workstation, an IAP or an SSO proxy in front of the mock keeps its login in a cookie, and both of those drop it. (Found on the first run, behind a Cloud Workstations proxy.)
@@ -408,7 +409,7 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.
 - **Hosting is v0.7.** v0.6 became the protocol catch-up. Anything about deploying this somewhere with real users is not in this release.
-- **The mock speaks protocol 1.12.0; core-agent speaks 1.19.0.** Two of the versions in between break things against a current daemon, and neither is visible here: a guardrail halt shows only as `Turn canceled.` (1.13.0), and the permission card can name a decision the daemon didn't apply (1.18.0). Both lead the v0.6 plan ([#111](https://github.com/go-steer/mast-web/issues/111), [#112](https://github.com/go-steer/mast-web/issues/112)), and [#110](https://github.com/go-steer/mast-web/issues/110) teaches the mock to reproduce them.
+- **The mock speaks protocol 1.19.0, but the browser doesn't handle 1.13.0 onwards yet.** v0.6's #110 taught the mock to trip a guardrail (`POST /_mock/guardrail-trip`), to queue a prompt sent to a halted session without running it, and to answer permissions the 1.14–1.18 ways. The browser catches up in the rest of v0.6. Until then, against the mock or a current daemon, a guardrail halt is invisible apart from a bare `Turn canceled.`, and **typing into a halted session leaves the composer stuck until reload** ([#111](https://github.com/go-steer/mast-web/issues/111); `smoke/025-guardrail-halt.spec.js` reproduces it). The permission card can still name a decision the daemon didn't apply ([#112](https://github.com/go-steer/mast-web/issues/112)).
 - **A real core-agent won't start token-less with `bash` any more** (core-agent#1266). `core-agent --attach-listen :7777` now exits 2 unless the listener is authenticated. This walkthrough is unaffected because it uses the mock. If you point it at a real daemon, pass a token (`--attach-token-file`) and give the same token to mast-web.
 
 ---

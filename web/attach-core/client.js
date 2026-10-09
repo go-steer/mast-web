@@ -602,6 +602,11 @@ window.AttachClient = (function () {
         'pause',
         // v1.7.0 §2.9 — the agent's wake signal was raised.
         'wake',
+        // v1.13.0 §2.10 — a guardrail tripped. Non-terminal: the turn's
+        // real outcome follows it. Until 1.13.0 a trip rode out as a
+        // turn-error, so a client without this listener goes blind to
+        // halts against a current daemon (v0.6 plan §2).
+        'guardrail-trip',
       ];
       // Capture the generation at listener-registration time so events
       // arriving after a selectSession() bump are tagged with the OLD
@@ -1050,6 +1055,24 @@ window.AttachClient = (function () {
     // conflate: both mean "this log has nothing to tell you".
     async getPerms() {
       return this._get('/sessions/' + encodeURIComponent(this.sessionId) + '/perms');
+    }
+
+    // POST /sessions/{sid}/perms/mode (v1.16.0, core-agent#1168) —
+    // switch a running session's permission mode: ask | acceptEdits |
+    // plan | yolo, and auto from v1.18.0 for a session that can enter it.
+    // Answers { previous, mode }.
+    //
+    // SessionAdmin-gated, and a refused caller gets the same 404 as a
+    // session that doesn't exist, so a caller must gate on the
+    // negotiated version first — with that known, a 404 means "not
+    // yours". 400 for a mode the session won't take (GET /perms
+    // `settable_modes` lists the ones it will, from 1.18.0); 501 with no
+    // permission gate. No frame announces the change, and one made
+    // mid-turn lands when the turn ends.
+    async setPermMode(mode) {
+      return this._post('/sessions/' + encodeURIComponent(this.sessionId) + '/perms/mode', {
+        mode,
+      });
     }
 
     // GET /sessions/{sid}/usage — cumulative-usage snapshot including

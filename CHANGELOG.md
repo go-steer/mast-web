@@ -82,6 +82,35 @@ Everything above was found by the first complete run of
 [`docs/walkthrough.md`](docs/walkthrough.md), whose record is at the end of
 that file.
 
+### Changed
+
+- **The mock speaks attach protocol 1.19.0** (was 1.12.0), and its
+  recordings are checked against core-agent's own captures, which are
+  vendored under `cmd/mast-web-server/testdata/upstream/`. It can now:
+  - **trip a guardrail on demand** with `POST /_mock/guardrail-trip`, in the
+    order a daemon sends it: the `guardrail-trip` frame, a cut turn's
+    `canceled`, then the durable row. Both a halt and a per-turn trip that
+    leaves the session running are supported (core-agent#1049).
+  - **queue a prompt sent to a halted session and run nothing** until
+    `POST /guardrails/reset`, which then drains it (core-agent#1040).
+  - write **durable rows** for every trip and turn error, paired with their
+    typed frames by `event_id` (1.19.0).
+  - answer **`/perms/respond`** the 1.14–1.18 ways: 404 for an id already
+    answered or never issued; one of two 410s for a prompt that expired or
+    whose turn was cut, with upstream's wording; the applied `decision` and
+    `downgraded`; and deny-only `reason` validation.
+  - serve **`POST /perms/mode`**, owner-only, with `settable_modes` on
+    `GET /perms`.
+
+  New test-only endpoints: `POST /_mock/guardrail-trip`,
+  `DELETE /_mock/guardrails` and `POST /_mock/perms-prompt-end`.
+  *[embedders]* The browser doesn't render any of this yet; the rest of
+  v0.6 does. (#110)
+- The client receives and stores **`guardrail-trip`** frames, can send a
+  deny **`reason`** and set the **permission mode**, and puts the status on
+  a failed permission answer so a 410 can be told from a 404. This is wire
+  only, with no UI change. (#110)
+
 ## [0.5.0] - 2026-10-06
 
 **Catching up to the wire, and the release where a parked session stopped

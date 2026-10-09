@@ -1669,6 +1669,15 @@ window.MastTerminal = (function () {
           session.recordWake((ev.data || {}).at);
           return;
 
+        // v1.13.0 §2.10. Stored here and drawn nowhere yet: rendering the
+        // trip, absorbing the cancel it causes and reading `halted` from
+        // GET /guardrails are v0.6 PR 1 (#111). Until then a current
+        // daemon's halt is as invisible as it was in v0.5.0, which is
+        // the point of landing the wire first and the UI second.
+        case 'guardrail-trip':
+          session.recordGuardrailTrip(ev.data);
+          return;
+
         case 'usage-update': {
           const u = ev.data || {};
           if (typeof u.cost_usd_total === 'number') session.setTotalCostUSD(u.cost_usd_total);

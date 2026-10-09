@@ -2,7 +2,7 @@
   {
     "type": "capabilities",
     "data": {
-      "protocol_version": "1.12.0",
+      "protocol_version": "1.19.0",
       "event_types": [
         "capabilities",
         "status-update",
@@ -10,6 +10,7 @@
         "inbox",
         "turn-complete",
         "turn-error",
+        "guardrail-trip",
         "agent",
         "pause",
         "wake"

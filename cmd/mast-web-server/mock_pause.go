@@ -314,7 +314,8 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 			gate.interrupted = prev.interrupted || interrupted
 		}
 		if ends {
-			h.hub.publish(sid, canceledFrame())
+			h.perms.cancelPending(sid)
+			h.publishTurnError(sid, canceledPayload(), "")
 		}
 		if wasPaused := h.gates.set(sid, gate); !wasPaused {
 			h.hub.publish(sid, pauseFrame(pauseStatePaused, gate.reason, "", gate.interrupted, now))
@@ -330,7 +331,8 @@ func (h *mockHandler) interrupt(w http.ResponseWriter, r *http.Request, sid stri
 		// clears the server's state and leaves the composer waiting on a
 		// terminal frame that is never sent.
 		if interrupted {
-			h.hub.publish(sid, canceledFrame())
+			h.perms.cancelPending(sid)
+			h.publishTurnError(sid, canceledPayload(), "")
 		}
 	}
 

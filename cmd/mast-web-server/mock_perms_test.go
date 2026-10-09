@@ -65,10 +65,30 @@ func TestMockPerms_SeededLogCarriesBothAttributionCases(t *testing.T) {
 	}
 }
 
+// raiseOne raises a prompt on smoke-session and returns its id. Answers
+// go to prompts that were actually raised: since 1.14.0 a daemon
+// answers an id it never issued with 404, and the mock now does too.
+func raiseOne(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	raise := asCaller(t, http.MethodPost, srv.URL+"/_mock/perms-prompt", mockDefaultCaller,
+		strings.NewReader(`{"session":"smoke-session","tool":"bash_exec","detail":"git push"}`))
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(raise.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID == "" {
+		t.Fatal("want a prompt id back from the raise")
+	}
+	return out.ID
+}
+
 func TestMockPerms_RespondAttributesTheVerifiedCaller(t *testing.T) {
 	srv := newMockServer(t)
+	id := raiseOne(t, srv)
 	resp := asCaller(t, http.MethodPost, srv.URL+"/sessions/smoke-session/perms/respond",
-		mockOtherCaller, strings.NewReader(`{"id":"perms-1","decision":"allow-once"}`))
+		mockOtherCaller, strings.NewReader(`{"id":"`+id+`","decision":"allow-once"}`))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -95,8 +115,9 @@ func TestMockPerms_RespondAttributesTheVerifiedCaller(t *testing.T) {
 // an empty string a client could print.
 func TestMockPerms_AnonymousResponderIsUnattributed(t *testing.T) {
 	srv := newMockServer(t)
+	id := raiseOne(t, srv)
 	resp := asCaller(t, http.MethodPost, srv.URL+"/sessions/smoke-session/perms/respond",
-		"", strings.NewReader(`{"id":"perms-1","decision":"deny"}`))
+		"", strings.NewReader(`{"id":"`+id+`","decision":"deny"}`))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -127,9 +148,10 @@ func TestMockPerms_AnonymousResponderIsUnattributed(t *testing.T) {
 // server's wants to hear about it.
 func TestMockPerms_RespondRejectsAMismatchedApprover(t *testing.T) {
 	srv := newMockServer(t)
+	id := raiseOne(t, srv)
 	resp := asCaller(t, http.MethodPost, srv.URL+"/sessions/smoke-session/perms/respond",
 		mockDefaultCaller,
-		strings.NewReader(`{"id":"perms-1","decision":"allow-once","approver":"`+mockOtherCaller+`"}`))
+		strings.NewReader(`{"id":"`+id+`","decision":"allow-once","approver":"`+mockOtherCaller+`"}`))
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("want 400 for an approver that isn't the caller, got %d", resp.StatusCode)
 	}
@@ -138,7 +160,7 @@ func TestMockPerms_RespondRejectsAMismatchedApprover(t *testing.T) {
 	// disagreement rather than about the field being present.
 	ok := asCaller(t, http.MethodPost, srv.URL+"/sessions/smoke-session/perms/respond",
 		mockDefaultCaller,
-		strings.NewReader(`{"id":"perms-1","decision":"allow-once","approver":"`+mockDefaultCaller+`"}`))
+		strings.NewReader(`{"id":"`+id+`","decision":"allow-once","approver":"`+mockDefaultCaller+`"}`))
 	if ok.StatusCode != http.StatusOK {
 		t.Fatalf("want 200 when the approver agrees with the caller, got %d", ok.StatusCode)
 	}
@@ -236,8 +258,9 @@ func TestMockPerms_AnsweredPromptLogsItsTool(t *testing.T) {
 // one — same problem the pause gates have, same escape hatch.
 func TestMockPerms_ResetClearsTheLog(t *testing.T) {
 	srv := newMockServer(t)
+	id := raiseOne(t, srv)
 	asCaller(t, http.MethodPost, srv.URL+"/sessions/smoke-session/perms/respond", mockDefaultCaller,
-		strings.NewReader(`{"id":"perms-1","decision":"allow-once"}`))
+		strings.NewReader(`{"id":"`+id+`","decision":"allow-once"}`))
 	if got := len(getApprovals(t, srv, mockDefaultCaller)); got != 3 {
 		t.Fatalf("want the two seeded rows plus one, got %d", got)
 	}

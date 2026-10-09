@@ -242,12 +242,11 @@ func (h *mockHandler) play(ctx context.Context, p *playback, sid string, frames 
 // and not retryable, because re-running work an operator just stopped
 // is the opposite of what they asked for. Payload per core-tui's
 // sse-event-stream-protocol.md §2.6.
-func canceledFrame() frame {
-	data, _ := json.Marshal(map[string]any{
+func canceledPayload() map[string]any {
+	return map[string]any{
 		"kind":      "canceled",
 		"code":      "CANCELED",
 		"message":   "turn canceled",
 		"retryable": false,
-	})
-	return frame{Event: "turn-error", Data: data}
+	}
 }

@@ -1429,6 +1429,17 @@ describe('AttachClient', () => {
       await client().setTitle(undefined);
       expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ title: '' });
     });
+
+    // v1.16.0 (core-agent#1168). Answers { previous, mode }.
+    it('setPermMode posts the mode to /perms/mode', async () => {
+      const f = ok({ previous: 'ask', mode: 'plan' });
+      await expect(client().setPermMode('plan')).resolves.toEqual({
+        previous: 'ask',
+        mode: 'plan',
+      });
+      expect(f.mock.calls[0][0]).toBe('https://example/sessions/s1/perms/mode');
+      expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ mode: 'plan' });
+    });
   });
 
   describe('version gating for unflagged endpoints (v1.10.0)', () => {

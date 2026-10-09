@@ -309,6 +309,47 @@ describe('state/session', () => {
     });
   });
 
+  // v1.13.0 §2.10 (core-agent#891). A guardrail trip is announced on its
+  // own non-terminal frame. The store records it verbatim and decides
+  // nothing: a per-turn cost trip (core-agent#1049) halts one turn and
+  // leaves the session running, so "a trip arrived" is not "halted".
+  describe('guardrail-trip (v1.13.0)', () => {
+    it('starts with nothing announced', () => {
+      expect(session.get().lastGuardrailTrip).toBeNull();
+    });
+
+    // Upstream's own capture, core-agent pkg/attach/testdata/conformance/
+    // guardrail-trip-cut-v1.19.0.json.
+    it('stores the frame verbatim, event_id included', () => {
+      session.recordGuardrailTrip({
+        guardrail: 'cost_ceiling',
+        reason:
+          'per-turn cost ceiling exceeded: this turn cost $0.0112, ceiling is $0.0100. The turn was stopped with its work unfinished; the session is NOT halted.',
+        halted_turn: true,
+        event_id: '5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40',
+      });
+      const t = session.get().lastGuardrailTrip;
+      expect(t.guardrail).toBe('cost_ceiling');
+      expect(t.reason).toContain('the session is NOT halted');
+      expect(t.haltedTurn).toBe(true);
+      expect(t.eventId).toBe('5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40');
+    });
+
+    // The spec says halted_turn is always present, false included, and
+    // that inferring false from absence is the defect the field closes.
+    it('keeps an absent halted_turn as unknown, never false', () => {
+      session.recordGuardrailTrip({ guardrail: 'watchdog', reason: 'looping' });
+      expect(session.get().lastGuardrailTrip.haltedTurn).toBeNull();
+      session.recordGuardrailTrip({ guardrail: 'watchdog', reason: 'looping', halted_turn: false });
+      expect(session.get().lastGuardrailTrip.haltedTurn).toBe(false);
+    });
+
+    it('a trip is not a hold: it does not touch the gate', () => {
+      session.recordGuardrailTrip({ guardrail: 'watchdog', reason: 'looping', halted_turn: false });
+      expect(session.get().pause.paused).toBe(false);
+    });
+  });
+
   // v1.12.0 §GET /status (core-agent#896). `state` has one slot and
   // pause outranks running in it, so "parked, and the turn you
   // cancelled is still unwinding" has no spelling without a second

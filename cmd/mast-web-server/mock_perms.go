@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -92,23 +94,48 @@ type mockPermsLog struct {
 	mu   sync.Mutex
 	rows map[string][]mockApproval
 	seq  int
-	// tools remembers what each raised prompt asked about, so the log
-	// row the answer produces names the tool the operator was actually
-	// looking at. A log that said "tool" for every row would render
-	// fine and mean nothing.
+	// prompts remembers every raised prompt: what it asked about, which
+	// session it belongs to, whether the approver model escalated it,
+	// and how it stands.
+	//
+	// The tool and key are what the log row an answer produces names. A
+	// log that said "tool" for every row would render fine and mean
+	// nothing, and "allowed bash_exec" without the key is not something
+	// an operator reviewing the log can act on (#126).
+	//
+	// The status is what makes 1.14.0's answers reachable: 404 for an id
+	// already answered or never issued, and 410 for a prompt that was
+	// there and is gone — its timeout ran out, or its turn was cut. The
+	// two 410s say different things and are worded verbatim from
+	// upstream (pkg/attach/prompter.go).
 	//
 	// Hangs off the handler rather than the package, so a fresh server
 	// is a fresh log — the package-level ACL overlay next door is the
 	// counter-example, and it needs an explicit reset in every test
 	// because of it.
-	tools map[string]string
-	// keys is the same thing one level down: what the tool was going
-	// to act on (the command, the path). "allowed bash_exec" says
-	// nothing an operator reviewing the log can act on; "allowed
-	// bash_exec rm -rf ./build" does. A real daemon records it, and the
-	// seeded rows have it, so a raised prompt's row has to as well.
-	keys map[string]string
+	prompts map[string]mockPrompt
+	// modes is each session's permission mode once POST /perms/mode
+	// (1.16.0) has set it; an absent entry is the configured "ask".
+	modes map[string]string
 }
+
+// mockPrompt is one raised permission prompt.
+type mockPrompt struct {
+	sid       string
+	tool      string
+	key       string
+	escalated bool   // the auto-mode approver passed it to a person (1.18.0)
+	status    string // pending | answered | expired | canceled
+}
+
+// The two 410 bodies, verbatim from core-agent pkg/attach/prompter.go
+// (ErrPromptExpired, ErrPromptCanceled). Different facts, different
+// fixes: answer faster or raise approval_timeout, versus look at why the
+// turn ended.
+const (
+	promptExpiredBody  = "attach: approval arrived after the prompt expired; the action was not taken"
+	promptCanceledBody = "attach: the prompt's turn ended before the approval arrived; the action was not taken"
+)
 
 func (l *mockPermsLog) append(sid string, a mockApproval) {
 	l.mu.Lock()
@@ -129,40 +156,80 @@ func (l *mockPermsLog) reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.rows = nil
-	l.tools = nil
-	l.keys = nil
+	l.prompts = nil
+	l.modes = nil
 	l.seq = 0
 }
 
-// rememberTool records what a raised prompt was about, tool and key;
-// toolFor and keyFor read them back at respond time. An id nobody
-// raised (a spec answering a prompt it invented) falls back to a
-// placeholder tool rather than an empty name, which would render as a
-// blank row, and to no key, which renders as the tool alone.
-func (l *mockPermsLog) rememberTool(id, tool, key string) {
+// remember records a raised prompt as pending.
+func (l *mockPermsLog) remember(id string, p mockPrompt) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.tools == nil {
-		l.tools = make(map[string]string)
-		l.keys = make(map[string]string)
+	if l.prompts == nil {
+		l.prompts = make(map[string]mockPrompt)
 	}
-	l.tools[id] = tool
-	l.keys[id] = key
+	p.status = "pending"
+	l.prompts[id] = p
 }
 
-func (l *mockPermsLog) keyFor(id string) string {
+// prompt reads one back; ok is false for an id this mock never issued.
+func (l *mockPermsLog) prompt(id string) (mockPrompt, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.keys[id]
+	p, ok := l.prompts[id]
+	return p, ok
 }
 
-func (l *mockPermsLog) toolFor(id string) string {
+// settle moves a prompt out of pending. Returns false if it was not
+// pending, so two answers racing one prompt can't both be applied.
+func (l *mockPermsLog) settle(id, status string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if s := l.tools[id]; s != "" {
-		return s
+	p, ok := l.prompts[id]
+	if !ok || p.status != "pending" {
+		return false
 	}
-	return "tool"
+	p.status = status
+	l.prompts[id] = p
+	return true
+}
+
+// cancelPending ends every pending prompt on a session because its turn
+// was cut — an operator's interrupt or a guardrail's. An answer that
+// arrives afterwards gets the second 410: the action was not taken, and
+// answering faster would not have helped.
+func (l *mockPermsLog) cancelPending(sid string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for id, p := range l.prompts {
+		if p.sid == sid && p.status == "pending" {
+			p.status = "canceled"
+			l.prompts[id] = p
+		}
+	}
+}
+
+func (l *mockPermsLog) mode(sid string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if m := l.modes[sid]; m != "" {
+		return m
+	}
+	return "ask"
+}
+
+func (l *mockPermsLog) setMode(sid, mode string) (previous string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	previous = l.modes[sid]
+	if previous == "" {
+		previous = "ask"
+	}
+	if l.modes == nil {
+		l.modes = make(map[string]string)
+	}
+	l.modes[sid] = mode
+	return previous
 }
 
 // nextFrameID hands out ids the way a daemon does — opaque, unique,
@@ -213,11 +280,53 @@ func (h *mockHandler) getPerms(w http.ResponseWriter, sid string) {
 		wire = append(wire, r.wire())
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"mode":      "ask",
+		"mode":      h.perms.mode(sid),
 		"allow":     []string{"fs_read", "gke_*"},
 		"deny":      []string{"bash_exec rm -rf *"},
 		"approvals": wire,
+		// 1.18.0: the modes POST /perms/mode will accept for this
+		// session, in the chip's order, so a client never offers one it
+		// would be refused. `auto` is in it because the mock models a
+		// session with an approver configured.
+		"settable_modes": mockSettableModes,
 	})
+}
+
+// mockSettableModes is what this session's gate will take. `allow` is
+// never settable over HTTP (it lives in .agents/config.json only).
+var mockSettableModes = []string{"ask", "auto", "acceptEdits", "plan", "yolo"}
+
+// maxDenyReasonBytes is upstream's MaxDenyReasonBytes (1.15.0).
+const maxDenyReasonBytes = 500
+
+// setPermMode backs POST /sessions/{sid}/perms/mode (1.16.0,
+// core-agent#1168). SessionAdmin-gated, and a caller the ACL refuses
+// gets the same 404 as a session that doesn't exist — so a client that
+// knows the negotiated version can read a 404 as "not yours". A mode
+// outside settable_modes is a 400 and changes nothing.
+func (h *mockHandler) setPermMode(w http.ResponseWriter, r *http.Request, sid string) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		drainBody(r)
+		writeError(w, http.StatusBadRequest, "perms/mode: malformed JSON body\n")
+		return
+	}
+	drainBody(r)
+	c := callerOf(r)
+	if !aclFor(sid, c).canAdmin(c.identity) {
+		writeError(w, http.StatusNotFound, "session not found\n")
+		return
+	}
+	if !slices.Contains(mockSettableModes, req.Mode) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"perms/mode: %s is not a mode this session can be set to (settable: %s)\n",
+			strconv.Quote(req.Mode), strings.Join(mockSettableModes, ", ")))
+		return
+	}
+	previous := h.perms.setMode(sid, req.Mode)
+	writeJSON(w, http.StatusOK, map[string]any{"previous": previous, "mode": req.Mode})
 }
 
 // permsRespond backs POST /sessions/{sid}/perms/respond.
@@ -239,6 +348,7 @@ func (h *mockHandler) permsRespond(w http.ResponseWriter, r *http.Request, sid s
 		ID       string `json:"id"`
 		Decision string `json:"decision"`
 		Approver string `json:"approver"`
+		Reason   string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		drainBody(r)
@@ -257,14 +367,64 @@ func (h *mockHandler) permsRespond(w http.ResponseWriter, r *http.Request, sid s
 			strconv.Quote(req.Approver), strconv.Quote(c.identity)))
 		return
 	}
+	// 1.15.0: a reason rides only with a deny, collapses to one line,
+	// and is capped. Either 400 leaves the prompt pending, so the
+	// operator can fix the request and send it again.
+	reason := strings.Join(strings.Fields(req.Reason), " ")
+	if reason != "" && req.Decision != "deny" {
+		writeError(w, http.StatusBadRequest,
+			"perms/respond: a reason is accepted only with a deny; instructions for an approved call belong in a steer\n")
+		return
+	}
+	if len(reason) > maxDenyReasonBytes {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"perms/respond: reason is %d bytes, over the %d-byte limit\n", len(reason), maxDenyReasonBytes))
+		return
+	}
+
+	// 1.14.0: where the prompt stands decides the status.
+	p, known := h.perms.prompt(req.ID)
+	switch {
+	case !known || p.status == "answered":
+		writeError(w, http.StatusNotFound,
+			"perms/respond: no pending prompt with that id: already answered, or never issued here\n")
+		return
+	case p.status == "expired":
+		writeError(w, http.StatusGone, promptExpiredBody+"\n")
+		return
+	case p.status == "canceled":
+		writeError(w, http.StatusGone, promptCanceledBody+"\n")
+		return
+	}
+
+	// What gets APPLIED, which is not always what was sent. 1.18.0: any
+	// allow on a prompt the approver escalated is applied once. 1.17.0:
+	// an allow-always from anyone but a daemon admin is applied for the
+	// session — and the mock configures no admins, which upstream says
+	// downgrades every HTTP always.
+	applied, downgraded := req.Decision, false
+	switch {
+	case p.escalated && req.Decision != "deny" && req.Decision != "allow-once":
+		applied, downgraded = "allow-once", true
+	case req.Decision == "allow-always":
+		applied, downgraded = "allow-session", true
+	}
+	if !h.perms.settle(req.ID, "answered") {
+		writeError(w, http.StatusNotFound,
+			"perms/respond: no pending prompt with that id: already answered, or never issued here\n")
+		return
+	}
 	h.perms.append(sid, mockApproval{
-		tool:     h.perms.toolFor(req.ID),
-		key:      h.perms.keyFor(req.ID),
-		decision: req.Decision,
+		tool:     p.tool,
+		key:      p.key,
+		decision: applied,
 		by:       c.identity,
 		at:       time.Now(),
 	})
-	out := map[string]any{"acknowledged": true}
+	out := map[string]any{"acknowledged": true, "decision": applied}
+	if downgraded {
+		out["downgraded"] = true // omitted when false (1.17.0)
+	}
 	if !c.anonymous() {
 		out["approver"] = c.identity
 	}
@@ -286,6 +446,11 @@ func (h *mockHandler) raisePrompt(w http.ResponseWriter, r *http.Request) {
 		Tool    string `json:"tool"`
 		Detail  string `json:"detail"`
 		Kind    string `json:"kind"`
+		// 1.18.0: an auto-mode prompt the approver model passed to a
+		// person. The reason is model output, and a client must quote it
+		// as the approver's words, never as the daemon's.
+		ApproverModel  string `json:"approver_model"`
+		ApproverReason string `json:"approver_reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		drainBody(r)
@@ -310,7 +475,12 @@ func (h *mockHandler) raisePrompt(w http.ResponseWriter, r *http.Request) {
 		detail = "rm -rf ./build"
 	}
 	id := h.perms.nextFrameID()
-	h.perms.rememberTool(id, tool, detail)
+	h.perms.remember(id, mockPrompt{
+		sid:       req.Session,
+		tool:      tool,
+		key:       detail,
+		escalated: req.ApproverModel != "",
+	})
 	payload := map[string]any{
 		"id":     id,
 		"kind":   kind,
@@ -318,9 +488,43 @@ func (h *mockHandler) raisePrompt(w http.ResponseWriter, r *http.Request) {
 		"detail": detail,
 		"at":     time.Now().UTC().Format(time.RFC3339Nano),
 	}
+	if req.ApproverModel != "" {
+		payload["approver_model"] = req.ApproverModel
+		if req.ApproverReason != "" {
+			payload["approver_reason"] = req.ApproverReason
+		}
+	}
 	buf, _ := json.Marshal(payload)
 	h.hub.publish(permsHubKey(req.Session), frame{Event: "prompt", Data: buf})
 	writeJSON(w, http.StatusOK, map[string]any{"raised": true, "id": id})
+}
+
+// endPrompt backs POST /_mock/perms-prompt-end — test-only. Ends a
+// pending prompt without an answer, as `expired` (approval_timeout ran
+// out) or `canceled` (its turn was cut), so an answer sent afterwards
+// gets the matching 410 (1.14.0). A cut turn cancels its prompts on its
+// own (interrupt, guardrail trip); this is for the timeout, and for a
+// test that wants the 410 without a turn.
+func (h *mockHandler) endPrompt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID  string `json:"id"`
+		Why string `json:"why"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		drainBody(r)
+		writeError(w, http.StatusBadRequest, "perms-prompt-end: malformed JSON body\n")
+		return
+	}
+	drainBody(r)
+	if req.Why != "expired" && req.Why != "canceled" {
+		writeError(w, http.StatusBadRequest, `perms-prompt-end: why must be "expired" or "canceled"`+"\n")
+		return
+	}
+	if !h.perms.settle(req.ID, req.Why) {
+		writeError(w, http.StatusNotFound, "perms-prompt-end: no pending prompt with that id\n")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ended": req.ID, "why": req.Why})
 }
 
 // resetPermsLog backs DELETE /_mock/perms-log. The log is per-process

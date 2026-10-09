@@ -134,6 +134,66 @@ describe('AttachCorePrompter', () => {
       });
       await expect(p.respond('x', 'invalid')).rejects.toThrow(/HTTP 400/);
     });
+
+    // v1.15.0 (core-agent#1165): a deny can say why, and the model reads
+    // it. Omitted, the deny is byte-for-byte what it was — so no reason
+    // means no key, not an empty one.
+    it('sends a reason only when one is given', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{}'),
+      });
+      await p.respond('prompt-42', 'deny', { reason: 'restart the canary first' });
+      expect(JSON.parse(globalThis.fetch.mock.calls[0][1].body)).toEqual({
+        id: 'prompt-42',
+        decision: 'deny',
+        reason: 'restart the canary first',
+      });
+      await p.respond('prompt-43', 'deny');
+      expect(JSON.parse(globalThis.fetch.mock.calls[1][1].body)).toEqual({
+        id: 'prompt-43',
+        decision: 'deny',
+      });
+    });
+
+    // v1.17.0 / v1.18.0: what the daemon APPLIED comes back, and it can
+    // differ from what was sent. The card renders this (v0.6 PR 2), so
+    // it has to reach the caller untouched.
+    it('hands back decision and downgraded as the daemon sent them', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () =>
+          Promise.resolve(
+            '{"acknowledged":true,"approver":"a@example.com","decision":"allow-once","downgraded":true}'
+          ),
+      });
+      await expect(p.respond('prompt-42', 'allow-session-tool')).resolves.toMatchObject({
+        decision: 'allow-once',
+        downgraded: true,
+      });
+    });
+
+    // v1.14.0 (core-agent#1088): 410 means the prompt was there and is
+    // gone, and the action was NOT taken. 404 is "already answered, or
+    // not issued here". A caller has to tell them apart by number.
+    it('puts the status and body on the thrown error', async () => {
+      const p = new AttachCorePrompter.Prompter({ endpoint: 'https://example', sessionId: 's1' });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 410,
+        text: () =>
+          Promise.resolve(
+            "attach: the prompt's turn ended before the approval arrived; the action was not taken"
+          ),
+      });
+      const err = await p.respond('prompt-42', 'allow-once').catch((e) => e);
+      expect(err.status).toBe(410);
+      expect(err.body).toContain('the action was not taken');
+    });
   });
 
   describe('allow / deny batch endpoints', () => {

@@ -2,7 +2,7 @@
   {
     "type": "capabilities",
     "data": {
-      "protocol_version": "1.12.0",
+      "protocol_version": "1.19.0",
       "event_types": [
         "capabilities",
         "status-update",
@@ -10,6 +10,7 @@
         "inbox",
         "turn-complete",
         "turn-error",
+        "guardrail-trip",
         "agent",
         "pause",
         "wake"
@@ -28,16 +29,25 @@
       "model": "gemini-2.5-flash",
       "provider": "vertex",
       "turn_state": "streaming",
-      "context_pct": 9,
+      "context_pct": 11,
       "perm_mode": "prompt"
     }
   },
   {
     "type": "stream-chunk",
     "data": {
-      "text": "Renaming the field across all forty call sites",
+      "text": "Summarising all forty incident reports",
       "partial": true,
       "author": "assistant"
+    }
+  },
+  {
+    "type": "guardrail-trip",
+    "data": {
+      "guardrail": "cost_ceiling",
+      "reason": "per-turn cost ceiling exceeded: this turn cost $0.0112, ceiling is $0.0100. The turn was stopped with its work unfinished; the session is NOT halted.",
+      "halted_turn": true,
+      "event_id": "5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40"
     }
   },
   {
@@ -46,7 +56,8 @@
       "kind": "canceled",
       "code": "CANCELED",
       "message": "turn canceled",
-      "retryable": false
+      "retryable": false,
+      "event_id": "c3e8a9d2-14b6-4f7e-8d05-6a2b9e1f0c77"
     }
   },
   {
@@ -55,7 +66,7 @@
       "model": "gemini-2.5-flash",
       "provider": "vertex",
       "turn_state": "idle",
-      "context_pct": 9,
+      "context_pct": 11,
       "perm_mode": "prompt"
     }
   }

@@ -154,6 +154,22 @@ window.MastState.createSession = (function () {
     // every wake that wasn't alert-driven.
     lastWakeAt: null,
 
+    // Last `guardrail-trip` event (v1.13.0 §2.10), or null.
+    //   { guardrail, reason, haltedTurn, eventId, receivedAt }
+    //
+    // A trip is not a halt. Since core-agent#1049 a per-turn cost trip
+    // ends one turn and leaves the session running, and there is
+    // deliberately no halted_session field: GET /guardrails `halted` is
+    // the only authority on whether the session is refusing turns. So
+    // this records what was announced, verbatim, and nothing here may
+    // read it as "the session is halted".
+    //
+    // `haltedTurn` is read off the wire and never defaulted: the spec
+    // says the field is always present, and a consumer that inferred
+    // false from absence would stop suppressing the cancel that follows
+    // a cut (v0.6 plan §2). An absent key is stored as null — unknown.
+    lastGuardrailTrip: null,
+
     // GET /whoami — who the backend thinks this caller is. Null until
     // someone asks; nobody asks automatically, because it is a second
     // round trip for a fact `capabilities.caller_id` already carries
@@ -379,6 +395,21 @@ window.MastState.createSession = (function () {
       store.set({ lastWakeAt: at || null });
     }
 
+    // recordGuardrailTrip consumes a `guardrail-trip` frame (v1.13.0
+    // §2.10). Stored, not interpreted — see the note on lastGuardrailTrip.
+    function recordGuardrailTrip(data) {
+      const d = data || {};
+      store.set({
+        lastGuardrailTrip: {
+          guardrail: typeof d.guardrail === 'string' ? d.guardrail : '',
+          reason: typeof d.reason === 'string' ? d.reason : '',
+          haltedTurn: typeof d.halted_turn === 'boolean' ? d.halted_turn : null,
+          eventId: typeof d.event_id === 'string' ? d.event_id : '',
+          receivedAt: new Date().toISOString(),
+        },
+      });
+    }
+
     function setSessions(sessions) {
       store.set({ sessions });
     }
@@ -462,6 +493,7 @@ window.MastState.createSession = (function () {
       applyPauseStatus,
       applyStatusSnapshot,
       recordWake,
+      recordGuardrailTrip,
       setSessions,
       setCurrentSession,
       setCurrentModel,

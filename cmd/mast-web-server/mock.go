@@ -43,14 +43,16 @@ const defaultMockFixture = "001-happy-turn"
 // parked sessions (#68). Nothing was wrong with any individual test.
 // The problem was that no test asserted the mock was current, so being
 // out of date was not a failure condition.
-const wireProtocolVersion = "1.12.0"
+const wireProtocolVersion = "1.19.0"
 
 // mockPublishedEvents are the SSE events the mock emits from its own
 // handlers rather than from fixture replay — the pause gate's
 // transitions and the wake that follows an inject. A consumer can only
 // be tested against these if the mock advertises them, so the guard
 // checks that it does.
-var mockPublishedEvents = []string{"pause", "wake"}
+// guardrail-trip (1.13.0) is published by POST /_mock/guardrail-trip,
+// the same way an inject provokes a wake.
+var mockPublishedEvents = []string{"pause", "wake", "guardrail-trip"}
 
 // mockHandler serves the fake attach-protocol endpoints the SPA hits
 // during connect + normal operation. Fed from JSONL conformance
@@ -92,6 +94,12 @@ type mockHandler struct {
 	// Turns that run because somebody asked for one, and the switch
 	// that keeps them open instead. See mock_play.go.
 	turns mockTurns
+
+	// Guardrail trip state per session (1.13.0), and the counters behind
+	// the durable rows' ids and seqs (1.19.0). See mock_guardrails.go.
+	guardrails mockGuardrails
+	events     int
+	seq        int
 }
 
 // countPost tallies one write against an endpoint name.
@@ -279,21 +287,6 @@ var (
 		},
 		"per_turn": []any{},
 	}
-	// stubGuardrails backs GET /sessions/{sid}/guardrails (core-agent
-	// #670/#671). Untripped by default so the smoke happy-path doesn't
-	// show a paused session; fixtures that want to exercise the
-	// cost-ceiling reset UX can still hit turn-error separately.
-	stubGuardrails = map[string]any{
-		"watchdog": map[string]any{"mode": "warn", "tripped": false},
-		"cost_ceiling": map[string]any{
-			"max_turn_usd":     1.0,
-			"max_session_usd":  10.0,
-			"session_cost_usd": 0.02,
-			"tripped":          false,
-			"would_retrip":     false,
-		},
-		"halted": false,
-	}
 	// stubSubagentsCatalog backs GET /sessions/{sid}/subagents — the
 	// configured/spawnable roster (core-agent#627/#634), distinct from
 	// stubAgents (the live roster returned by GET .../agents).
@@ -399,6 +392,13 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// so nothing it replays can reach for one — see raisePrompt.
 	mux.HandleFunc("POST /_mock/perms-prompt", h.raisePrompt)
 	mux.HandleFunc("DELETE /_mock/perms-log", h.resetPermsLog)
+	// A prompt that ends without an answer — the approval timeout ran
+	// out, or its turn was cut — so 1.14.0's two 410s can be provoked.
+	mux.HandleFunc("POST /_mock/perms-prompt-end", h.endPrompt)
+	// A guardrail trip on demand (1.13.0), and the reset that clears
+	// whatever a spec tripped. See mock_guardrails.go.
+	mux.HandleFunc("POST /_mock/guardrail-trip", h.raiseGuardrailTrip)
+	mux.HandleFunc("DELETE /_mock/guardrails", h.resetGuardrailState)
 	// Whether an injected turn plays and ends, or stays open until
 	// something stops it. See mock_play.go.
 	mux.HandleFunc("GET /_mock/turns", h.setTurns)
@@ -579,7 +579,7 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 		// from the live roster above.
 		writeJSON(w, http.StatusOK, stubSubagentsCatalog)
 	case "guardrails":
-		writeJSON(w, http.StatusOK, stubGuardrails)
+		writeJSON(w, http.StatusOK, h.guardrailsWire(sid))
 	case "usage":
 		writeJSON(w, http.StatusOK, stubUsage)
 	default:
@@ -712,9 +712,23 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 	case "perms":
 		// perms/respond reads its body twice over: the decision, and
 		// the `approver` the server checks rather than believes.
-		// perms/allow and perms/deny stay no-ops below.
+		// perms/mode (1.16.0) is a mutation, so it must not fall through
+		// to the cheerful {} below and change nothing. perms/allow and
+		// perms/deny stay no-ops.
 		if len(tail) >= 2 && tail[1] == "respond" {
 			h.permsRespond(w, r, sid)
+			return
+		}
+		if len(tail) >= 2 && tail[1] == "mode" {
+			h.setPermMode(w, r, sid)
+			return
+		}
+	case "guardrails":
+		// POST .../guardrails/reset (core-agent#670/#671). Clears the
+		// trip state mock_guardrails.go keeps, and drains a message
+		// queued while halted.
+		if len(tail) >= 2 && tail[1] == "reset" {
+			h.resetGuardrails(w, r, sid)
 			return
 		}
 	case "acl":
@@ -744,17 +758,6 @@ func (h *mockHandler) sessionPost(w http.ResponseWriter, r *http.Request) {
 			"body":    "**mock**: /slash/" + name + " accepted (no side effect).",
 		})
 		return
-	case "guardrails":
-		// POST .../guardrails/reset (core-agent#670/#671). Always
-		// succeeds against the mock's permanently-untripped
-		// stubGuardrails — there's nothing to actually re-trip.
-		if len(tail) >= 2 && tail[1] == "reset" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"reset":      []string{"watchdog", "cost_ceiling"},
-				"guardrails": stubGuardrails,
-			})
-			return
-		}
 	}
 	// Everything else (perms/allow / perms/deny / perms/respond /
 	// pricing/* / reload) — accept as no-op.
@@ -834,6 +837,29 @@ func (h *mockHandler) injectOrWake(w http.ResponseWriter, r *http.Request, sid, 
 	// requested disposition, and the gate is what decides whether the
 	// loop acts on it.
 	woke := req.Wake == nil || *req.Wake
+	// A guardrail-halted session queues the message and runs nothing
+	// until a reset, and since core-agent#1040 it no longer wakes the
+	// agent just to be refused. So: 200, an inbox entry, no wake frame,
+	// no turn — and nothing on the stream that a client waiting for a
+	// turn to end could ever receive. That is the dead end v0.6 PR 1
+	// (#111) exists to close, reproduced here so it can be watched.
+	if g := h.guardrails.get(sid); g.halted() {
+		if text != "" {
+			g.queued = true
+			h.guardrails.set(sid, g)
+		}
+		out := map[string]any{"session": sid, "woke": woke}
+		if endpoint == "wake" {
+			out = map[string]any{"woken": sid, "prompt": req.Prompt}
+		} else {
+			out["injected"] = req.Message
+		}
+		if promptID != "" {
+			out["prompt_id"] = promptID
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	if woke && gate.paused && text != "" {
 		// Queued behind the closed gate (1.11.0: an inject no longer
 		// opens it). Recorded so a later continue knows there is held

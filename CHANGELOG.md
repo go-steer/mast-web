@@ -27,6 +27,33 @@ message.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.6.0] - 2026-10-09
+
+**The protocol catch-up, done before anyone ships it: halts are visible
+again, the permission card tells the truth, and a failure survives a
+reload.**
+
+v0.5.0 consumed attach protocol 1.12.0. In the nineteen days its tag waited,
+core-agent shipped seven more versions, and two of them regressed v0.5.0
+against a current daemon. 1.13.0 moved guardrail trips onto an event v0.5.0
+dropped, so a cost ceiling or watchdog halt read as a bare `Turn canceled.`.
+And because a halted session queues messages without running them, typing
+into one left the composer stuck until reload. 1.18.0 meant the permission
+card could name a decision the daemon hadn't applied. v0.6 is the catch-up
+and only the catch-up; hosting moved to v0.7. Both regressions are fixed
+before core-agent embeds mast-web (its `.mast-web-version` pin is still
+blank), which is the point of doing this now.
+
+It is also the first release a person verified end to end before it shipped.
+The first full run of [`docs/walkthrough.md`](docs/walkthrough.md) found nine
+bugs, all fixed below, and every feature PR since added its own walkthrough
+section. The mock is now checked against core-agent's own conformance
+captures rather than against itself. And the browser was run against a
+real, current core-agent before tagging: it negotiated 1.20.0, ran a turn,
+and logged no console errors. The plan is [`v0.6-plan.md`](docs/v0.6-plan.md).
+
 ### Added
 
 - **Deny with a reason** (protocol 1.15.0). A **DENY…** button on the
@@ -161,6 +188,10 @@ that file.
 
 ### Changed
 
+- **mast-web speaks attach protocol 1.19.0** (was 1.12.0). *[embedders]*
+  Every new surface is gated on the negotiated version, so an older daemon
+  loses controls rather than breaking. Against a pre-1.13.0 daemon, halts
+  still come through the old `cost_ceiling` turn-error path. (#110–#114)
 - **The mock speaks attach protocol 1.19.0** (was 1.12.0), and its
   recordings are checked against core-agent's own captures, which are
   vendored under `cmd/mast-web-server/testdata/upstream/`. It can now:
@@ -187,6 +218,43 @@ that file.
   deny **`reason`** and set the **permission mode**, and puts the status on
   a failed permission answer so a 410 can be told from a 404. This is wire
   only, with no UI change. (#110)
+
+### Known gaps
+
+- **Protocol 1.20.0 is not consumed.** core-agent reached it on the day
+  v0.6 executed. It adds subagent wake fields (`next_wake_at`,
+  `wake_detail`) and a `last_report` that fills in while a subagent runs.
+  It's additive, so nothing breaks, and the real-daemon run confirmed that.
+  It's v0.7's.
+- **A refusal-storm row isn't drawn on its own.** Its metadata isn't
+  documented upstream. The cancel it causes says `Turn canceled (cut by
+  refusal_storm).`, which carries the same fact.
+- **The hold banner still doesn't count running subagents**: nothing on
+  the wire reports it truthfully yet.
+  ([#106](https://github.com/go-steer/mast-web/issues/106))
+- **Inline `/` autocomplete** was optional for this release and didn't make
+  it. ([#43](https://github.com/go-steer/mast-web/issues/43))
+- **The v0.6 walkthrough sections (§10–§14) haven't had a human run yet.**
+  §1–§9 have.
+- Unchanged and now v0.7: `--auth-mode=oidc`
+  ([#86](https://github.com/go-steer/mast-web/issues/86)), the Kind job
+  against a real `core-agent`
+  ([#66](https://github.com/go-steer/mast-web/issues/66)), the hosted SPA
+  ([#6](https://github.com/go-steer/mast-web/issues/6)), and a mistyped
+  `?shell=` that silently lands in solo
+  ([#120](https://github.com/go-steer/mast-web/issues/120)).
+
+### Upgrading
+
+- *[embedders]* **This is the release to embed in a current core-agent.**
+  v0.5.0 in a 1.13.0+ daemon hides halts and can strand the composer;
+  v0.6.0 doesn't. Nothing to change on your side.
+- *[hosting]* **A local core-agent now needs a token.** Since core-agent#1266
+  a token-less loopback listener on an agent with `bash` exits 2. Behind
+  the BFF, set `BACKEND_TOKEN` to the token the agent was started with (as
+  `dev/tools/e2e-real-backend` does, and it passes against current
+  core-agent). For a browser talking to a local daemon directly, see the
+  updated quickstart in the README.
 
 ## [0.5.0] - 2026-10-06
 
@@ -611,7 +679,8 @@ First release of `mast-web-<tag>.tar.gz` as the canonical artifact for
 downstream agent binaries to fetch and embed via `go:embed`. See
 [`docs/web-design.md`](docs/web-design.md) for how the embedding works.
 
-[Unreleased]: https://github.com/go-steer/mast-web/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/go-steer/mast-web/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/go-steer/mast-web/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/go-steer/mast-web/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/go-steer/mast-web/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/go-steer/mast-web/compare/v0.2.1...v0.3.0

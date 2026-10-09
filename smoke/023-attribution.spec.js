@@ -203,6 +203,21 @@ test.describe('smoke: 023-attribution', () => {
     });
     await expect(card).toContainText('rm -rf ./build');
 
+    // The buttons follow the theme's text colour. A <button> does not
+    // inherit color, and these three used to render in the browser's
+    // default black — unreadable on a dark theme, and invisible to every
+    // assertion that only checked the label was there.
+    const colours = await card.locator('.perms-actions button').evaluateAll((btns) => {
+      const text = getComputedStyle(btns[0].closest('.term')).getPropertyValue('--text').trim();
+      const probe = document.createElement('span');
+      probe.style.color = text;
+      document.body.appendChild(probe);
+      const want = getComputedStyle(probe).color;
+      probe.remove();
+      return { want, got: btns.map((b) => getComputedStyle(b).color) };
+    });
+    for (const got of colours.got) expect(got).toBe(colours.want);
+
     await card.getByRole('button', { name: 'ALLOW ONCE' }).click();
 
     // The buttons are replaced by what was decided, and then by who the

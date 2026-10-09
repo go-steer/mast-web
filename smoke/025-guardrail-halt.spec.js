@@ -35,6 +35,20 @@ import { openSoloSession, resetTurnRequests, turnRequests } from './helpers.js';
 const SID = 'smoke-session';
 const term = (page) => page.locator('#solo-body .term:visible');
 
+// The mock replays its fixture when the stream opens, as live frames,
+// and the default fixture is a whole turn that ends in a turn-complete.
+// A prompt sent while that replay is still draining has its turn closed
+// by the REPLAY's turn-complete — STOP vanishes mid-test. On a fast
+// machine the replay always wins the race; on CI's runner it lost
+// (PR #128's first run, both attempts), and the screenshot showed the
+// replay's footer stamped under the test's own prompt. Wait for the
+// replayed turn to land, as a person would, before sending anything.
+async function openSettled(page) {
+  const screen = await openSoloSession(page);
+  await expect(screen.locator('.turn-footer')).toHaveCount(1);
+  return screen;
+}
+
 async function trip(page, body) {
   const res = await page.request.post('/_mock/guardrail-trip', { data: { session: SID, ...body } });
   expect(res.ok()).toBeTruthy();
@@ -55,7 +69,7 @@ test.describe('smoke: 025-guardrail-halt', () => {
   // The server side, which is true today and must stay true: a halted
   // session accepts the prompt and runs nothing.
   test('the mock queues a prompt sent to a halted session and runs nothing', async ({ page }) => {
-    await openSoloSession(page);
+    await openSettled(page);
     await trip(page, { guardrail: 'watchdog', halted_turn: false });
     await resetTurnRequests(page);
 
@@ -75,7 +89,7 @@ test.describe('smoke: 025-guardrail-halt', () => {
   test.fail(
     'typing at a halted session gives the composer back and says why (#111)',
     async ({ page }) => {
-      await openSoloSession(page);
+      await openSettled(page);
       await trip(page, { guardrail: 'watchdog', halted_turn: false });
 
       const prompt = term(page).locator('.term-prompt');
@@ -92,7 +106,7 @@ test.describe('smoke: 025-guardrail-halt', () => {
   // The halt's explanation. v0.5.0 drops the frame that carries it.
   // Fixed by #111.
   test.fail("a guardrail trip says why, in the producer's words (#111)", async ({ page }) => {
-    await openSoloSession(page);
+    await openSettled(page);
     await trip(page, { guardrail: 'watchdog', halted_turn: false });
     await expect(term(page)).toContainText('/guardrail reset watchdog', { timeout: 3000 });
   });

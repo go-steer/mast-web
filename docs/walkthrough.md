@@ -25,9 +25,9 @@ Then open <http://localhost:7778/>.
 Two things to know before you read a failure:
 
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
-- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#11-known-not-to-work) on cross-origin backends.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#12-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#11-known-not-to-work).
+The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#12-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -303,7 +303,7 @@ Every turn in this section is started from **outside** the browser on purpose. A
 
 **Steps**
 
-1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#11-known-not-to-work) — and try it without the query once, on purpose.)
+1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#12-known-not-to-work) — and try it without the query once, on purpose.)
 2. Run `/share`.
 3. Run `/share viewer bob@example.com`.
 4. Switch to **bob@** (the console line above, which also reloads).
@@ -430,7 +430,35 @@ curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/j
 
 ---
 
-## 11. Known not to work
+## 11. The permission card says what was applied
+
+**Verifies:** v0.6 #112 (protocol 1.14.0, core-agent#1088; 1.17.0, #1179; 1.18.0, #1175).
+
+**Setup:** mock on :7778; `curl -X DELETE localhost:7778/_mock/perms-log` before and after. Every prompt here is fake: the mock has no shell, and nothing runs.
+
+**Steps**
+
+1. Open `smoke-session` in solo. Raise a prompt the auto-mode approver model passed to you:
+   ```
+   curl -X POST localhost:7778/_mock/perms-prompt -H 'Content-Type: application/json' \
+        -d '{"session":"smoke-session","tool":"bash","detail":"kubectl rollout restart deploy/api","approver_model":"claude-sonnet-5-5","approver_reason":"restarts production; the task did not ask for it"}'
+   ```
+2. Answer it with **ALLOW ONCE**.
+3. Raise an ordinary prompt (the curl from §9 step 2). Before answering, expire it: `curl -X POST localhost:7778/_mock/perms-prompt-end -H 'Content-Type: application/json' -d '{"id":"<id from the raise>","why":"expired"}'`. Then click **ALLOW ONCE**.
+4. Switch the session to auto mode, `curl -X POST localhost:7778/sessions/smoke-session/perms/mode -H 'Content-Type: application/json' -d '{"mode":"auto"}'`, and run `/perms`.
+
+**Expected**
+
+- Step 1: the card shows **"Passed to you by the approver model claude-sonnet-5-5"**, then the reason as a **quotation**, *restarts production; the task did not ask for it*, signed **`— claude-sonnet-5-5`**. It must never read as the daemon's own words. There are **only two buttons, DENY and ALLOW ONCE**: on such a prompt the daemon applies any allow as once, so a wider button would misstate what it does.
+- Step 2: the outcome reads **`allow-once`** and `by smoke@example.com`. (When the daemon applies something other than what was clicked, for example a session grant turned into once, the card says **`applied as allow-once (asked for allow-session-tool)`** rather than repeating the click.)
+- Step 3: the outcome turns red, **`not taken`**, and the transcript says **"Not taken: your answer arrived after the prompt expired, so the action did not run. Answer sooner, or raise approval_timeout."** A prompt whose turn was cut gets a different sentence ending *"look at why the turn ended"*, because answering sooner wouldn't have helped there.
+- Step 4: **`Permissions — mode auto`**, and a row **`fs_read docs/runbook.md [allow-once, allowed by the approver model, claude-sonnet-5-5]`**. A call no person approved is credited to the model, never to a person and never as `unattributed`.
+
+**Why this matters:** the card is a record of what happened. A card that echoes the click when the daemon applied something narrower tells the operator the wrong scope for something they just authorised. And a late approver's only question is whether the action went ahead.
+
+---
+
+## 12. Known not to work
 
 A walkthrough that only lists successes trains you to skim. These are gaps, not bugs — if you hit one, it is the doc working.
 
@@ -441,7 +469,7 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.
 - **Hosting is v0.7.** v0.6 became the protocol catch-up. Anything about deploying this somewhere with real users is not in this release.
-- **The mock speaks protocol 1.19.0; the browser is catching up through v0.6.** Guardrail trips and the halted session are handled (§10, #111). Still to come: the permission card can name a decision the daemon didn't apply ([#112](https://github.com/go-steer/mast-web/issues/112)), deny-with-reason and `/perms mode` ([#113](https://github.com/go-steer/mast-web/issues/113)), and replayed history still drops failures that happened before you attached ([#114](https://github.com/go-steer/mast-web/issues/114)).
+- **The mock speaks protocol 1.19.0; the browser is catching up through v0.6.** Guardrail trips and the halted session (§10, #111) and the permission card (§11, #112) are handled. Still to come: deny-with-reason and `/perms mode` ([#113](https://github.com/go-steer/mast-web/issues/113)), and replayed history still drops failures that happened before you attached ([#114](https://github.com/go-steer/mast-web/issues/114)).
 - **A real core-agent won't start token-less with `bash` any more** (core-agent#1266). `core-agent --attach-listen :7777` now exits 2 unless the listener is authenticated. This walkthrough is unaffected because it uses the mock. If you point it at a real daemon, pass a token (`--attach-token-file`) and give the same token to mast-web.
 
 ---

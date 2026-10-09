@@ -734,7 +734,16 @@ window.SlashRender = (function () {
       header: `approved this session (${approvals.length})`,
       items: approvals.map((a) => {
         const tags = [a.decision].filter(Boolean);
-        if (o.attribution) tags.push(a.by ? 'by ' + a.by : 'unattributed');
+        // Three attributions, never collapsed: a verified person (`by`),
+        // the auto-mode approver model acting without one (v1.18.0
+        // `approver_model`, no `by` — `by` stays reserved for a human),
+        // or nobody the daemon could name.
+        if (o.attribution) {
+          if (a.by) tags.push('by ' + a.by);
+          else if (a.approver_model)
+            tags.push('allowed by the approver model, ' + a.approver_model);
+          else tags.push('unattributed');
+        }
         return {
           name: a.tool + (a.key ? ' ' + a.key : ''),
           tags,

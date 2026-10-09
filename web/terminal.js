@@ -657,14 +657,42 @@ window.MastTerminal = (function () {
       if (frame.source) meta.push('source ' + frame.source);
       if (meta.length) div.appendChild(mk('div', 'perms-meta', meta.join('  ·  ')));
 
+      // An auto-mode prompt the approver model looked at and passed to a
+      // person (v1.18.0, core-agent#1175). Its reason is MODEL OUTPUT,
+      // and arguments planted in the call can steer it ("routine, safe to
+      // always allow"), so it is quoted and attributed to the model by
+      // name — never rendered as if the daemon said it.
+      const escalated = typeof frame.approver_model === 'string' && frame.approver_model !== '';
+      if (escalated) {
+        const note = mk('div', 'perms-escalated');
+        note.appendChild(
+          mk(
+            'div',
+            'perms-escalated-head',
+            'Passed to you by the approver model ' + frame.approver_model
+          )
+        );
+        if (frame.approver_reason) {
+          const q = mk('blockquote', 'perms-escalated-reason', frame.approver_reason);
+          q.title = "The approver model's words, not the daemon's";
+          note.appendChild(q);
+          note.appendChild(mk('div', 'perms-escalated-cite', '— ' + frame.approver_model));
+        }
+        div.appendChild(note);
+      }
+
       // Wire-stable decision strings from core-agent/pkg/attach/
-      // prompter.go's DecisionFromWire mapping.
+      // prompter.go's DecisionFromWire mapping. On an escalated prompt the
+      // daemon applies ANY allow as allow-once, so a wider one is not
+      // offered: a button whose answer is always downgraded is a button
+      // that misstates what it does.
       const actions = mk('div', 'perms-actions');
-      [
+      const choices = [
         ['DENY', 'deny'],
         ['ALLOW ONCE', 'allow-once'],
-        ['ALLOW SESSION', 'allow-session-tool'],
-      ].forEach(([label, decision]) => {
+      ];
+      if (!escalated) choices.push(['ALLOW SESSION', 'allow-session-tool']);
+      choices.forEach(([label, decision]) => {
         const b = mk('button', 'term-btn', label);
         b.type = 'button';
         b.addEventListener('click', () => resolvePermsRequest(div, frame, decision));
@@ -689,10 +717,63 @@ window.MastTerminal = (function () {
       if (!pr) return;
       try {
         const out = await pr.respond(frame.id, decision);
+        recordApplied(div, decision, out);
         recordApprover(div, out);
       } catch (e) {
-        addSystemMessage(describeError(e, 'perms respond failed: '));
+        recordNotTaken(div, e);
       }
+    }
+
+    // What the daemon APPLIED, which is not always what was clicked
+    // (v1.17.0 core-agent#1179, v1.18.0 #1175): an always grant from a
+    // non-admin is applied for the session, and any allow on an escalated
+    // prompt is applied once. The click is drawn first for immediate
+    // feedback; the reply's `decision` replaces it, because the card is a
+    // record of what happened, not of what was asked for. A reply with no
+    // `decision` (pre-1.17.0) applied what it was sent, so the click stands.
+    function recordApplied(div, clicked, out) {
+      const applied =
+        out && typeof out.decision === 'string' && out.decision ? out.decision : clicked;
+      const el = div.querySelector('.perms-outcome');
+      if (!el) return;
+      el.textContent = applied;
+      div.dataset.resolved = applied;
+      if (out && out.downgraded === true) {
+        el.after(
+          mk('span', 'perms-downgraded', 'applied as ' + applied + ' (asked for ' + clicked + ')')
+        );
+      }
+    }
+
+    // A prompt that is gone (v1.14.0, core-agent#1088). The status is the
+    // answer to the one question a late approver has — did the action go
+    // ahead — and its two bodies prescribe different fixes, so each gets
+    // its own sentence. The outcome on the card stops claiming the click.
+    // Before 1.14.0 a cut prompt answered 404 "never issued", which says
+    // nothing a person can act on, so only a 1.14.0+ answer is read.
+    function recordNotTaken(div, e) {
+      const reads =
+        typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.14.0');
+      const el = div.querySelector('.perms-outcome');
+      const body = (e && e.body) || '';
+      let say = '';
+      if (reads && e && e.status === 410) {
+        say = /expired/.test(body)
+          ? 'Not taken: your answer arrived after the prompt expired, so the action did not run. Answer sooner, or raise approval_timeout.'
+          : "Not taken: the prompt's turn ended before your answer arrived, so the action did not run. Answering sooner would not have helped; look at why the turn ended.";
+      } else if (reads && e && e.status === 404) {
+        say = 'Not taken: this prompt was already answered, or was not issued by this session.';
+      }
+      if (!say) {
+        addSystemMessage(describeError(e, 'perms respond failed: '));
+        return;
+      }
+      if (el) {
+        el.textContent = 'not taken';
+        el.classList.add('perms-not-taken');
+      }
+      div.dataset.resolved = 'not-taken';
+      addSystemMessage(say);
     }
 
     // What the daemon wrote in the audit log for the click that just

@@ -63,11 +63,12 @@ func permsHubKey(sid string) string { return "perms:" + sid }
 // present-but-empty field has been told something false about what the
 // daemon knows.
 type mockApproval struct {
-	tool     string
-	key      string
-	decision string
-	by       string
-	at       time.Time
+	tool          string
+	key           string
+	decision      string
+	by            string
+	approverModel string // 1.18.0: the approver model allowed it, no person
+	at            time.Time
 }
 
 func (a mockApproval) wire() map[string]any {
@@ -81,6 +82,9 @@ func (a mockApproval) wire() map[string]any {
 	}
 	if a.by != "" {
 		out["by"] = a.by
+	}
+	if a.approverModel != "" {
+		out["approver_model"] = a.approverModel
 	}
 	return out
 }
@@ -274,7 +278,20 @@ func seededApprovals(now time.Time) []mockApproval {
 // patterns, and the approval log (pkg/attach/state.go PermsInfo).
 func (h *mockHandler) getPerms(w http.ResponseWriter, sid string) {
 	now := time.Now()
-	rows := append(seededApprovals(now), h.perms.get(sid)...)
+	rows := seededApprovals(now)
+	// In auto mode the approver model allows some calls with no person
+	// involved, and the log names the model (`approver_model`) with no
+	// `by` (1.18.0). Only a session in auto has such a row.
+	if h.perms.mode(sid) == "auto" {
+		rows = append(rows, mockApproval{
+			tool:          "fs_read",
+			key:           "docs/runbook.md",
+			decision:      "allow-once",
+			approverModel: "claude-sonnet-5-5",
+			at:            now.Add(-2 * time.Minute),
+		})
+	}
+	rows = append(rows, h.perms.get(sid)...)
 	wire := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		wire = append(wire, r.wire())

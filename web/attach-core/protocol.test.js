@@ -88,6 +88,106 @@ describe('AttachCoreProtocol', () => {
       );
       expect(events).toEqual([]);
     });
+
+    // v0.6 #114 — 1.19.0's durable failure rows. No Content; matched on
+    // author AND invocation; emitted as the typed event the live frame
+    // would have been, with the row's ID as event_id and row:true.
+    describe('durable failure rows (1.19.0)', () => {
+      const row = (author, meta, id) => ({
+        seq: 7,
+        event: {
+          ID: id || 'row-1',
+          Author: author,
+          InvocationID: author.split('/')[1],
+          CustomMetadata: meta,
+        },
+      });
+      const fan = (frame) => {
+        const out = [];
+        AttachCoreProtocol.fanoutAgentFrame(frame, (e) => out.push(e));
+        return out;
+      };
+
+      it('reads a turn-error row as a turn-error, cut_by included', () => {
+        expect(
+          fan(
+            row(
+              'agent/turn-error',
+              {
+                kind: 'canceled',
+                code: 'CANCELED',
+                message: 'turn canceled',
+                retryable: false,
+                cut_by: 'cost_ceiling',
+              },
+              'te-1'
+            )
+          )
+        ).toEqual([
+          {
+            type: 'turn-error',
+            row: true,
+            data: {
+              kind: 'canceled',
+              code: 'CANCELED',
+              message: 'turn canceled',
+              retryable: false,
+              cut_by: 'cost_ceiling',
+              event_id: 'te-1',
+            },
+          },
+        ]);
+      });
+
+      it('reads both trip rows as guardrail-trip', () => {
+        const turnTrip = fan(
+          row(
+            'agent/guardrail-turn-trip',
+            { guardrail: 'cost_ceiling', reason: 'per-turn', halted_turn: true },
+            'tt-1'
+          )
+        );
+        expect(turnTrip[0]).toMatchObject({
+          type: 'guardrail-trip',
+          row: true,
+          data: { guardrail: 'cost_ceiling', halted_turn: true, event_id: 'tt-1' },
+        });
+        const halt = fan(
+          row('agent/guardrail-trip', {
+            guardrail: 'watchdog',
+            reason: 'looping',
+            halted_turn: false,
+          })
+        );
+        expect(halt[0].data.halted_turn).toBe(false);
+      });
+
+      // A halt row written before 1.19.0 has no halted_turn. The spec:
+      // read it as false.
+      it('reads an older halt row without halted_turn as false', () => {
+        const out = fan(row('agent/guardrail-trip', { guardrail: 'watchdog', reason: 'looping' }));
+        expect(out[0].data.halted_turn).toBe(false);
+      });
+
+      // Author and invocation together, so a future row sharing an
+      // author can't be misread as one of these.
+      it('ignores a row whose author and invocation do not both match', () => {
+        expect(
+          fan({
+            event: {
+              ID: 'x',
+              Author: 'agent/turn-error',
+              InvocationID: 'something-else',
+              CustomMetadata: { kind: 'x' },
+            },
+          })
+        ).toEqual([]);
+        expect(fan(row('gate/refusal-storm', { reason: 'storm' }))).toEqual([]);
+        expect(fan({ event: { Author: 'agent/turn-error', InvocationID: 'turn-error' } })).toEqual(
+          []
+        );
+      });
+    });
   });
 
   describe('parseCapabilities', () => {

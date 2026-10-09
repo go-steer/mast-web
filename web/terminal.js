@@ -142,13 +142,20 @@ window.MastTerminal = (function () {
   // `absorbed` is a cancel a guardrail caused and its trip already
   // explained (1.13.0 §2.10): the turn ends, and says nothing more.
   class TurnCanceled extends Error {
-    constructor(absorbed) {
+    constructor(absorbed, cutBy) {
       super('turn canceled');
       this.name = 'TurnCanceled';
       this.absorbed = !!absorbed;
+      this.cutBy = typeof cutBy === 'string' ? cutBy : '';
     }
   }
   const CANCELED_LINE = 'Turn canceled.';
+  // 1.19.0's turn-error carries `cut_by` when a guardrail's cut caused the
+  // cancel — for a refusal storm, the only in-band sign there is. Said
+  // when the wire says it, never guessed when it doesn't.
+  function canceledLine(cutBy) {
+    return cutBy ? 'Turn canceled (cut by ' + cutBy + ').' : CANCELED_LINE;
+  }
 
   // A prompt sent to a guardrail-halted session. It reaches the inbox and
   // runs after the reset (core-agent#1040), so it is neither a failure nor
@@ -328,6 +335,10 @@ window.MastTerminal = (function () {
     // Renderer-only state, which stays in the closure because nothing
     // outside the transcript can do anything with it: a DOM handle, a
     // half-priced turn, and two flags about how to draw the next row.
+    // event_ids of failures already drawn (v0.6 #114): a row and its typed
+    // frame are one failure. Lives as long as the terminal does.
+    const seenFailures = new Set();
+
     const ui = {
       // Armed by a guardrail-trip with halted_turn:true; spent on the next
       // turn-error and dropped at the turn boundary (v0.6 #111).
@@ -1763,6 +1774,17 @@ window.MastTerminal = (function () {
     function renderHistoryTurn(turn) {
       const el = mk('div', 'history-turn');
       let streaming = null;
+      let historyAbsorb = false;
+      // In the event log a per-turn trip's row lands at the turn's
+      // cleanup, AFTER the turn-error row its cut produced. So history can
+      // hold the cancel before its trip, and a rule that only looks back
+      // would draw the contentless cancel anyway. The cancel row names the
+      // guardrail (cut_by), so pair on that, in either order.
+      const cutBy = new Set(
+        turn.events
+          .filter((e) => e.type === 'guardrail-trip' && e.data && e.data.halted_turn === true)
+          .map((e) => e.data.guardrail)
+      );
       const pendingToolEls = [];
       let searchEl = null;
       let sourcesEl = null;
@@ -1823,6 +1845,27 @@ window.MastTerminal = (function () {
               );
               return;
             }
+            // 1.19.0's durable rows (v0.6 #114): a session replayed after
+            // a failure shows the failure, not a turn that just stops. The
+            // absorb works here as it does live, off the row's own
+            // halted_turn: a cut's cancel says nothing its trip didn't.
+            case 'guardrail-trip': {
+              streaming = null;
+              addGuardrailTrip(d);
+              historyAbsorb = d.halted_turn === true;
+              return;
+            }
+            case 'turn-error': {
+              streaming = null;
+              const absorbed =
+                d.kind === 'canceled' && (historyAbsorb || (d.cut_by && cutBy.has(d.cut_by)));
+              historyAbsorb = false;
+              if (absorbed) return;
+              if (d.kind === 'canceled') addSystemMessage(canceledLine(d.cut_by));
+              else
+                addSystemMessage('Turn error: ' + (d.kind || 'error') + ': ' + (d.message || ''));
+              return;
+            }
             default:
               return;
           }
@@ -1839,6 +1882,32 @@ window.MastTerminal = (function () {
       // connect()/selectSession() and tags emitted events with the gen
       // at emit time, so stragglers from a prior stream drop here.
       if (client && typeof ev.gen === 'number' && ev.gen !== client.sessionGen) return;
+
+      // Durable failure rows (1.19.0, v0.6 #114). Replayed, a row is
+      // history and is drawn there — typed frames are never replayed, so
+      // history can't hold both. Live, a row and its typed frame are one
+      // failure, and they pair on event_id from 1.19.0: render whichever
+      // arrives first, drop the other (a trip's frame leads its row; a
+      // turn error's row leads its frame). Before 1.19.0 the halt row is
+      // broadcast live too, with nothing to pair it on, so a live row is
+      // read only where the pairing exists.
+      if (ev.type === 'guardrail-trip' || ev.type === 'turn-error') {
+        if (ev.row && ev.replay) {
+          bufferReplay(ev);
+          return;
+        }
+        if (
+          ev.row &&
+          !(typeof client.protocolAtLeast === 'function' && client.protocolAtLeast('1.19.0'))
+        ) {
+          return;
+        }
+        const id = ev.data && ev.data.event_id;
+        if (id) {
+          if (seenFailures.has(id)) return;
+          seenFailures.add(id);
+        }
+      }
 
       switch (ev.type) {
         case 'capabilities':
@@ -2059,8 +2128,8 @@ window.MastTerminal = (function () {
           const absorb = ui.absorbCancel;
           ui.absorbCancel = false;
           if (te.kind === 'canceled') {
-            if (failing) failing.finish(null, new TurnCanceled(absorb));
-            else if (!absorb) addSystemMessage(CANCELED_LINE);
+            if (failing) failing.finish(null, new TurnCanceled(absorb, te.cut_by));
+            else if (!absorb) addSystemMessage(canceledLine(te.cut_by));
             return;
           }
           const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
@@ -3632,7 +3701,7 @@ window.MastTerminal = (function () {
         // rather than watching one. Deliberately not rethrown: every
         // other call site is a keypress with nobody to catch it.
         if (e instanceof TurnCanceled) {
-          if (!e.absorbed) addSystemMessage(CANCELED_LINE);
+          if (!e.absorbed) addSystemMessage(canceledLine(e.cutBy));
           return { ok: false, canceled: true, error: 'turn canceled' };
         }
         // Sent before the panel knew the session was halted; the halt

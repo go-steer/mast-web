@@ -824,6 +824,85 @@ describe('MastTerminal built-ins', () => {
   // three facts stay apart: the trip is an announcement, the halt comes
   // from GET /guardrails alone, and the cancel a cut causes is absorbed
   // by the trip that explains it — once, and never across a turn.
+  // v0.6 #114 — 1.19.0's durable failure rows, live. A row and its
+  // typed frame are one failure, paired on event_id: whichever arrives
+  // first is drawn, the other is dropped. Before 1.19.0 there's nothing to
+  // pair on, so a live row isn't read at all.
+  describe('durable failure rows, live', () => {
+    const canceledRow = (id, extra) => ({
+      type: 'turn-error',
+      row: true,
+      data: {
+        kind: 'canceled',
+        code: 'CANCELED',
+        message: 'turn canceled',
+        retryable: false,
+        event_id: id,
+        ...extra,
+      },
+    });
+    const canceledFrame = (id, extra) => ({
+      type: 'turn-error',
+      data: {
+        kind: 'canceled',
+        code: 'CANCELED',
+        message: 'turn canceled',
+        retryable: false,
+        event_id: id,
+        ...extra,
+      },
+    });
+    const count = (text, needle) => text.split(needle).length - 1;
+
+    it('draws a turn error once when its row leads its frame', () => {
+      const { client, text } = mount({ features: {} });
+      client.feed(canceledRow('te-1', { cut_by: 'refusal_storm' }));
+      client.feed(canceledFrame('te-1', { cut_by: 'refusal_storm' }));
+      expect(count(text(), 'Turn canceled (cut by refusal_storm).')).toBe(1);
+    });
+
+    it('draws a trip once when its frame leads its row', async () => {
+      const { term, client } = mount({ features: { guardrails: true } });
+      const trip = {
+        guardrail: 'cost_ceiling',
+        reason: 'per-turn',
+        halted_turn: false,
+        event_id: 'tt-1',
+      };
+      client.feed({ type: 'guardrail-trip', data: trip });
+      client.feed({ type: 'guardrail-trip', row: true, data: trip });
+      await flush();
+      expect(term.out.querySelectorAll('.guardrail-trip')).toHaveLength(1);
+    });
+
+    // A session with no event log writes no rows and sets no event_id;
+    // two unrelated failures must both show.
+    it('draws two failures without event_ids as two', () => {
+      const { client, text } = mount({ features: {} });
+      client.feed({ type: 'turn-error', data: { kind: 'canceled', message: 'turn canceled' } });
+      client.feed({ type: 'turn-error', data: { kind: 'canceled', message: 'turn canceled' } });
+      expect(count(text(), 'Turn canceled.')).toBe(2);
+    });
+
+    // 1.13–1.18 broadcast the halt row live with no event_id to pair it
+    // with its typed frame. Reading it would draw every halt twice.
+    it('does not read a live row from a backend older than 1.19.0', async () => {
+      const { term, client } = mount({ features: { guardrails: true } });
+      client.protocolAtLeast = (v) => v !== '1.19.0';
+      client.feed({
+        type: 'guardrail-trip',
+        data: { guardrail: 'watchdog', reason: 'looping', halted_turn: false },
+      });
+      client.feed({
+        type: 'guardrail-trip',
+        row: true,
+        data: { guardrail: 'watchdog', reason: 'looping', halted_turn: false, event_id: 'halt-1' },
+      });
+      await flush();
+      expect(term.out.querySelectorAll('.guardrail-trip')).toHaveLength(1);
+    });
+  });
+
   describe('guardrail trips and the halt', () => {
     const tripFrame = (over) => ({
       type: 'guardrail-trip',

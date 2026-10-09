@@ -84,6 +84,20 @@ message.
   - `/perms` credits calls the approver model allowed with no person
     involved to the model, never as a person and never as
     `unattributed`. (#112)
+- **A failure survives a reload** (protocol 1.19.0). Since core-agent#1258
+  every guardrail trip and turn error is also written to the event log, and
+  it replays as a content-less `agent` frame, which mast-web dropped. A
+  session reloaded after a failure showed turns that simply stopped. Those
+  rows are now read, matched on author and invocation together:
+  - **In history**, a trip and its cut are paired by `cut_by` in either
+    order, since the log stores the cancel first, so the cancel is still
+    absorbed.
+  - **Live**, a failure arrives as both the row and its typed frame. They
+    pair on `event_id` and draw once, in either arrival order.
+  - A live row from a daemon older than 1.19.0 is not read, because the halt
+    row was broadcast there with nothing to pair it on.
+  - A cancel caused by a guardrail now says so: `Turn canceled (cut by
+    cost_ceiling).` (#114)
 
 - **The mock now runs a turn when you send it a prompt, and STOP ends it.**
   `mast-web-server --mode=mock` used to replay its fixture once, when a

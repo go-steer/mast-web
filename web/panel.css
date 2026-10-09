@@ -781,6 +781,38 @@
   margin-top: 6px;
 }
 
+/* An escalated auto-mode prompt (v1.18.0): the approver model's reason,
+   quoted and attributed. It is model output, so it is set apart as a
+   quotation and never styled like the daemon's own text. */
+.term .perms-escalated {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.term .perms-escalated-reason {
+  margin: 3px 0 0;
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--border-soft);
+  font-style: italic;
+  color: var(--text);
+}
+
+.term .perms-escalated-cite {
+  padding-left: 8px;
+}
+
+/* What the daemon applied, when it isn't what was clicked (v1.17/1.18). */
+.term .perms-downgraded {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--yellow);
+}
+
+.term .perms-outcome.perms-not-taken {
+  color: var(--red);
+}
+
 .term .perms-outcome {
   font-size: 10px;
   letter-spacing: 0.06em;

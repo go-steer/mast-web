@@ -658,6 +658,50 @@ describe('SlashRender', () => {
       expect(html).toContain('unattributed');
     });
 
+    // v1.18.0: a call the auto-mode approver model allowed with no person
+    // involved carries `approver_model` and no `by`. It is the third
+    // answer, and it must not borrow either of the other two: not a
+    // person's name, and not "unattributed" — the daemon knows who.
+    it('credits the approver model where no person was involved', () => {
+      const html = SlashRender.renderPerms(
+        {
+          mode: 'auto',
+          approvals: [
+            {
+              tool: 'fs_read',
+              key: 'docs/runbook.md',
+              decision: 'allow-once',
+              approver_model: 'claude-sonnet-5-5',
+              at: '2026-10-09T10:00:00Z',
+            },
+          ],
+        },
+        { attribution: true }
+      );
+      expect(html).toContain('allowed by the approver model, claude-sonnet-5-5');
+      expect(html).not.toContain('unattributed');
+    });
+
+    // `by` is reserved for a verified human and wins if both are present.
+    it('prefers a verified person over the approver model', () => {
+      const html = SlashRender.renderPerms(
+        {
+          approvals: [
+            {
+              tool: 'bash',
+              decision: 'allow-once',
+              by: 'ada@example.com',
+              approver_model: 'claude-sonnet-5-5',
+              at: '2026-10-09T10:00:00Z',
+            },
+          ],
+        },
+        { attribution: true }
+      );
+      expect(html).toContain('by ada@example.com');
+      expect(html).not.toContain('approver model');
+    });
+
     // On a backend that cannot attribute, every row would say
     // "unattributed" and it would mean nothing. Say it once, about the
     // backend, and leave the rows alone.

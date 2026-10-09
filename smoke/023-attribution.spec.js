@@ -255,4 +255,57 @@ test.describe('smoke: 023-attribution', () => {
     await expect(out.locator('.list-item').last()).toContainText('apply -f prod.yaml');
     await expect(out.locator('.list-item').last()).toContainText(`by ${SMOKE}`);
   });
+
+  // v0.6 #112 (v1.18.0): an auto-mode prompt the approver model passed
+  // to a person. Its reason is the model's words — quoted, attributed —
+  // and only the two buttons the daemon will honour as asked.
+  test('an escalated card quotes the approver model and offers two buttons', async ({ page }) => {
+    const screen = await openSoloSession(page);
+    const card = await raiseUntilCarded(page, screen, {
+      tool: 'bash',
+      detail: 'kubectl rollout restart deploy/api',
+      approver_model: 'claude-sonnet-5-5',
+      approver_reason: 'restarts production; the task did not ask for it',
+    });
+    await expect(card.locator('blockquote.perms-escalated-reason')).toHaveText(
+      'restarts production; the task did not ask for it'
+    );
+    await expect(card.locator('.perms-escalated-cite')).toHaveText('— claude-sonnet-5-5');
+    await expect(card.getByRole('button')).toHaveText(['DENY', 'ALLOW ONCE']);
+
+    await card.getByRole('button', { name: 'ALLOW ONCE' }).click();
+    await expect(card.locator('.perms-outcome')).toHaveText('allow-once');
+  });
+
+  // v1.14.0: an answer that arrives after the prompt is gone did not
+  // authorise anything, and the card says so instead of claiming the click.
+  test('a late answer to an expired prompt says the action was not taken', async ({ page }) => {
+    const screen = await openSoloSession(page);
+    const card = await raiseUntilCarded(page, screen, {
+      tool: 'bash_exec',
+      detail: 'rm -rf ./build',
+    });
+    const id = await card.getAttribute('data-prompt-id');
+    const ended = await page.request.post('/_mock/perms-prompt-end', {
+      data: { id, why: 'expired' },
+    });
+    expect(ended.ok()).toBeTruthy();
+
+    await card.getByRole('button', { name: 'ALLOW ONCE' }).click();
+    await expect(card.locator('.perms-outcome')).toHaveText('not taken');
+    await expect(lastOutput(screen)).toContainText('arrived after the prompt expired');
+  });
+
+  // v1.18.0: in auto mode the approver model allows some calls itself.
+  // The log credits the model — not a person, and not "unattributed".
+  test('/perms credits the approver model for a call no person approved', async ({ page }) => {
+    const screen = await openSoloSession(page);
+    const mode = await page.request.post(`/sessions/${SID}/perms/mode`, { data: { mode: 'auto' } });
+    expect(mode.ok()).toBeTruthy();
+    await run(page, '/perms');
+    const out = lastOutput(screen);
+    await expect(out).toContainText('Permissions — mode auto');
+    await expect(out).toContainText('fs_read docs/runbook.md');
+    await expect(out).toContainText('allowed by the approver model, claude-sonnet-5-5');
+  });
 });

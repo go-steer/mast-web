@@ -1811,7 +1811,7 @@ describe('MastTerminal built-ins', () => {
     // stream, which is the terminal's second EventSource — stubbed
     // here, since jsdom has no real one and the frame is what matters.
     describe('the permission card', () => {
-      async function prompted(over) {
+      async function prompted(over, frame) {
         const { term, client, text } = mount();
         globalThis.EventSource = class {
           addEventListener() {}
@@ -1822,8 +1822,10 @@ describe('MastTerminal built-ins', () => {
         load('attach-core/prompter.js');
         await term.connect();
         const pr = term.connection.getPrompter();
-        pr.respond = async () => over;
-        pr.onPrompt({ id: 'perms-1', kind: 'bash', tool: 'bash_exec', detail: 'rm -rf ./build' });
+        pr.respond = typeof over === 'function' ? over : async () => over;
+        pr.onPrompt(
+          frame || { id: 'perms-1', kind: 'bash', tool: 'bash_exec', detail: 'rm -rf ./build' }
+        );
         const card = term.el.querySelector('.perms-request');
         return { term, client, text, card };
       }
@@ -1865,6 +1867,109 @@ describe('MastTerminal built-ins', () => {
         allowOnce(card).click();
         await flush();
         expect(card.querySelector('.perms-approver')).toBeNull();
+      });
+
+      // v0.6 #112 — the card records what was APPLIED (v1.17.0/v1.18.0),
+      // quotes an escalating approver as the model it is, and says plainly
+      // when an answer arrived too late to matter (v1.14.0).
+      const button = (card, label) =>
+        [...card.querySelectorAll('button')].find((b) => b.textContent === label);
+      const gone = (status, body) => async () => {
+        const e = new Error('POST /perms/respond → HTTP ' + status + ': ' + body);
+        e.status = status;
+        e.body = body;
+        throw e;
+      };
+
+      it('replaces the click with the decision the daemon applied', async () => {
+        const { card } = await prompted({
+          acknowledged: true,
+          approver: 'ada@example.com',
+          decision: 'allow-once',
+          downgraded: true,
+        });
+        button(card, 'ALLOW SESSION').click();
+        await flush();
+        expect(card.querySelector('.perms-outcome').textContent).toBe('allow-once');
+        expect(card.querySelector('.perms-downgraded').textContent).toBe(
+          'applied as allow-once (asked for allow-session-tool)'
+        );
+      });
+
+      // Pre-1.17.0: no `decision` in the reply, and the daemon applied what
+      // it was sent — so the click stands and nothing claims a downgrade.
+      it('keeps the click when the reply names no decision', async () => {
+        const { card } = await prompted({ acknowledged: true });
+        button(card, 'ALLOW SESSION').click();
+        await flush();
+        expect(card.querySelector('.perms-outcome').textContent).toBe('allow-session-tool');
+        expect(card.querySelector('.perms-downgraded')).toBeNull();
+      });
+
+      // v1.18.0: the approver model's reason is model output and steerable
+      // by the call it judged. Quoted, attributed — and only the two
+      // buttons the daemon will honour as asked.
+      it('quotes an escalating approver and offers only deny and allow once', async () => {
+        const { card } = await prompted(
+          { acknowledged: true },
+          {
+            id: 'perms-2',
+            kind: 'bash',
+            tool: 'bash',
+            detail: 'kubectl rollout restart deploy/api',
+            approver_model: 'claude-sonnet-5-5',
+            approver_reason: 'restarts production; the task did not ask for it',
+          }
+        );
+        expect(card.querySelector('.perms-escalated-head').textContent).toContain(
+          'approver model claude-sonnet-5-5'
+        );
+        expect(card.querySelector('blockquote.perms-escalated-reason').textContent).toBe(
+          'restarts production; the task did not ask for it'
+        );
+        expect(card.querySelector('.perms-escalated-cite').textContent).toBe('— claude-sonnet-5-5');
+        const labels = [...card.querySelectorAll('button')].map((b) => b.textContent);
+        expect(labels).toEqual(['DENY', 'ALLOW ONCE']);
+      });
+
+      it('says a gone prompt was not taken, and which way it ended', async () => {
+        let { card, text } = await prompted(
+          gone(410, 'attach: approval arrived after the prompt expired; the action was not taken')
+        );
+        allowOnce(card).click();
+        await flush();
+        expect(card.querySelector('.perms-outcome').textContent).toBe('not taken');
+        expect(text()).toContain('arrived after the prompt expired');
+        expect(text()).toContain('raise approval_timeout');
+
+        ({ card, text } = await prompted(
+          gone(
+            410,
+            "attach: the prompt's turn ended before the approval arrived; the action was not taken"
+          )
+        ));
+        allowOnce(card).click();
+        await flush();
+        expect(text()).toContain('turn ended before your answer arrived');
+        expect(text()).toContain('Answering sooner would not have helped');
+
+        ({ card, text } = await prompted(gone(404, 'no pending prompt with that id')));
+        allowOnce(card).click();
+        await flush();
+        expect(text()).toContain('already answered, or was not issued by this session');
+      });
+
+      // Before 1.14.0 a cut prompt said "never issued" with a 404; reading
+      // that as anything specific would be guessing.
+      it("reports an older backend's refusal as it came", async () => {
+        const { client, card, text } = await prompted(
+          gone(404, 'already responded, cancelled, or never issued')
+        );
+        client.protocolAtLeast = (v) => v !== '1.14.0';
+        allowOnce(card).click();
+        await flush();
+        expect(text()).toContain('perms respond failed');
+        expect(card.querySelector('.perms-outcome').textContent).toBe('allow-once');
       });
     });
   });

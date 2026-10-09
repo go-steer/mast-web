@@ -54,6 +54,20 @@ message.
   Daemons older than 1.13.0 keep the old `cost_ceiling` turn-error path.
   *[embedders]* This is the fix that makes v0.6 safe to embed in a current
   core-agent. (#111)
+- **The permission card says what was applied, not what was clicked**
+  (protocol 1.14.0, 1.17.0, 1.18.0):
+  - The outcome becomes the reply's `decision`, so a downgrade reads
+    `applied as allow-once (asked for allow-session-tool)`.
+  - On an auto-mode prompt the approver model passed to a person, the card
+    quotes the model's reason as a quotation signed with its name, and
+    offers only DENY and ALLOW ONCE, since the daemon applies any allow
+    there as once.
+  - An answer that arrives after the prompt is gone says **not taken**, and
+    which of the two ways it ended (expired, or its turn was cut), because
+    the fixes differ.
+  - `/perms` credits calls the approver model allowed with no person
+    involved to the model, never as a person and never as
+    `unattributed`. (#112)
 
 - **The mock now runs a turn when you send it a prompt, and STOP ends it.**
   `mast-web-server --mode=mock` used to replay its fixture once, when a

@@ -420,3 +420,27 @@ func TestMockPerms_ModeIsOwnerOnlyAndSettable(t *testing.T) {
 		t.Fatalf("mode allow: want 400, got %d", resp.StatusCode)
 	}
 }
+
+// 1.18.0: in auto mode the log carries a call the approver model allowed
+// with no person involved — `approver_model` and no `by`. Only a session
+// in auto has one.
+func TestMockPerms_AutoModeLogNamesTheApproverModel(t *testing.T) {
+	srv := newMockServer(t)
+	if rows := getApprovals(t, srv, mockDefaultCaller); len(rows) != 2 {
+		t.Fatalf("ask mode: want the two seeded rows, got %d", len(rows))
+	}
+	postJSON(t, srv, "/sessions/smoke-session/perms/mode", `{"mode":"auto"}`)
+	rows := getApprovals(t, srv, mockDefaultCaller)
+	var model map[string]any
+	for _, r := range rows {
+		if r["approver_model"] != nil {
+			model = r
+		}
+	}
+	if model == nil {
+		t.Fatalf("auto mode: want a row the approver model allowed, got %#v", rows)
+	}
+	if _, hasBy := model["by"]; hasBy {
+		t.Fatalf("`by` is reserved for a verified person, got %#v", model)
+	}
+}

@@ -98,6 +98,13 @@ message.
     row was broadcast there with nothing to pair it on.
   - A cancel caused by a guardrail now says so: `Turn canceled (cut by
     cost_ceiling).` (#114)
+- **A result delivered before its run failed reads "used, with a warning"**,
+  not a plain success (core-agent#1154). A subagent that returned and then
+  hit a 429 used to show a bare ✓ Used, with `run_error` visible only in the
+  JSON. The row keeps its ✓ and adds one warning-coloured line, `⚠ run
+  failed after returning: <run_error>`. It's deliberately not a red ✗,
+  which would say the result is junk. The line is keyed on the result key,
+  not the tool name, and a real tool error still wins. (#108)
 
 - **The mock now runs a turn when you send it a prompt, and STOP ends it.**
   `mast-web-server --mode=mock` used to replay its fixture once, when a

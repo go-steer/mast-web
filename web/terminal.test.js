@@ -203,6 +203,53 @@ function mount({ features, slashCommands, commands, protocol } = {}) {
   };
 }
 
+// #108 — "delivered, with a warning". core-agent#1154 keeps a subagent's
+// result when its run fails after return_result, and says so in
+// `run_error`. The four cases #108 asks for, plus the unparseable one.
+describe('toolOutcome', () => {
+  beforeEach(() => {
+    load('terminal.js');
+  });
+  const outcome = (err, json) => globalThis.MastTerminal.toolOutcome(err, json);
+
+  it('a plain result is used, with no warning', () => {
+    expect(outcome('', '{"output":"x"}')).toEqual({ failed: false, warning: '' });
+  });
+
+  it('a run_error keeps the result used and names what went wrong', () => {
+    expect(outcome('', '{"output":"x","run_error":"429"}')).toEqual({
+      failed: false,
+      warning: '429',
+    });
+  });
+
+  // A real tool error still wins: that call failed.
+  it('a tool error is a failure, whatever the result says', () => {
+    expect(outcome('boom', '{"output":"x","run_error":"429"}')).toEqual({
+      failed: true,
+      warning: '',
+    });
+  });
+
+  it('an empty run_error is no warning', () => {
+    expect(outcome('', '{"output":"x","run_error":""}')).toEqual({ failed: false, warning: '' });
+  });
+
+  it('an unparseable result is simply not a warning', () => {
+    expect(outcome('', 'not json')).toEqual({ failed: false, warning: '' });
+  });
+
+  it('collapses whitespace and caps a long warning to one line', () => {
+    const w = outcome(
+      '',
+      JSON.stringify({ run_error: 'line one\n  line   two ' + 'x'.repeat(300) })
+    ).warning;
+    expect(w.startsWith('line one line two ')).toBe(true);
+    expect(w.length).toBe(160);
+    expect(w.endsWith('…')).toBe(true);
+  });
+});
+
 describe('MastTerminal built-ins', () => {
   beforeEach(() => {
     document.body.replaceChildren();

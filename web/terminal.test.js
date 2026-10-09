@@ -129,6 +129,11 @@ function stubClient() {
       state: 'running',
     })),
     getStatus: record('getStatus', { state: 'paused', turn_in_flight: false }),
+    // STOP's wire call. `paused: false` is the normal answer, because
+    // the browser asks for hold:false — a cancel, not a park (#73). The
+    // stub says so explicitly rather than omitting the key, since the
+    // one branch worth having is the one where the backend parks anyway.
+    interrupt: record('interrupt', { interrupted: true, paused: false }),
     // The 1.10.0 ACL. Both lists are always present on the wire, so
     // they are always present here.
     acl,
@@ -714,6 +719,98 @@ describe('MastTerminal built-ins', () => {
       const r = await pending;
       expect(text()).toContain('Error: rate_limited: quota exceeded');
       expect(r.canceled).toBeUndefined();
+    });
+  });
+
+  // The interrupt control. Nothing asserted this until a manual
+  // walkthrough run turned up an operator who could not find the
+  // button — at which point `term-stop` appeared exactly once in the
+  // whole repository, on the line that creates it. #68 and #73 are both
+  // about STOP's behaviour and both were covered only by the wire call
+  // underneath it, never by the affordance.
+  //
+  // The distinction these pin down is the one #93 made load-bearing:
+  // STOP follows `connection.isRunning` — "this browser dispatched a
+  // turn" — and NOT the session's run state. A turn somebody else
+  // started must raise the fleet count without offering this operator a
+  // one-click cancel of work that is not theirs.
+  describe('the STOP control', () => {
+    const parts = (term) => ({
+      stop: term.el.querySelector('.term-stop'),
+      send: term.el.querySelector('.term-send'),
+    });
+
+    it('is absent between turns and revealed for the whole turn', async () => {
+      const { term, client } = mount({ features: {} });
+      client.inject = async () => {};
+      const { stop, send } = parts(term);
+
+      // Hidden rather than disabled: an operator scanning the composer
+      // should see SEND alone, not a greyed-out second control.
+      expect(stop.hidden).toBe(true);
+      expect(stop.textContent).toBe('STOP');
+
+      const pending = term.submit('hello');
+      // Synchronously, before any frame arrives — the turn is dispatched
+      // and the way out has to exist from that instant, not from the
+      // first token.
+      expect(stop.hidden).toBe(false);
+      expect(send.disabled).toBe(true);
+
+      term.connection.getActiveTurn().finish({
+        totalMs: 10,
+        tokens: { in: 1, out: 1 },
+        costUSD: 0,
+        toolCalls: 0,
+      });
+      await pending;
+
+      expect(stop.hidden).toBe(true);
+      expect(send.disabled).toBe(false);
+    });
+
+    it('stays hidden for a turn this browser did not start', async () => {
+      const { term, client } = mount({ features: {} });
+      const { stop, send } = parts(term);
+
+      // What a session being driven from elsewhere looks like on the
+      // wire: the server says a turn is in flight, and no local submit
+      // ever happened.
+      client.feed({ type: 'status-update', data: { turn_state: 'streaming' } });
+      term.session.applyStatusSnapshot({ state: 'running', turn_in_flight: true });
+
+      // The seam says the session is running...
+      expect(term.session.get().status.turnInFlight).toBe(true);
+      // ...and the composer still says it is this operator's move.
+      expect(stop.hidden).toBe(true);
+      expect(send.disabled).toBe(false);
+    });
+
+    it('interrupts once and re-arms, so a double-click cannot double-cancel', async () => {
+      const { term, client } = mount({ features: { interrupt: true } });
+      client.inject = async () => {};
+      const { stop } = parts(term);
+
+      const pending = term.submit('hello');
+      expect(stop.hidden).toBe(false);
+
+      stop.click();
+      // Disabled the moment it is pressed: the interrupt is in flight
+      // and a second POST would cancel whatever started next.
+      expect(stop.disabled).toBe(true);
+      await flush();
+
+      expect(client.calls.filter((c) => c.name === 'interrupt')).toHaveLength(1);
+
+      term.connection.getActiveTurn().finish({
+        totalMs: 10,
+        tokens: { in: 1, out: 1 },
+        costUSD: 0,
+        toolCalls: 0,
+      });
+      await pending;
+      // Re-armed for the next turn rather than left dead.
+      expect(stop.disabled).toBe(false);
     });
   });
 

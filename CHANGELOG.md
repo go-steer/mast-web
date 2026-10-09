@@ -50,6 +50,37 @@ message.
   finished") rather than as a red `error`. Who cancelled isn't on the frame,
   so neither line guesses. This affects every 1.8.0+ daemon, not only the
   mock.
+- **"N running" no longer sticks after a turn ends in an error or a STOP.**
+  Only a `turn-complete` cleared a `status-update`'s `turn_state:
+  "streaming"`, so a turn that ended any other way left its panel claiming to
+  work until reload. Both terminal frames now clear it, and the status poll,
+  which the code had called "the backstop" while ignoring the server's
+  `turn_state`, now applies it. Every 1.8.0+ daemon. (#124)
+- **One line per hold, not two.** The server broadcasts the `pause` frame
+  before it answers the request, so `/pause`, CONTINUE, ABANDON and a typed
+  steer each printed both the broadcast's line and the command's own. While
+  this tab's own request is in flight, the broadcast now leaves the line to
+  the command; a hold set anywhere else is still narrated, once. (#123)
+- **The permission card's buttons are readable on every theme.** A
+  `<button>` doesn't inherit `color`, and DENY / ALLOW ONCE / ALLOW SESSION
+  had none of their own, so they rendered in the browser's default black.
+  `.term-btn` now carries `--text`, #62's colour for a control at rest.
+  (#127)
+- **`/help` is a real two-column table.** Its columns were padded text in a
+  pre-wrap message, so a long description wrapped back under the command
+  names. (#122)
+- **`/subagents stop <name>` says a 404 in words**: "No subagent named …
+  on this session", with a pointer to `/subagents`, instead of the method,
+  path and status line. Any other failure keeps the full detail. (#125)
+- *Mock:* **CONTINUE resumes held work, not a turn nobody asked for.** With
+  nothing queued and nothing running, it opens the gate on an idle session,
+  as a real daemon does. (#121)
+- *Mock:* **an approved prompt's log row says what was approved**
+  (`bash_exec rm -rf ./build`, not just `bash_exec`). (#126)
+
+Everything above was found by the first complete run of
+[`docs/walkthrough.md`](docs/walkthrough.md), whose record is at the end of
+that file.
 
 ## [0.5.0] - 2026-10-06
 

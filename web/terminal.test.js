@@ -1811,8 +1811,9 @@ describe('MastTerminal built-ins', () => {
     // stream, which is the terminal's second EventSource — stubbed
     // here, since jsdom has no real one and the frame is what matters.
     describe('the permission card', () => {
-      async function prompted(over, frame) {
+      async function prompted(over, frame, before) {
         const { term, client, text } = mount();
+        if (before) before(client);
         globalThis.EventSource = class {
           addEventListener() {}
           close() {}
@@ -1909,7 +1910,7 @@ describe('MastTerminal built-ins', () => {
       // v1.18.0: the approver model's reason is model output and steerable
       // by the call it judged. Quoted, attributed — and only the two
       // buttons the daemon will honour as asked.
-      it('quotes an escalating approver and offers only deny and allow once', async () => {
+      it('quotes an escalating approver and offers no grant wider than once', async () => {
         const { card } = await prompted(
           { acknowledged: true },
           {
@@ -1928,8 +1929,11 @@ describe('MastTerminal built-ins', () => {
           'restarts production; the task did not ask for it'
         );
         expect(card.querySelector('.perms-escalated-cite').textContent).toBe('— claude-sonnet-5-5');
+        // No grant wider than once — the daemon would apply it as once.
+        // A deny with a reason is still offered (v1.15.0), as core-agent's
+        // own TUI offers y, n and r on such a prompt.
         const labels = [...card.querySelectorAll('button')].map((b) => b.textContent);
-        expect(labels).toEqual(['DENY', 'ALLOW ONCE']);
+        expect(labels).toEqual(['DENY', 'ALLOW ONCE', 'DENY…']);
       });
 
       it('says a gone prompt was not taken, and which way it ended', async () => {
@@ -1959,6 +1963,82 @@ describe('MastTerminal built-ins', () => {
         expect(text()).toContain('already answered, or was not issued by this session');
       });
 
+      // v0.6 #113 (v1.15.0): deny with a reason the model reads.
+      describe('deny with a reason', () => {
+        let ask;
+        afterEach(() => ask && ask.mockRestore());
+        const sent = [];
+        const recording = async (id, decision, opts) => {
+          sent.push({ id, decision, opts });
+          return { acknowledged: true, decision };
+        };
+        beforeEach(() => {
+          sent.length = 0;
+        });
+
+        it('sends the reason, one line, and shows it on the card', async () => {
+          ask = vi.spyOn(window, 'prompt').mockReturnValue('  restart   the\n canary first ');
+          const { card } = await prompted(recording);
+          button(card, 'DENY…').click();
+          await flush();
+          expect(sent).toEqual([
+            { id: 'perms-1', decision: 'deny', opts: { reason: 'restart the canary first' } },
+          ]);
+          expect(card.querySelector('.perms-outcome').textContent).toBe('deny');
+          expect(card.querySelector('.perms-reason').textContent).toBe(
+            'reason: restart the canary first'
+          );
+        });
+
+        // Cancel and an empty box send nothing: DENY is the button for a
+        // deny without one, and the card stays answerable.
+        it('sends nothing on cancel or an empty reason', async () => {
+          const { card } = await prompted(recording);
+          ask = vi.spyOn(window, 'prompt').mockReturnValue(null);
+          button(card, 'DENY…').click();
+          ask.mockReturnValue('   ');
+          button(card, 'DENY…').click();
+          await flush();
+          expect(sent).toEqual([]);
+          expect(button(card, 'ALLOW ONCE')).toBeTruthy();
+        });
+
+        it('refuses an over-long reason before sending it', async () => {
+          ask = vi.spyOn(window, 'prompt').mockReturnValue('x'.repeat(501));
+          const { card, text } = await prompted(recording);
+          button(card, 'DENY…').click();
+          await flush();
+          expect(sent).toEqual([]);
+          expect(text()).toContain('the limit is 500');
+          expect(button(card, 'DENY')).toBeTruthy();
+        });
+
+        // A 400 leaves the prompt pending upstream, so the card must stay
+        // answerable rather than claiming a deny that was never applied.
+        it('puts the buttons back when the server refuses the request', async () => {
+          ask = vi.spyOn(window, 'prompt').mockReturnValue('nope');
+          const { card, text } = await prompted(async () => {
+            const e = new Error('POST /perms/respond → HTTP 400: reason over the limit');
+            e.status = 400;
+            throw e;
+          });
+          button(card, 'DENY…').click();
+          await flush();
+          expect(text()).toContain('Not sent, and the prompt is still waiting');
+          expect(button(card, 'ALLOW ONCE')).toBeTruthy();
+          expect(card.dataset.resolved).toBeUndefined();
+        });
+
+        // A pre-1.15.0 daemon accepts the field and drops it. Offering it
+        // there would be the UI claiming the model heard something.
+        it('is not offered to a backend that would drop the reason', async () => {
+          const { card } = await prompted(recording, null, (client) => {
+            client.protocolAtLeast = (v) => v !== '1.15.0';
+          });
+          expect(button(card, 'DENY…')).toBeUndefined();
+        });
+      });
+
       // Before 1.14.0 a cut prompt said "never issued" with a 404; reading
       // that as anything specific would be guessing.
       it("reports an older backend's refusal as it came", async () => {
@@ -1970,6 +2050,69 @@ describe('MastTerminal built-ins', () => {
         await flush();
         expect(text()).toContain('perms respond failed');
         expect(card.querySelector('.perms-outcome').textContent).toBe('allow-once');
+      });
+    });
+
+    // v0.6 #113 (v1.16.0, v1.18.0): /perms mode.
+    describe('/perms mode', () => {
+      function withMode(over) {
+        const m = mount();
+        m.client.setPermMode = async (mode) => {
+          m.client.calls.push({ name: 'setPermMode', args: [mode] });
+          return { previous: 'ask', mode };
+        };
+        Object.assign(m.client, over || {});
+        return m;
+      }
+
+      it('shows the mode and what the session can be set to', async () => {
+        const { term, text } = withMode();
+        await term.submit('/perms mode');
+        expect(text()).toContain('Permission mode: ask.');
+        // No settable_modes (pre-1.18.0): the four 1.16.0 modes stand in.
+        expect(text()).toContain('ask, acceptEdits, plan, yolo');
+      });
+
+      it("offers exactly the server's settable_modes when it lists them", async () => {
+        const { term, client, text } = withMode();
+        client.getPerms = async () => ({ mode: 'ask', settable_modes: ['ask', 'auto', 'plan'] });
+        await term.submit('/perms mode');
+        expect(text()).toContain('can be set to: ask, auto, plan');
+        await term.submit('/perms mode yolo');
+        expect(text()).toContain('"yolo" is not a mode this session can be set to');
+        expect(client.calls.map((c) => c.name)).not.toContain('setPermMode');
+      });
+
+      // The two facts a person would otherwise assume wrong: other tabs
+      // don't hear about it, and a mid-turn change waits for the turn.
+      it('switches the mode and says what that does and does not do', async () => {
+        const { term, client, text } = withMode();
+        await term.submit('/perms mode plan');
+        expect(client.calls.find((c) => c.name === 'setPermMode').args).toEqual(['plan']);
+        expect(text()).toContain('Permission mode: plan (was ask).');
+        expect(text()).toContain('Other tabs and clients keep showing the old mode');
+        expect(text()).toContain('a change made mid-turn takes effect when the turn ends');
+      });
+
+      // With the version known, a 404 has one meaning left.
+      it('reads a 404 as "not yours"', async () => {
+        const { term, text } = withMode({
+          setPermMode: async () => {
+            const e = new Error('HTTP 404');
+            e.status = 404;
+            throw e;
+          },
+        });
+        await term.submit('/perms mode plan');
+        expect(text()).toContain("only this session's owner, or a daemon admin");
+      });
+
+      it('says so on a backend too old to change it', async () => {
+        const { term, client, text } = withMode();
+        client.protocolAtLeast = (v) => v !== '1.16.0';
+        await term.submit('/perms mode plan');
+        expect(text()).toContain('cannot change the permission mode from here');
+        expect(client.calls.map((c) => c.name)).not.toContain('setPermMode');
       });
     });
   });

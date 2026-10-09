@@ -259,7 +259,9 @@ test.describe('smoke: 023-attribution', () => {
   // v0.6 #112 (v1.18.0): an auto-mode prompt the approver model passed
   // to a person. Its reason is the model's words — quoted, attributed —
   // and only the two buttons the daemon will honour as asked.
-  test('an escalated card quotes the approver model and offers two buttons', async ({ page }) => {
+  test('an escalated card quotes the approver model and offers no wider grant', async ({
+    page,
+  }) => {
     const screen = await openSoloSession(page);
     const card = await raiseUntilCarded(page, screen, {
       tool: 'bash',
@@ -271,7 +273,8 @@ test.describe('smoke: 023-attribution', () => {
       'restarts production; the task did not ask for it'
     );
     await expect(card.locator('.perms-escalated-cite')).toHaveText('— claude-sonnet-5-5');
-    await expect(card.getByRole('button')).toHaveText(['DENY', 'ALLOW ONCE']);
+    // No grant wider than once; a deny with a reason is still on offer.
+    await expect(card.getByRole('button')).toHaveText(['DENY', 'ALLOW ONCE', 'DENY…']);
 
     await card.getByRole('button', { name: 'ALLOW ONCE' }).click();
     await expect(card.locator('.perms-outcome')).toHaveText('allow-once');
@@ -307,5 +310,37 @@ test.describe('smoke: 023-attribution', () => {
     await expect(out).toContainText('Permissions — mode auto');
     await expect(out).toContainText('fs_read docs/runbook.md');
     await expect(out).toContainText('allowed by the approver model, claude-sonnet-5-5');
+  });
+
+  // v0.6 #113 (v1.15.0): a deny can say why, and the model reads it. The
+  // reason goes through the browser's own prompt dialog, collapsed to one
+  // line, and the card shows what was sent.
+  test('DENY… sends a reason the agent will read', async ({ page }) => {
+    page.on('dialog', (d) => d.accept('restart   the canary   first'));
+    const screen = await openSoloSession(page);
+    const card = await raiseUntilCarded(page, screen, {
+      tool: 'bash',
+      detail: 'kubectl rollout restart deploy/api',
+    });
+    await card.getByRole('button', { name: 'DENY…' }).click();
+    await expect(card.locator('.perms-outcome')).toHaveText('deny');
+    await expect(card.locator('.perms-reason')).toHaveText('reason: restart the canary first');
+  });
+
+  // v1.16.0: /perms mode, round-tripped through the mock, and the two
+  // things the output must not let a person assume.
+  test('/perms mode switches the mode and says who will not notice', async ({ page }) => {
+    const screen = await openSoloSession(page);
+    await run(page, '/perms mode');
+    await expect(lastOutput(screen)).toContainText(
+      'can be set to: ask, auto, acceptEdits, plan, yolo'
+    );
+    await run(page, '/perms mode plan');
+    await expect(lastOutput(screen)).toContainText('Permission mode: plan (was ask).');
+    await expect(lastOutput(screen)).toContainText(
+      'Other tabs and clients keep showing the old mode'
+    );
+    await run(page, '/perms');
+    await expect(lastOutput(screen)).toContainText('Permissions — mode plan');
   });
 });

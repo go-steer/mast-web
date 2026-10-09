@@ -809,6 +809,13 @@
   color: var(--yellow);
 }
 
+/* The reason sent with a deny (v1.15.0), as the operator wrote it. */
+.term .perms-reason {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
 .term .perms-outcome.perms-not-taken {
   color: var(--red);
 }

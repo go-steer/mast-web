@@ -27,6 +27,22 @@ message.
 
 ## [Unreleased]
 
+### Added
+
+- **Deny with a reason** (protocol 1.15.0). A **DENY…** button on the
+  permission card asks for one line, which the agent reads in the refused
+  call's result, so it stops guessing why. The button is offered only on
+  1.15.0+, because an older daemon accepts the field and silently drops
+  it. Whitespace collapses and the 500-byte limit is checked before
+  sending. Cancelling sends nothing, and a refused request leaves the card
+  answerable. (#113)
+- **`/perms mode [<mode>]`** shows or switches a session's permission mode
+  (1.16.0, plus `auto` from 1.18.0). It offers exactly the server's
+  `settable_modes`, reads a 404 as "not yours" (owner or daemon admin
+  only), and says what upstream documents: other tabs keep the old mode
+  until they re-read, and a change made mid-turn lands when the turn ends.
+  (#113)
+
 ### Fixed
 
 - **Guardrail halts are visible again, and a halted session is no longer a

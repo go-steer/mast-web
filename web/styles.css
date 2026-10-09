@@ -1017,6 +1017,15 @@ body[data-layout='chat'] .message.user {
   font-style: normal;
 }
 
+/* "Delivered, with a warning" (#108): a result came back and the run
+   failed afterwards. Warning-coloured and one line, never the red of a
+   failed call — the result is good; the run is the news. */
+.tool-warning {
+  margin: 1px 0 0 18px;
+  font-size: 11px;
+  color: var(--yellow);
+}
+
 /* Timestamp gutter shared by tool + builtin-tool rows. */
 .tool-ts {
   color: var(--text-dim);

@@ -170,6 +170,43 @@ window.MastTerminal = (function () {
     'The session is halted, so your message is queued. It runs as soon as the guardrail ' +
     'is reset, by you or by anyone else on this session. /guardrails reset clears it.';
 
+  // What a tool row should say, from the result alone (#108).
+  //
+  // core-agent#1154 keeps a subagent's result when it called
+  // return_result and its run THEN failed (a 429, a stream error): the
+  // map carries `output`, the deliverable, and `run_error`, a separate
+  // fact about the run. That is "delivered, with a warning" — not a
+  // failure. A red ✗ would tell the operator the result is junk, which is
+  // the misreading #1002 fixed for the model.
+  //
+  // Keyed on any non-empty string `run_error`, never on the tool name, so
+  // any tool can adopt it. A real tool error still wins. A result that
+  // doesn't parse is simply not a warning. Not version-gated: it's a
+  // result-map key, and an older daemon just never sends it.
+  function toolOutcome(errMsg, resultJSON) {
+    if (errMsg) return { failed: true, warning: '' };
+    let parsed = null;
+    try {
+      parsed = resultJSON ? JSON.parse(resultJSON) : null;
+    } catch {
+      parsed = null;
+    }
+    const re =
+      parsed && typeof parsed === 'object' && typeof parsed.run_error === 'string'
+        ? parsed.run_error
+        : '';
+    return { failed: false, warning: oneLine(re) };
+  }
+
+  // Whitespace-collapsed and capped, like the other one-line notes in a row.
+  function oneLine(s) {
+    const t = String(s || '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .join(' ');
+    return t.length > 160 ? t.slice(0, 159) + '…' : t;
+  }
+
   function describeError(e, prefix) {
     const Drain = window.AttachClient && window.AttachClient.BackendDrainingError;
     if (Drain && e instanceof Drain) {
@@ -1013,19 +1050,29 @@ window.MastTerminal = (function () {
 
     function completeToolMessage(el, latencyMs, errMsg, resultJSON) {
       if (!el) return;
+      const outcome = toolOutcome(errMsg, resultJSON);
       el.classList.remove('tool-pending');
       el.classList.add('tool-done');
-      if (errMsg) el.classList.add('tool-error');
+      if (outcome.failed) el.classList.add('tool-error');
 
       const icon = el.querySelector('.tool-icon');
       const verb = el.querySelector('.tool-verb');
       const latencyEl = el.querySelector('.tool-latency');
-      if (icon) icon.textContent = errMsg ? '✗' : '✓';
-      if (verb) verb.textContent = errMsg ? 'Failed' : 'Used';
+      if (icon) icon.textContent = outcome.failed ? '✗' : '✓';
+      if (verb) verb.textContent = outcome.failed ? 'Failed' : 'Used';
       if (latencyEl && latencyMs > 0) latencyEl.textContent = '(' + latencyMs.toFixed(0) + 'ms)';
 
       const headerRow = el.querySelector('.tool-row');
       if (!headerRow) return;
+      // Delivered, with a warning (#108): the success state stays, and one
+      // line says what happened to the run afterwards. The full result,
+      // `output` included, is still one click away in the body below.
+      if (outcome.warning) {
+        el.classList.add('tool-warn');
+        headerRow.after(
+          mk('div', 'tool-warning', '⚠ run failed after returning: ' + outcome.warning)
+        );
+      }
       const payload = errMsg || resultJSON;
       if (!payload) return;
 
@@ -3977,5 +4024,7 @@ window.MastTerminal = (function () {
     return api;
   }
 
-  return { create: create };
+  // toolOutcome is pure and exported so its decision is testable
+  // without a stream (#108).
+  return { create: create, toolOutcome: toolOutcome };
 })();

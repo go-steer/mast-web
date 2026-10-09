@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -115,9 +116,18 @@ func TestMockGuardrails_MidTurnTripCutsTheTurnInOrder(t *testing.T) {
 	tripID, _ := out["event_id"].(string)
 
 	got := collect(t, frames, 700*time.Millisecond)
+	// Frames the turn put out BEFORE the trip are allowed — on a slow
+	// runner the playback's first frame can beat the POST — so the
+	// order is checked from the trip on. What must hold is that the cut
+	// comes after the trip and nothing of the turn comes after the cut.
+	start := slices.Index(eventNames(got), "guardrail-trip")
+	if start < 0 {
+		t.Fatalf("no guardrail-trip frame: %v", eventNames(got))
+	}
+	got = got[start:]
 	want := []string{"guardrail-trip", "agent", "turn-error", "agent"}
 	if strings.Join(eventNames(got), ",") != strings.Join(want, ",") {
-		t.Fatalf("want %v, got %v", want, eventNames(got))
+		t.Fatalf("from the trip on, want %v, got %v", want, eventNames(got))
 	}
 	if got[0].Data["halted_turn"] != true {
 		t.Fatalf("a trip with a turn in flight cut it: want halted_turn:true, got %#v", got[0].Data)

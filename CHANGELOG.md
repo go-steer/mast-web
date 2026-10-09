@@ -29,6 +29,32 @@ message.
 
 ### Fixed
 
+- **Guardrail halts are visible again, and a halted session is no longer a
+  dead end** (protocol 1.13.0). Since core-agent#891 a trip arrives on its own
+  `guardrail-trip` event, which v0.5.0 dropped. Against a current daemon a
+  cost ceiling or a watchdog halt showed only as `Turn canceled.`, or nothing
+  at all. Worse, a message typed into the halted session was queued by the
+  server and never run (core-agent#1040), so SEND stayed disabled and STOP
+  stayed up until reload. Now:
+  - The trip is shown as its own block, with the producer's reason
+    verbatim, which names the reset.
+  - The `canceled` a cut causes is absorbed by the trip that explains it:
+    once, never across a turn, and never inferred from a missing
+    `halted_turn`.
+  - **Halted** comes from `GET /guardrails` alone (a per-turn cost trip,
+    core-agent#1049, isn't a halt). It draws a red banner over the prompt
+    and a `halted` count in the status bar.
+  - A message typed while halted is sent, said to be queued, and doesn't
+    arm the turn. A turn already sent when the halt becomes known is closed
+    the same way.
+  - `/guardrail` answers as an alias for `/guardrails`, because the reason
+    text uses that spelling.
+  - The batch runner records a queued prompt as `queued`.
+
+  Daemons older than 1.13.0 keep the old `cost_ceiling` turn-error path.
+  *[embedders]* This is the fix that makes v0.6 safe to embed in a current
+  core-agent. (#111)
+
 - **The mock now runs a turn when you send it a prompt, and STOP ends it.**
   `mast-web-server --mode=mock` used to replay its fixture once, when a
   stream opened, and answer every inject with a `wake` frame and nothing else.

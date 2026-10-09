@@ -8,7 +8,7 @@ It is written to be *run*, not read. Every section is **Setup → Steps → Expe
 
 Audience: someone who knows what mast-web is and wants to know whether this build is sound. Not a tutorial.
 
-Sections 4 through 9 cover the v0.5.0 surface. What each of those changed, in prose, is [`CHANGELOG.md`](../CHANGELOG.md#050---2026-10-06); why it changed is [`v0.5-plan.md`](./v0.5-plan.md).
+Sections 4 through 9 cover the v0.5.0 surface; §10 onwards is v0.6. What each of those changed, in prose, is [`CHANGELOG.md`](../CHANGELOG.md#050---2026-10-06); why it changed is [`v0.5-plan.md`](./v0.5-plan.md).
 
 ## Before you start
 
@@ -25,9 +25,9 @@ Then open <http://localhost:7778/>.
 Two things to know before you read a failure:
 
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
-- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#10-known-not-to-work) on cross-origin backends.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#11-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#10-known-not-to-work).
+The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#11-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -303,7 +303,7 @@ Every turn in this section is started from **outside** the browser on purpose. A
 
 **Steps**
 
-1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#10-known-not-to-work) — and try it without the query once, on purpose.)
+1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#11-known-not-to-work) — and try it without the query once, on purpose.)
 2. Run `/share`.
 3. Run `/share viewer bob@example.com`.
 4. Switch to **bob@** (the console line above, which also reloads).
@@ -398,7 +398,39 @@ The shared rule for all three: **absence means unknown, never none.**
 
 ---
 
-## 10. Known not to work
+## 10. Guardrail trips and the halt
+
+**Verifies:** v0.6 #111 (protocol 1.13.0, core-agent#891; the halted inbox, core-agent#1040; per-turn trips, core-agent#1049).
+
+**Setup:** mock on :7778, turns playing (the default); `curl -X DELETE localhost:7778/_mock/guardrails` before and after. The trips are raised from outside, the way a real cost ceiling or watchdog would raise them:
+
+```
+curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/json' -d '<body>'
+```
+
+**Steps**
+
+1. Open `smoke-session` in solo. Raise a watchdog halt at a turn boundary: body `{"session":"smoke-session","guardrail":"watchdog","halted_turn":false}`.
+2. Read the transcript, the banner over the prompt, and the bottom status bar.
+3. Type `are you still there?` and press Enter.
+4. Run `/guardrail reset watchdog`. (Singular: that's the spelling the trip's own text uses, and mast-web answers to it.)
+5. Raise a per-turn trip, which ends one turn and leaves the session running: body `{"session":"smoke-session","halts_session":false,"halted_turn":false}`.
+6. Hold turns open (`curl -X POST localhost:7778/_mock/turns -H 'Content-Type: application/json' -d '{"open":true}'`), send a prompt, and while STOP is showing raise a trip that cuts it: body `{"session":"smoke-session"}`. Then put turns back (`curl -X DELETE localhost:7778/_mock/turns`) and run `/guardrails reset`.
+
+**Expected**
+
+- Step 1: a red-edged block in the transcript, **`⚠ guardrail tripped · watchdog`**, with the producer's reason under it **verbatim**: *"watchdog halted the agent (repeated-tool-call): looping on read_file with identical args. Clear it with /guardrail reset watchdog, or POST /sessions/{app}/{sid}/guardrails/reset."* Nothing of mast-web's is appended to it.
+- Step 2: a **red banner** over the prompt, **`HALTED — watchdog`**, with the reason again and *"No turn runs until this is reset. Messages you send are queued and run after the reset. /guardrails reset clears it."* The status bar shows **`1 halted`**. The input stays usable, and its placeholder reads `halted — messages queue until the guardrail is reset…`.
+- Step 3: your message, then **"The session is halted, so your message is queued. It runs as soon as the guardrail is reset, by you or by anyone else on this session. /guardrails reset clears it."** **SEND stays usable and STOP never appears.** This is the step that used to fail: in v0.5.0 the composer sat with STOP up until you reloaded, because the server queues the message and nothing ever ends a turn waiting on it.
+- Step 4: **`Guardrails reset: watchdog`**, the banner comes down, `halted` leaves the status bar, and then **your queued message runs**: a reply arrives without you sending anything again.
+- Step 5: a trip block whose reason ends *"…the session is NOT halted."*, and **no banner and no `halted`**. A trip isn't a halt; only the server's `GET /guardrails` says whether the session refuses turns.
+- Step 6: the block reads **`⚠ guardrail tripped · cost_ceiling · the turn was cut`**, the turn ends (STOP goes, SEND comes back), and there is **no `Turn canceled.` line** under it: the trip already said why, so the cancel it caused is absorbed. The banner then appears, since this trip halted the session, and `/guardrails reset` clears it.
+
+**Why this matters:** a halt is the moment an agent has spent too much or is looping. It's exactly when an operator most needs to be told why it stopped and how to get it going again, and against a current daemon v0.5.0 said only `Turn canceled.`, or nothing at all.
+
+---
+
+## 11. Known not to work
 
 A walkthrough that only lists successes trains you to skim. These are gaps, not bugs — if you hit one, it is the doc working.
 
@@ -409,7 +441,7 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.
 - **Hosting is v0.7.** v0.6 became the protocol catch-up. Anything about deploying this somewhere with real users is not in this release.
-- **The mock speaks protocol 1.19.0, but the browser doesn't handle 1.13.0 onwards yet.** v0.6's #110 taught the mock to trip a guardrail (`POST /_mock/guardrail-trip`), to queue a prompt sent to a halted session without running it, and to answer permissions the 1.14–1.18 ways. The browser catches up in the rest of v0.6. Until then, against the mock or a current daemon, a guardrail halt is invisible apart from a bare `Turn canceled.`, and **typing into a halted session leaves the composer stuck until reload** ([#111](https://github.com/go-steer/mast-web/issues/111); `smoke/025-guardrail-halt.spec.js` reproduces it). The permission card can still name a decision the daemon didn't apply ([#112](https://github.com/go-steer/mast-web/issues/112)).
+- **The mock speaks protocol 1.19.0; the browser is catching up through v0.6.** Guardrail trips and the halted session are handled (§10, #111). Still to come: the permission card can name a decision the daemon didn't apply ([#112](https://github.com/go-steer/mast-web/issues/112)), deny-with-reason and `/perms mode` ([#113](https://github.com/go-steer/mast-web/issues/113)), and replayed history still drops failures that happened before you attached ([#114](https://github.com/go-steer/mast-web/issues/114)).
 - **A real core-agent won't start token-less with `bash` any more** (core-agent#1266). `core-agent --attach-listen :7777` now exits 2 unless the listener is authenticated. This walkthrough is unaffected because it uses the mock. If you point it at a real daemon, pass a token (`--attach-token-file`) and give the same token to mast-web.
 
 ---

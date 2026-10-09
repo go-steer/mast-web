@@ -138,13 +138,30 @@ window.MastTerminal = (function () {
   // A turn that ended because somebody stopped it. Its own type, so the
   // places that catch a failed turn can tell "it broke" from "it was
   // asked to stop" without matching on a message string.
+  //
+  // `absorbed` is a cancel a guardrail caused and its trip already
+  // explained (1.13.0 §2.10): the turn ends, and says nothing more.
   class TurnCanceled extends Error {
-    constructor() {
+    constructor(absorbed) {
       super('turn canceled');
       this.name = 'TurnCanceled';
+      this.absorbed = !!absorbed;
     }
   }
   const CANCELED_LINE = 'Turn canceled.';
+
+  // A prompt sent to a guardrail-halted session. It reaches the inbox and
+  // runs after the reset (core-agent#1040), so it is neither a failure nor
+  // a turn — and nothing on the stream will ever end a turn waiting on it.
+  class TurnQueued extends Error {
+    constructor() {
+      super('queued — the session is halted');
+      this.name = 'TurnQueued';
+    }
+  }
+  const QUEUED_LINE =
+    'The session is halted, so your message is queued. It runs as soon as the guardrail ' +
+    'is reset, by you or by anyone else on this session. /guardrails reset clears it.';
 
   function describeError(e, prefix) {
     const Drain = window.AttachClient && window.AttachClient.BackendDrainingError;
@@ -312,6 +329,9 @@ window.MastTerminal = (function () {
     // outside the transcript can do anything with it: a DOM handle, a
     // half-priced turn, and two flags about how to draw the next row.
     const ui = {
+      // Armed by a guardrail-trip with halted_turn:true; spent on the next
+      // turn-error and dropped at the turn boundary (v0.6 #111).
+      absorbCancel: false,
       // 'pause' or 'resume' while this tab's own request for that
       // transition is in flight. See "The hold" for why.
       holdRequest: null,
@@ -398,6 +418,26 @@ window.MastTerminal = (function () {
     holdActions.append(contBtn, abandonBtn, holdHint);
     holdBar.append(holdWhy, holdDetail, holdActions);
 
+    // The guardrail halt (1.13.0, v0.6 #111). Same slot as the hold, for
+    // the same reason, and a different thing: a hold waits for a verb, a
+    // halt waits for a RESET, and until it gets one every turn is refused.
+    // Drawn from GET /guardrails `halted` only — a `guardrail-trip` frame
+    // is not a halt (a per-turn cost trip, core-agent#1049, ends one turn
+    // and leaves the session running). No reset button: the producer's
+    // reason names the way out, verbatim, and /guardrails reset is the
+    // command that takes it.
+    const haltBar = mk('div', 'term-halt');
+    haltBar.hidden = true;
+    const haltWhy = mk('div', 'term-halt-why', 'HALTED');
+    const haltDetail = mk('div', 'term-halt-detail');
+    const haltHint = mk(
+      'div',
+      'term-halt-hint',
+      'No turn runs until this is reset. Messages you send are queued and run after the reset. ' +
+        '/guardrails reset clears it.'
+    );
+    haltBar.append(haltWhy, haltDetail, haltHint);
+
     const statusRow = mk('div', 'term-status');
     const sConn = mk('span', 'term-stat term-conn', '⬤ disconnected');
     const sModel = mk('span', 'term-stat', '—');
@@ -414,7 +454,7 @@ window.MastTerminal = (function () {
     sRun.title = 'The agent is working on a turn this browser did not dispatch';
     statusRow.append(sConn, sModel, sTurns, sCost, sElapsed, sRun);
 
-    root.append(screen, holdBar, inputRow, statusRow);
+    root.append(screen, holdBar, haltBar, inputRow, statusRow);
     setPrefix();
 
     // ── Rendering (ported from app.js, bound to `out`) ───────────────
@@ -1082,7 +1122,9 @@ window.MastTerminal = (function () {
       root.classList.toggle('term-held', p.paused);
       input.placeholder = p.paused
         ? 'type a correction to steer, or /continue…'
-        : 'ask, instruct, or /command…';
+        : isHalted()
+          ? 'halted — messages queue until the guardrail is reset…'
+          : 'ask, instruct, or /command…';
       if (!p.paused) return;
       holdWhy.textContent = p.reason ? 'HELD — ' + p.reason : 'HELD';
       holdDetail.textContent = describeHold(p, s.status.turnInFlight);
@@ -1090,6 +1132,118 @@ window.MastTerminal = (function () {
       contBtn.hidden = !controls;
       abandonBtn.hidden = !controls;
       holdHint.textContent = controls ? '…or type a correction to steer' : HOLD_NO_CONTROLS;
+    }
+
+    // ── The guardrail halt (v0.6 #111) ──────────────────────────────
+    //
+    // Three facts from three places, kept apart because collapsing any two
+    // is a bug the spec names:
+    //
+    //   the trip      `guardrail-trip` (1.13.0): what tripped and why, in
+    //                 the producer's words. An announcement, not a state.
+    //   the halt      GET /guardrails `halted`: whether turns are refused
+    //                 NOW. The only authority (core-agent#1049).
+    //   the cancel    the `canceled` a cut turn ends with. It says nothing
+    //                 the trip didn't, so a trip with halted_turn:true
+    //                 absorbs the next one (spec §2.10).
+
+    // Read only where the read can mean something: the flag says the
+    // backend has guardrails, and before 1.13.0 a trip reported itself as
+    // a turn-error, which the old cost_ceiling path still renders.
+    function guardrailsPolled() {
+      return (
+        available({ feature: 'guardrails' }) &&
+        typeof client.getGuardrails === 'function' &&
+        typeof client.protocolAtLeast === 'function' &&
+        client.protocolAtLeast('1.13.0')
+      );
+    }
+
+    function isHalted() {
+      const g = sess().guardrails;
+      return !!(g && g.halted === true);
+    }
+
+    // The tripped guardrails, each with the reason the server stored —
+    // which names the reset, so it is shown verbatim.
+    function trippedGuardrails(g) {
+      const out = [];
+      if (!g) return out;
+      ['watchdog', 'cost_ceiling'].forEach((name) => {
+        const one = g[name];
+        if (one && one.tripped) out.push({ name, reason: one.reason || '' });
+      });
+      return out;
+    }
+
+    function renderHalt() {
+      const halted = isHalted();
+      haltBar.hidden = !halted;
+      root.classList.toggle('term-halted', halted);
+      renderHold(); // the placeholder belongs to both
+      if (!halted) return;
+      const tripped = trippedGuardrails(sess().guardrails);
+      haltWhy.textContent = tripped.length
+        ? 'HALTED — ' + tripped.map((t) => t.name).join(', ')
+        : 'HALTED';
+      const trip = sess().lastGuardrailTrip;
+      const reason = tripped.map((t) => t.reason).filter(Boolean)[0] || (trip && trip.reason) || '';
+      haltDetail.textContent = reason;
+      haltDetail.hidden = !reason;
+    }
+
+    // One read of GET /guardrails, folded into the store and the banner.
+    // A failed read is not news (the stream says what matters); it leaves
+    // the last answer standing.
+    //
+    // If it finds the session halted while a turn of OURS is still open,
+    // that turn is a prompt the server queued and will never run before a
+    // reset — the dead end. It is closed as queued. Unless a cut is
+    // pending (a trip with halted_turn:true armed the absorb): then the
+    // turn really was running, and the `canceled` on its way ends it.
+    let guardrailsPending = false;
+    function refreshGuardrails() {
+      if (ui.destroyed || !guardrailsPolled() || guardrailsPending) return Promise.resolve(null);
+      guardrailsPending = true;
+      return client.getGuardrails().then(
+        (g) => {
+          guardrailsPending = false;
+          if (ui.destroyed) return null;
+          session.applyGuardrails(g);
+          if (isHalted() && connection.isRunning() && !ui.absorbCancel) {
+            const open = connection.getActiveTurn();
+            if (open) open.finish(null, new TurnQueued());
+          }
+          renderHalt();
+          onChange(api, 'guardrails');
+          return g;
+        },
+        () => {
+          guardrailsPending = false;
+          return null;
+        }
+      );
+    }
+
+    // The trip, as its own block: which guardrail, and the producer's
+    // reason under it, verbatim. No advice of ours appended (spec §2.10) —
+    // the reason already names the reset, and an affordance invented here
+    // would be one release from naming a command the daemon no longer has.
+    function addGuardrailTrip(d) {
+      const div = mk('div', 'message system guardrail-trip');
+      div.dataset.ts = stamp();
+      const head = mk(
+        'div',
+        'guardrail-trip-head',
+        '⚠ guardrail tripped · ' +
+          (d.guardrail || 'unknown') +
+          (d.halted_turn === true ? ' · the turn was cut' : '')
+      );
+      div.appendChild(head);
+      if (d.reason) div.appendChild(mk('div', 'guardrail-trip-reason', d.reason));
+      place(div);
+      scroll();
+      return div;
     }
 
     function narrateHold(p) {
@@ -1142,7 +1296,9 @@ window.MastTerminal = (function () {
       statusTimer = 0;
       if (ui.destroyed || !pollsStatus() || connection.getState() !== 'connected') return;
       const s = sess();
-      const live = s.pause.paused || serverRunning(s);
+      // Halted counts as live: the reset is usually somebody else's,
+      // and the banner should come down within seconds of it.
+      const live = s.pause.paused || serverRunning(s) || isHalted();
       statusTimer = setTimeout(refreshStatus, live ? STATUS_POLL_LIVE_MS : STATUS_POLL_MS);
     }
 
@@ -1174,6 +1330,9 @@ window.MastTerminal = (function () {
           statusPending = false;
           if (ui.destroyed) return null;
           session.applyStatusSnapshot(st);
+          // Same chain, second read: whether the session is halted lives
+          // on GET /guardrails and nowhere else (v0.6 #111).
+          refreshGuardrails();
           renderHold();
           renderRunning();
           onChange(api, 'status');
@@ -1674,9 +1833,19 @@ window.MastTerminal = (function () {
         // GET /guardrails are v0.6 PR 1 (#111). Until then a current
         // daemon's halt is as invisible as it was in v0.5.0, which is
         // the point of landing the wire first and the UI second.
-        case 'guardrail-trip':
-          session.recordGuardrailTrip(ev.data);
+        case 'guardrail-trip': {
+          const d = ev.data || {};
+          session.recordGuardrailTrip(d);
+          drawHistory();
+          addGuardrailTrip(d);
+          // One-shot, read off the wire and never inferred from absence:
+          // only a trip that says it cut a turn licenses swallowing the
+          // cancel that follows.
+          if (d.halted_turn === true) ui.absorbCancel = true;
+          refreshGuardrails();
+          onChange(api, 'guardrail');
           return;
+        }
 
         case 'usage-update': {
           const u = ev.data || {};
@@ -1720,6 +1889,10 @@ window.MastTerminal = (function () {
         case 'turn-complete': {
           const tc = ev.data || {};
           turnEnded();
+          // The turn boundary: an absorb a trip armed is the cut's, and the
+          // cut arrives inside the turn it cut. A trip at the boundary is
+          // halted_turn:false and never arms one (spec §2.10).
+          ui.absorbCancel = false;
           const open = connection.getActiveTurn();
           if (open) {
             // Measured to *now* rather than to close time — the grace
@@ -1751,9 +1924,15 @@ window.MastTerminal = (function () {
           // in words that do not read as something having gone wrong.
           // Who cancelled is not on the frame, by design, so neither
           // line guesses.
+          //
+          // The absorb a trip armed is spent on this frame WHATEVER its
+          // kind: a halt licenses swallowing the cancel it caused and
+          // nothing else, so a rate-limit that follows still says so.
+          const absorb = ui.absorbCancel;
+          ui.absorbCancel = false;
           if (te.kind === 'canceled') {
-            if (failing) failing.finish(null, new TurnCanceled());
-            else addSystemMessage(CANCELED_LINE);
+            if (failing) failing.finish(null, new TurnCanceled(absorb));
+            else if (!absorb) addSystemMessage(CANCELED_LINE);
             return;
           }
           const msg = `${te.kind || 'error'}: ${te.message || ''}${te.hint ? ' (' + te.hint + ')' : ''}`;
@@ -2585,6 +2764,9 @@ window.MastTerminal = (function () {
             // A tripped ceiling freezes the input; clearing the flag is
             // what makes the reset mean anything from in here.
             session.setCostCeilingHit(false);
+            // And the banner: a reset is the way out of a halt, and the
+            // server's answer is the only thing allowed to take it down.
+            refreshGuardrails();
             addSystemMessage(
               'Guardrails reset: ' +
                 (r.reset && r.reset.length ? r.reset.join(', ') : '(nothing tripped)')
@@ -2900,6 +3082,11 @@ window.MastTerminal = (function () {
       },
       {
         name: 'guardrails',
+        // core-agent's trip reasons say "Clear it with /guardrail reset
+        // watchdog" — core-tui's spelling. We render that text verbatim,
+        // so this answers to it rather than to an argument about whose
+        // spelling wins (v0.6 plan §2).
+        aliases: ['guardrail'],
         usage: '/guardrails [reset ...]',
         help: 'Watchdog and cost-ceiling state; `reset` to clear a trip',
         feature: 'guardrails',
@@ -3131,6 +3318,30 @@ window.MastTerminal = (function () {
       }
       if (connection.isRunning()) return null;
 
+      // A halted session takes the message into its inbox and runs nothing
+      // until a reset (core-agent#1040), and nothing on the stream will
+      // ever end a turn waiting on it. So: send it, say it is queued, and
+      // do NOT arm the running state — no disabled SEND, no STOP, no
+      // timer. That was the dead end v0.6 #111 exists for.
+      if (isHalted()) {
+        flushTurnClose();
+        drawHistory();
+        ui.lastUserPrompt = trimmed;
+        addMessage('user', trimmed);
+        try {
+          await client.inject(trimmed);
+        } catch (e) {
+          addSystemMessage(describeError(e));
+          return { ok: false, error: describeError(e) };
+        }
+        addSystemMessage(QUEUED_LINE);
+        return { ok: false, queued: true, error: 'queued — the session is halted' };
+      }
+      // A new turn of ours starts here, and an absorb a trip armed for
+      // the last one must not reach into it: left armed, it would eat
+      // this operator's own STOP — the one cancel that must always show.
+      ui.absorbCancel = false;
+
       // A turn still inside its grace window (an observer one — an
       // operator turn holds the running flag until it closes) gets its footer
       // now, above this prompt rather than under it. Replayed history
@@ -3206,8 +3417,14 @@ window.MastTerminal = (function () {
         // rather than watching one. Deliberately not rethrown: every
         // other call site is a keypress with nobody to catch it.
         if (e instanceof TurnCanceled) {
-          addSystemMessage(CANCELED_LINE);
+          if (!e.absorbed) addSystemMessage(CANCELED_LINE);
           return { ok: false, canceled: true, error: 'turn canceled' };
+        }
+        // Sent before the panel knew the session was halted; the halt
+        // read that followed closed it (refreshGuardrails).
+        if (e instanceof TurnQueued) {
+          addSystemMessage(QUEUED_LINE);
+          return { ok: false, queued: true, error: 'queued — the session is halted' };
         }
         addSystemMessage(describeError(e));
         return { ok: false, error: describeError(e) };
@@ -3340,6 +3557,9 @@ window.MastTerminal = (function () {
           // (#70 OQ2).
           paused: s.pause.paused,
           pauseReason: s.pause.reason,
+          // Guardrail-halted, from GET /guardrails (v0.6 #111). Its own
+          // count in the status bar, beside held, for the same reason.
+          halted: isHalted(),
           // The two halves of the pair, unfolded, for anything that
           // needs to tell them apart — the hold banner says "held, and
           // the turn it interrupted is still unwinding" and that

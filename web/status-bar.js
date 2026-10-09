@@ -198,6 +198,15 @@ window.MastStatusBar = (function () {
       if (held) {
         fleet.appendChild(mk('span', 'status-held', ' · ' + held + ' held'));
       }
+      // Guardrail-halted (v0.6 #111): every turn refused until a reset.
+      // A different wait from held — a hold waits for a verb, a halt for
+      // a reset — so its own count, not folded into that one.
+      const halted = open.filter(function (t) {
+        return t.state.halted;
+      }).length;
+      if (halted) {
+        fleet.appendChild(mk('span', 'status-halted', ' · ' + halted + ' halted'));
+      }
     }
 
     function paintCost(open) {

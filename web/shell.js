@@ -531,6 +531,11 @@ window.MastShell = (function () {
           const cell = mk('td', null, 'stopped before it finished');
           cell.colSpan = 5;
           tr.appendChild(cell);
+        } else if (e.status === 'queued') {
+          // A halted session queued it; it runs after the reset.
+          const cell = mk('td', null, 'queued: the session is halted');
+          cell.colSpan = 5;
+          tr.appendChild(cell);
         } else {
           const cell = mk('td', null, '—');
           cell.colSpan = 5;
@@ -586,6 +591,8 @@ window.MastShell = (function () {
           entries[i] = { prompt: entries[i].prompt, status: 'done', result: r };
         } else if (r.canceled) {
           entries[i] = { prompt: entries[i].prompt, status: 'canceled' };
+        } else if (r.queued) {
+          entries[i] = { prompt: entries[i].prompt, status: 'queued' };
         } else {
           entries[i] = { prompt: entries[i].prompt, status: 'error', error: r.error };
         }

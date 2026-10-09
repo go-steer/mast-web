@@ -16,10 +16,13 @@ mast-web is a static web UI. It needs a running backend agent to talk to via the
 ## Run the backend
 
 ```bash
-core-agent --attach-listen :7777 --session-db
+export MAST_ATTACH_TOKEN="$(openssl rand -hex 24)"
+core-agent --attach-listen :7777 --session-db --attach-token=MAST_ATTACH_TOKEN
 ```
 
-This starts the agent with the attach HTTP listener bound to `:7777` and durable session storage enabled. You'll see a startup banner including the attach token; copy it for the next step.
+This starts the agent with the attach HTTP listener bound to `:7777`, durable session storage enabled, and bearer auth using the token you just generated. Keep it; mast-web asks for it in the next step (`echo $MAST_ATTACH_TOKEN`).
+
+The token isn't optional. Since [core-agent#1266](https://github.com/go-steer/core-agent/pull/1266), a token-less listener on an agent with the `bash` tool **refuses to start** (exit 2). That tool runs as the same user as the agent and could otherwise approve its own permission prompts over the listener. `--attach-token` names an environment variable, which core-agent keeps out of the agent's `bash`. A file the agent can read is no credential, so use `--attach-token-file` only with a pipe or a file the agent's user can't read. Other accepted shapes are mTLS, enforced multi-session auth, or `--attach-readonly`.
 
 ## Serve mast-web
 

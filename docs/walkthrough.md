@@ -563,3 +563,5 @@ If a step here is mechanically checkable and is *not* already a Playwright spec 
 | 10 | read | Hosting moved to v0.7; two v0.6 regressions and core-agent#1266 added. |
 
 The doc itself had about eight wrong expected strings, all written from intent rather than read off `web/`. They're corrected above. The lesson: quote the code, not the plan.
+
+**§10–§14 (v0.6) have not had a human run yet.** Each was written in the same PR as its feature, with every quoted string read off `web/`. Each is also covered by a smoke spec (`025`, `023`, `026`, `027`), and the v0.6 browser was run once against a real core-agent (protocol 1.20.0, echo provider). None of that is a person looking at the screen.

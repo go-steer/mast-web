@@ -48,17 +48,25 @@ The browser renders; the backend does everything else. See [`docs/web-design.md`
 
 ---
 
-## Quickstart *(once phase A lands)*
+## Quickstart
 
 ```bash
-# 1. Run a core-agent (or mast) backend with attach mode enabled
-core-agent --attach-listen :7777 --session-db
+# 1. Run a core-agent backend with attach mode enabled. It needs a token:
+#    since core-agent#1266 a token-less listener on an agent with the bash
+#    tool refuses to start, because that tool could otherwise approve its
+#    own permission prompts over the listener. --attach-token names an
+#    environment variable, which core-agent keeps out of bash's reach.
+export MAST_ATTACH_TOKEN="$(openssl rand -hex 24)"
+core-agent --attach-listen :7777 --session-db --attach-token=MAST_ATTACH_TOKEN
 
 # 2. In another terminal, serve the web UI
 make dev
 
-# 3. Browse to http://localhost:8000 and connect to http://localhost:7777
+# 3. Browse to http://localhost:8000, connect to http://localhost:7777,
+#    and paste the same token (echo $MAST_ATTACH_TOKEN) into the token field
 ```
+
+To try the UI with no agent at all, `dev/tools/mock-backend` serves it against a mock on :7778; [`docs/walkthrough.md`](./docs/walkthrough.md) is the guided tour.
 
 ## Deployment options
 

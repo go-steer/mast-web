@@ -252,6 +252,11 @@ func (h *mockHandler) raiseGuardrailTrip(w http.ResponseWriter, r *http.Request)
 		reason = defaultTripReason(guardrail, halts)
 	}
 
+	if haltedTurn {
+		// The cut is final before anything is said about it: no frame of
+		// the turn may land between the trip and its cancel.
+		h.turns.stop(sid)
+	}
 	tripID := h.nextEventID()
 	h.publishJSON(sid, "guardrail-trip", map[string]any{
 		"guardrail":   guardrail,
@@ -270,7 +275,6 @@ func (h *mockHandler) raiseGuardrailTrip(w http.ResponseWriter, r *http.Request)
 	}
 
 	if haltedTurn {
-		h.turns.stop(sid)
 		gate = h.gates.get(sid)
 		gate.turnInFlight = false
 		h.gates.set(sid, gate)

@@ -118,8 +118,10 @@ func TestMockGuardrails_MidTurnTripCutsTheTurnInOrder(t *testing.T) {
 	got := collect(t, frames, 700*time.Millisecond)
 	// Frames the turn put out BEFORE the trip are allowed — on a slow
 	// runner the playback's first frame can beat the POST — so the
-	// order is checked from the trip on. What must hold is that the cut
-	// comes after the trip and nothing of the turn comes after the cut.
+	// order is checked from the trip on. What must hold is that nothing
+	// of the turn lands after the trip: the mock stops the playback
+	// before announcing it, and publishes a playback's frames only while
+	// it is still current (mockTurns.publishIfCurrent).
 	start := slices.Index(eventNames(got), "guardrail-trip")
 	if start < 0 {
 		t.Fatalf("no guardrail-trip frame: %v", eventNames(got))

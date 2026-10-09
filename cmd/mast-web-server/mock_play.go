@@ -121,6 +121,22 @@ func (t *mockTurns) finish(sid string, p *playback) bool {
 	return true
 }
 
+// publishIfCurrent runs publish only while p is still sid's playback,
+// under the same lock stop takes. That makes the cut final: once stop
+// returns, no frame of the stopped turn can reach the stream. Checking
+// first and publishing after would leave a window for one more frame
+// to land behind the trip or the cancel that cut it — which CI found,
+// as a status-update between a guardrail-trip and its canceled.
+func (t *mockTurns) publishIfCurrent(sid string, p *playback, publish func()) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.playing[sid] != p {
+		return false
+	}
+	publish()
+	return true
+}
+
 func (t *mockTurns) stopAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -228,7 +244,9 @@ func (h *mockHandler) play(ctx context.Context, p *playback, sid string, frames 
 		} else if ctx.Err() != nil {
 			return
 		}
-		h.hub.publish(sid, fr)
+		if !h.turns.publishIfCurrent(sid, p, func() { h.hub.publish(sid, fr) }) {
+			return
+		}
 	}
 	if h.turns.finish(sid, p) {
 		gate := h.gates.get(sid)

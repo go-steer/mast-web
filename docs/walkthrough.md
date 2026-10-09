@@ -25,9 +25,9 @@ Then open <http://localhost:7778/>.
 Two things to know before you read a failure:
 
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
-- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#13-known-not-to-work) on cross-origin backends.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#14-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#13-known-not-to-work).
+The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#14-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -303,7 +303,7 @@ Every turn in this section is started from **outside** the browser on purpose. A
 
 **Steps**
 
-1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#13-known-not-to-work) — and try it without the query once, on purpose.)
+1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#14-known-not-to-work) — and try it without the query once, on purpose.)
 2. Run `/share`.
 3. Run `/share viewer bob@example.com`.
 4. Switch to **bob@** (the console line above, which also reloads).
@@ -483,7 +483,28 @@ curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/j
 
 ---
 
-## 13. Known not to work
+## 13. Failures survive a reload
+
+**Verifies:** v0.6 #114 (protocol 1.19.0, core-agent#1258).
+
+**Setup:** mock on :7778. The fixture below is a session replayed after two failures, all stamped last week, so they arrive as history.
+
+**Steps**
+
+1. Open `/?shell=solo&fixture=015-replayed-failures` and click `smoke-session`.
+2. Read the history block at the top (*earlier in this session*).
+3. Repeat §10 step 6 (a trip that cuts a turn) and count the trip blocks it produces.
+
+**Expected**
+
+- Step 2: both prompts, *summarise all forty incident reports* and *try again, twelve at a time*. Under the first, the trip block **`⚠ guardrail tripped · cost_ceiling · the turn was cut`** with its reason (*"…the session is NOT halted."*), and **no `Turn canceled` line**. Under the second, **`Turn error: rate_limited: quota exceeded`**. Before 1.19.0, and in v0.5.0 against any daemon, both turns would just stop, with no sign of why.
+- Step 3: **one** trip block and no cancel line. Live, every failure arrives twice, as the typed frame and the event-log row. They share an id, and mast-web draws whichever comes first.
+
+**Why this matters:** an operator who attaches after a failure, or reloads, is exactly the person who needs to see it, and until 1.19.0 the failure lived only in the daemon's log.
+
+---
+
+## 14. Known not to work
 
 A walkthrough that only lists successes trains you to skim. These are gaps, not bugs — if you hit one, it is the doc working.
 
@@ -494,7 +515,7 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.
 - **Hosting is v0.7.** v0.6 became the protocol catch-up. Anything about deploying this somewhere with real users is not in this release.
-- **The mock speaks protocol 1.19.0; the browser is catching up through v0.6.** Guardrail trips (§10, #111), the permission card (§11, #112) and the permission verbs (§12, #113) are handled. Still to come: replayed history drops failures that happened before you attached ([#114](https://github.com/go-steer/mast-web/issues/114)).
+- **mast-web and the mock both speak protocol 1.19.0** (§10–§13). A refusal-storm row (`gate/refusal-storm`) isn't drawn on its own, because its metadata isn't documented upstream; the cancel it causes says `Turn canceled (cut by refusal_storm).`, which carries the same fact.
 - **A real core-agent won't start token-less with `bash` any more** (core-agent#1266). `core-agent --attach-listen :7777` now exits 2 unless the listener is authenticated. This walkthrough is unaffected because it uses the mock. If you point it at a real daemon, pass a token (`--attach-token-file`) and give the same token to mast-web.
 
 ---

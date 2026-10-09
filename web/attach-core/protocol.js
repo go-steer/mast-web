@@ -47,11 +47,65 @@
 window.AttachCoreProtocol = (function () {
   'use strict';
 
+  // Durable failure rows (protocol 1.19.0, core-agent#1258). An eventlog
+  // row with no Content, recording a guardrail trip or a turn error, that
+  // the broadcaster tails onto the stream as an ordinary `agent` frame —
+  // live, and on replay from ?since=0. Matched on author AND invocation
+  // together, as upstream's own readers match them, so a future row that
+  // shares an author can't be misread as one of these.
+  //
+  //   agent/guardrail-trip       a trip that halted the session (#643;
+  //                              gains halted_turn at 1.19.0, and an older
+  //                              row without it reads as false)
+  //   agent/guardrail-turn-trip  a trip that did not halt it
+  //   agent/turn-error           any turn error; cut_by names the guardrail
+  //                              whose cut caused it
+  //
+  // Each comes out as the typed event the live frame would have produced,
+  // with the row's ID as event_id and `row: true`, so a consumer can pair
+  // it with that frame and count the failure once. A refusal-storm row
+  // (gate/refusal-storm) is not read: its metadata isn't documented, and
+  // the turn-error row's cut_by already says a storm cut the turn.
+  function failureRow(ev) {
+    const meta = ev.CustomMetadata || ev.customMetadata || ev.custom_metadata;
+    if (!meta || typeof meta !== 'object') return null;
+    const author = ev.Author || ev.author || '';
+    const inv = ev.InvocationID || ev.invocationId || ev.invocation_id || '';
+    const id = ev.ID || ev.id || '';
+    if (
+      (author === 'agent/guardrail-trip' && inv === 'guardrail-trip') ||
+      (author === 'agent/guardrail-turn-trip' && inv === 'guardrail-turn-trip')
+    ) {
+      return {
+        type: 'guardrail-trip',
+        row: true,
+        data: {
+          guardrail: typeof meta.guardrail === 'string' ? meta.guardrail : '',
+          reason: typeof meta.reason === 'string' ? meta.reason : '',
+          halted_turn: meta.halted_turn === true,
+          event_id: id,
+        },
+      };
+    }
+    if (author === 'agent/turn-error' && inv === 'turn-error') {
+      const data = { event_id: id };
+      ['kind', 'code', 'message', 'retryable', 'hint', 'cut_by', 'prompt_id'].forEach((k) => {
+        if (meta[k] !== undefined) data[k] = meta[k];
+      });
+      return { type: 'turn-error', row: true, data };
+    }
+    return null;
+  }
+
   function fanoutAgentFrame(frame, emit) {
     if (!frame || !frame.event) return;
     const ev = frame.event;
     const content = ev.Content || ev.content;
-    if (!content || !content.parts) return;
+    if (!content || !content.parts) {
+      const row = failureRow(ev);
+      if (row) emit(row);
+      return;
+    }
 
     for (const part of content.parts) {
       // Streamed text chunk.

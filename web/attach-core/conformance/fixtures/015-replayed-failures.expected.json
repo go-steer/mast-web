@@ -24,37 +24,26 @@
     }
   },
   {
-    "type": "status-update",
+    "type": "stream-chunk",
     "data": {
-      "model": "gemini-2.5-flash",
-      "provider": "vertex",
-      "turn_state": "streaming",
-      "context_pct": 11,
-      "perm_mode": "prompt"
+      "text": "[Inbox]\n- summarise all forty incident reports\n\n---\n\n",
+      "partial": false,
+      "author": "user"
     }
   },
   {
     "type": "stream-chunk",
     "data": {
-      "text": "Summarising all forty incident reports",
-      "partial": true,
-      "author": "assistant"
-    }
-  },
-  {
-    "type": "guardrail-trip",
-    "data": {
-      "guardrail": "cost_ceiling",
-      "reason": "per-turn cost ceiling exceeded: this turn cost $0.0112, ceiling is $0.0100. The turn was stopped with its work unfinished; the session is NOT halted.",
-      "halted_turn": true,
-      "event_id": "5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40"
+      "text": "Starting on the forty reports.",
+      "partial": false,
+      "author": "core_agent"
     }
   },
   {
     "type": "turn-error",
     "row": true,
     "data": {
-      "event_id": "c3e8a9d2-14b6-4f7e-8d05-6a2b9e1f0c77",
+      "event_id": "te-h1",
       "kind": "canceled",
       "code": "CANCELED",
       "message": "turn canceled",
@@ -63,23 +52,40 @@
     }
   },
   {
-    "type": "turn-error",
-    "data": {
-      "kind": "canceled",
-      "code": "CANCELED",
-      "message": "turn canceled",
-      "retryable": false,
-      "event_id": "c3e8a9d2-14b6-4f7e-8d05-6a2b9e1f0c77"
-    }
-  },
-  {
     "type": "guardrail-trip",
     "row": true,
     "data": {
       "guardrail": "cost_ceiling",
       "reason": "per-turn cost ceiling exceeded: this turn cost $0.0112, ceiling is $0.0100. The turn was stopped with its work unfinished; the session is NOT halted.",
       "halted_turn": true,
-      "event_id": "5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40"
+      "event_id": "tt-h1"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "[Inbox]\n- try again, twelve at a time\n\n---\n\n",
+      "partial": false,
+      "author": "user"
+    }
+  },
+  {
+    "type": "stream-chunk",
+    "data": {
+      "text": "Twelve summarised; the provider started refusing after that.",
+      "partial": false,
+      "author": "core_agent"
+    }
+  },
+  {
+    "type": "turn-error",
+    "row": true,
+    "data": {
+      "event_id": "te-h2",
+      "kind": "rate_limited",
+      "code": "429",
+      "message": "quota exceeded",
+      "retryable": true
     }
   },
   {
@@ -88,7 +94,7 @@
       "model": "gemini-2.5-flash",
       "provider": "vertex",
       "turn_state": "idle",
-      "context_pct": 11,
+      "context_pct": 14,
       "perm_mode": "prompt"
     }
   }

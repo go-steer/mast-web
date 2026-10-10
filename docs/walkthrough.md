@@ -49,7 +49,7 @@ The roster the two of them share:
 
 | session | owner | shared with | fixture |
 |---|---|---|---|
-| `smoke-session` | smoke@ | — | server default (1.19.0) |
+| `smoke-session` | smoke@ | — | server default (1.20.0) |
 | `ops-triage` | smoke@ | bob@ (viewer) | `003-tool-result-with-latency` |
 | `repo-indexer` | smoke@ | — | `002-cost-ceiling-mid-turn` |
 | `docs-writer` | bob@ | smoke@ (viewer) | `004-observer-mode-usage-update-only` |
@@ -633,4 +633,4 @@ If a step here is mechanically checkable and is *not* already a Playwright spec 
 
 The doc itself had about eight wrong expected strings, all written from intent rather than read off `web/`. They're corrected above. The lesson: quote the code, not the plan.
 
-**§10–§14 (v0.6) have not had a human run yet.** Each was written in the same PR as its feature, with every quoted string read off `web/`. Each is also covered by a smoke spec (`025`, `023`, `026`, `027`), and the v0.6 browser was run once against a real core-agent (protocol 1.20.0, echo provider). None of that is a person looking at the screen.
+**§10–§16 (v0.6 and v0.7) have not had a human run yet.** Each was written in the same PR as its feature, with every quoted string read off `web/`. Each is also covered by a smoke spec (`025`, `023`, `026`, `027`, `028`, `029`, and `018` for §2's step 6), and both browsers were run once against a real core-agent (protocol 1.20.0, echo provider). None of that is a person looking at the screen.

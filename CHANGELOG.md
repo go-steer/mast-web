@@ -27,17 +27,46 @@ message.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.7.0] - 2026-10-10
+
+**See what's running: the subagents behind a session, in a bar over the
+prompt, counted in the status bar and in the hold banner.**
+
+An operator who hands work to an agent hands it to subagents too, and until
+now mast-web couldn't show them: which are in flight, for how long, what they
+last said, or when a sleeping one wakes. core-tui has shown that for months in
+a tasks bar over its prompt, and attach protocol 1.20.0 added the fields it
+displays. This release ports the bar and consumes 1.20.0.
+
+It also corrects a mistake that ran through two releases. v0.5 and v0.6 both
+said the live roster carried no status, so the hold banner couldn't count
+running subagents. It always did. The claim came from reading the mock, whose
+`/agents` had the configured roster's shape, instead of the producer. The mock
+now has the producer's shape, and a test holds it there. The plan is
+[`v0.7-plan.md`](docs/v0.7-plan.md). Hosting moved to v0.8.
+
 ### Added
 
+- **A running-subagents bar**, ported from core-tui's tasks bar, in both
+  shells between the banners and the prompt. One row per running subagent,
+  oldest first: its name, how long it has run, and the first line of its last
+  report. A subagent asleep on a scheduled wake (protocol 1.20.0) counts down
+  instead (`wakes in 3m58s`, then `waking`) and shows why it's sleeping. One
+  the bar watched finish keeps its row for five seconds with how it ended, red
+  if it failed; finished history on attach isn't shown. At most three rows,
+  the last saying `+ N more · /subagents`. A parked spatial panel keeps one
+  row. (#139)
+- **Subagent counts in the status bar** (summed across the window) and each
+  panel's status line: `N subagents running · M scheduled`, kept apart because
+  two subagents asleep for ten minutes aren't "2 running". (#139)
 - **The hold banner counts the subagents still going behind it**: *"2
   subagents still running and 1 scheduled to wake: the hold does not stop
   them (/subagents stop does)."* A hold parks the parent's loop, not its
   background subagents, and that's the difference between "safe to walk away"
-  and "wait". It comes from the live roster the status chain already reads,
-  and it's left out while the roster is unknown, rather than shown as zero.
-  #70 promised this; v0.5 and v0.6 left it out believing the roster had no
-  status, which was wrong (#136). (#106)
-
+  and "wait". It's left out while the roster is unknown rather than shown as
+  zero. #70 promised this. (#106)
 - **Inline `/` autocomplete.** Typing `/` in the prompt opens a list of the
   commands this terminal will dispatch, each with its help, filtered as you
   type (prefix matches first). It reads the same gated table as the palette
@@ -48,30 +77,27 @@ message.
   typed. The list opens upward over the transcript, since under the prompt is
   the panel's edge. (#43)
 
-- **A running-subagents bar**, ported from core-tui's tasks bar, in both
-  shells between the banners and the prompt. One row per running subagent,
-  oldest first: its name, how long it has run, and the first line of its last
-  report. A subagent asleep on a scheduled wake (protocol 1.20.0) counts down
-  instead (`wakes in 3m58s`, then `waking`) and shows why it's sleeping. One
-  the bar watched finish keeps its row for five seconds with how it ended, red
-  if it failed. At most three rows, the last saying `+ N more · /subagents`. A
-  parked spatial panel keeps one row. The status bar, and each panel's status
-  line, count `N subagents running · M scheduled`. (#139)
-
 ### Changed
 
-- **The mock speaks attach protocol 1.20.0** (was 1.19.0), and its live
-  subagent roster, `GET /sessions/{sid}/agents`, now has the producer's shape:
-  `{agents: [{id, name, status, started_at, last_report?, next_wake_at?,
-  wake_detail?}]}`. It used to answer with the *configured* roster's
-  `{name, description}`, which is how v0.5 and v0.6 came to believe the live
-  roster carried no status (#106). A Go test pins the documented key set, since
+- **mast-web speaks attach protocol 1.20.0** (was 1.19.0). *[embedders]*
+  Additive: `last_report` fills in while a subagent runs, and `next_wake_at` /
+  `wake_detail` appear while it sleeps (core-agent#1283). Against an older
+  daemon the bar still works, without the countdown and with reports only
+  once a subagent finishes. (#138)
+- **The browser reads the live roster**, `GET /sessions/{sid}/agents`, on the
+  status chain beside `/guardrails`: every 3 s while a subagent is running,
+  every 10 s otherwise, nothing while the tab is hidden, and not at all after
+  a 404. That's one more request per tick per panel. core-tui polls at 1 Hz;
+  a room holds a panel per session, so this rides the existing cadence
+  instead. (#138)
+- **The mock speaks attach protocol 1.20.0**, and its live roster has the
+  producer's shape: `{agents: [{id, name, status, started_at, last_report?,
+  next_wake_at?, wake_detail?}]}`. It used to answer with the configured
+  roster's `{name, description}`. A Go test pins the documented key set, since
   no upstream capture covers this route. A fresh session's roster is empty.
   `POST /_mock/subagent` creates or updates a row (start, report, sleep on a
-  scheduled wake, finish) and `DELETE /_mock/subagents` resets. (#138)
-- **The browser reads the live roster** on the status chain, beside
-  `/guardrails`: every 3 s while a subagent is running, every 10 s otherwise,
-  and not at all after a 404. Nothing draws it yet; that's the next PR. (#138)
+  scheduled wake, finish) and `DELETE /_mock/subagents` resets. Stopping a
+  roster row follows it. (#138)
 
 ### Fixed
 
@@ -80,6 +106,29 @@ message.
   and shows its two-shell page, headed `There is no shell called "spacial".`
   The links on it keep the rest of the query string. An empty `?shell=` still
   means no value. (#120)
+
+### Known gaps
+
+- **Nested subagents are drawn flat.** `parent_session_id` is read past, as
+  core-tui's bar does.
+- **The bar is a glance, not a control.** There's no opening a subagent from
+  it; `/subagents events <name>` is the drill-in, and `/subagents stop` the
+  stop.
+- **The v0.6 and v0.7 walkthrough sections (§10–§16) haven't had a human run
+  yet.** §1–§9 have.
+- **Hosting is v0.8**: `--auth-mode=oidc`
+  ([#86](https://github.com/go-steer/mast-web/issues/86)), the Kind job
+  against a real `core-agent`
+  ([#66](https://github.com/go-steer/mast-web/issues/66)), and the hosted SPA
+  ([#6](https://github.com/go-steer/mast-web/issues/6)). It's the third time
+  hosting has moved.
+
+### Upgrading
+
+- *[embedders]* Nothing to change. The roster route has existed since long
+  before 1.20.0; a backend that 404s it gets no bar and no error.
+- *[hosting]* One more read per status tick per open panel
+  (`GET /sessions/{sid}/agents`), through the same proxy routes as the others.
 
 ## [0.6.0] - 2026-10-09
 
@@ -735,7 +784,8 @@ First release of `mast-web-<tag>.tar.gz` as the canonical artifact for
 downstream agent binaries to fetch and embed via `go:embed`. See
 [`docs/web-design.md`](docs/web-design.md) for how the embedding works.
 
-[Unreleased]: https://github.com/go-steer/mast-web/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/go-steer/mast-web/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/go-steer/mast-web/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/go-steer/mast-web/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/go-steer/mast-web/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/go-steer/mast-web/compare/v0.3.0...v0.4.0

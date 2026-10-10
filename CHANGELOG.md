@@ -29,6 +29,16 @@ message.
 
 ### Added
 
+- **Inline `/` autocomplete.** Typing `/` in the prompt opens a list of the
+  commands this terminal will dispatch, each with its help, filtered as you
+  type (prefix matches first). It reads the same gated table as the palette
+  (Ctrl/Cmd+P), which stays, so it can't offer a command the backend would
+  refuse. Up/Down select, Tab or Enter accept, and Esc closes the list. An
+  accepted command goes into the prompt with a trailing space; it isn't run.
+  Nothing is selected until you press an arrow, so Enter still sends what you
+  typed. The list opens upward over the transcript, since under the prompt is
+  the panel's edge. (#43)
+
 - **A running-subagents bar**, ported from core-tui's tasks bar, in both
   shells between the banners and the prompt. One row per running subagent,
   oldest first: its name, how long it has run, and the first line of its last

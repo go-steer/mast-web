@@ -25,9 +25,9 @@ Then open <http://localhost:7778/>.
 Two things to know before you read a failure:
 
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
-- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§16](#16-known-not-to-work) on cross-origin backends.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§17](#17-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.20.0** by default (since v0.7's #138) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§16](#16-known-not-to-work).
+The mock speaks **protocol 1.20.0** by default (since v0.7's #138) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§17](#17-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -305,7 +305,7 @@ Every turn in this section is started from **outside** the browser on purpose. A
 
 **Steps**
 
-1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§16](#16-known-not-to-work) — and try it without the query once, on purpose.)
+1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§17](#17-known-not-to-work) — and try it without the query once, on purpose.)
 2. Run `/share`.
 3. Run `/share viewer bob@example.com`.
 4. Switch to **bob@** (the console line above, which also reloads).
@@ -561,7 +561,37 @@ curl -s $M -d '{"session":"smoke-session","name":"watcher","started_ago_s":900,"
 
 ---
 
-## 16. Known not to work
+## 16. Inline `/` autocomplete
+
+**Verifies:** #43. No protocol: the list is the terminal's own gated command table, the one the palette (Ctrl/Cmd+P) reads.
+
+**Setup:** mock on :7778.
+
+**Steps**
+
+1. Open `/?shell=solo&fixture=001-happy-turn`, click `smoke-session`, and type `/` in the prompt.
+2. Keep typing: `/guar`.
+3. Press **Down**, then **Enter**.
+4. Clear the prompt, type `/help` and press **Enter** without touching the arrows.
+5. Type `/who` and click the `/whoami` row.
+6. Open `/?shell=spatial&fixture=001-happy-turn`, click `smoke-session`, type `/he`, then press **Esc** twice.
+
+**Expected**
+
+| step | expected |
+|---|---|
+| 1 | A list opens *over* the prompt (upward, not under it, so the panel's edge can't clip it): each command with its one-line help. Nothing is highlighted. |
+| 2 | It narrows as you type, `/guardrails` first. Names that start with what you typed come before ones that only contain it. |
+| 3 | Down highlights `/guardrails`; Enter puts **`/guardrails `** (with the space) in the prompt and closes the list. It does **not** run it, because most commands take arguments. |
+| 4 | `/help` runs, as it always has. Enter accepts a row only if you moved to one. |
+| 5 | The prompt reads `/whoami ` and keeps focus. |
+| 6 | The first Esc closes the list and the panel stays in front. The second sends the panel back, as Esc always has. |
+
+**Why this matters:** the command set grew from a handful to over twenty in three releases, and the palette is a chord most people never find. The list can't offer a command this backend would refuse, because it reads the same gated table the prompt dispatches from. And it changes nothing for anyone who types commands from memory: Enter is still send.
+
+---
+
+## 17. Known not to work
 
 A walkthrough that only lists successes trains you to skim. These are gaps, not bugs — if you hit one, it is the doc working.
 

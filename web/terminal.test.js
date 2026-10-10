@@ -1729,6 +1729,140 @@ describe('MastTerminal built-ins', () => {
     });
   });
 
+  // v0.7 #43: the list that opens over the prompt on a leading `/`.
+  describe('inline / autocomplete', () => {
+    const prompt = (term) => term.el.querySelector('.term-prompt');
+    const list = (term) => term.el.querySelector('.term-suggest');
+    const items = (term) =>
+      [...term.el.querySelectorAll('.term-suggest-item .term-suggest-cmd')].map(
+        (n) => n.textContent
+      );
+    function type(term, text) {
+      const el = prompt(term);
+      el.value = text;
+      el.dispatchEvent(new Event('input'));
+    }
+    function key(term, k, opts) {
+      const e = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...opts });
+      prompt(term).dispatchEvent(e);
+      return e;
+    }
+
+    it('opens on a leading slash with the gated table, prefix matches first', () => {
+      const { term } = mount({ features: { pause: true }, slashCommands: ['compact'] });
+      type(term, '/');
+      expect(list(term).hidden).toBe(false);
+      // Every row is a command this terminal would dispatch.
+      const names = term.commands.map((c) => '/' + c.name);
+      items(term).forEach((n) => expect(names).toContain(n));
+
+      type(term, '/co');
+      // /continue and /compact start with it; /tools-ish fuzzy ones trail.
+      expect(items(term).slice(0, 2).sort()).toEqual(['/compact', '/continue']);
+      expect(prompt(term).getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('does not offer what the backend would refuse', () => {
+      const { term } = mount({ features: { pause: false } });
+      type(term, '/pau');
+      expect(items(term)).not.toContain('/pause');
+    });
+
+    it('closes once there is a space, no match, or no leading slash', () => {
+      const { term } = mount();
+      type(term, '/he');
+      expect(list(term).hidden).toBe(false);
+      type(term, '/help ');
+      expect(list(term).hidden).toBe(true);
+      type(term, '/zzzzqqq');
+      expect(list(term).hidden).toBe(true);
+      type(term, 'hello /help');
+      expect(list(term).hidden).toBe(true);
+    });
+
+    // Enter is still "send" unless you moved to a row.
+    it('leaves Enter alone until a row is selected', async () => {
+      const { term, client } = mount();
+      const sent = [];
+      client.inject = async (t) => sent.push(t);
+      type(term, '/he');
+      const e = key(term, 'Enter');
+      expect(e.defaultPrevented).toBe(true); // the normal submit path
+      expect(prompt(term).value).toBe('');
+      expect(list(term).hidden).toBe(true);
+      await flush();
+    });
+
+    it('Down selects, Enter accepts into the prompt without running it', () => {
+      const { term, client } = mount();
+      type(term, '/he');
+      const first = items(term)[0];
+      key(term, 'ArrowDown');
+      const sel = term.el.querySelector('.term-suggest-item[aria-selected="true"]');
+      expect(sel.querySelector('.term-suggest-cmd').textContent).toBe(first);
+      expect(prompt(term).getAttribute('aria-activedescendant')).toBe(sel.id);
+      key(term, 'Enter');
+      expect(prompt(term).value).toBe(first + ' ');
+      expect(list(term).hidden).toBe(true);
+      expect(client.calls.map((c) => c.name)).not.toContain('inject');
+    });
+
+    it('Up wraps to the last row; Tab takes the first when none is selected', () => {
+      const { term } = mount();
+      type(term, '/');
+      const all = items(term);
+      key(term, 'ArrowUp');
+      expect(
+        term.el.querySelector('.term-suggest-item[aria-selected="true"] .term-suggest-cmd')
+          .textContent
+      ).toBe(all[all.length - 1]);
+      type(term, '/he');
+      const first = items(term)[0];
+      const e = key(term, 'Tab');
+      expect(e.defaultPrevented).toBe(true);
+      expect(prompt(term).value).toBe(first + ' ');
+    });
+
+    // Esc is the spatial shell's "send this panel back". With the list
+    // open, the first Esc only closes the list.
+    it('Esc closes the list and goes no further; the next Esc is the shell’s', () => {
+      const { term } = mount();
+      const seen = [];
+      const onKey = (e) => seen.push(e.key);
+      document.addEventListener('keydown', onKey);
+      try {
+        type(term, '/he');
+        key(term, 'Escape');
+        expect(list(term).hidden).toBe(true);
+        expect(seen).toEqual([]);
+        // Typing on reopens it.
+        type(term, '/hel');
+        expect(list(term).hidden).toBe(false);
+        key(term, 'Escape');
+        key(term, 'Escape');
+        expect(seen).toEqual(['Escape']);
+      } finally {
+        document.removeEventListener('keydown', onKey);
+      }
+    });
+
+    it('a click on a row accepts it', () => {
+      const { term } = mount();
+      type(term, '/he');
+      const row = term.el.querySelector('.term-suggest-item');
+      const name = row.querySelector('.term-suggest-cmd').textContent;
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      expect(prompt(term).value).toBe(name + ' ');
+    });
+
+    it('closes when the prompt loses focus', () => {
+      const { term } = mount();
+      type(term, '/he');
+      prompt(term).dispatchEvent(new Event('blur'));
+      expect(list(term).hidden).toBe(true);
+    });
+  });
+
   // #93, spec v1.12.0. Until now "running" meant "this browser pressed
   // send": a mid-turn GET /status answered `idle` because the run loop
   // had no signal to read, so a session another operator was driving

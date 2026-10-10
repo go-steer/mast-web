@@ -37,6 +37,12 @@
 // A ?shell= deep link deliberately does NOT become the stored
 // preference. Sending someone a link to the room should not re-home
 // them there, and the smoke suite opens both shells in one run.
+//
+// A ?shell= this page doesn't recognise — `spacial` — does NOT fall
+// through to 2 and 3 (#120). Landing in solo anyway reads as "the deep
+// link is broken", the opposite of the truth. Instead the page stays,
+// shows the no-JS list it already has, and names the value it didn't
+// understand. An empty ?shell= is no value, not an unknown one.
 (function () {
   'use strict';
 
@@ -56,12 +62,34 @@
   const params = new URLSearchParams(window.location.search);
   const asked = params.get('shell');
   const saved = stored();
-  const id = SHELLS[asked] ? asked : SHELLS[saved] ? saved : 'solo';
+  const known = (id) => Object.prototype.hasOwnProperty.call(SHELLS, id);
 
   // Everything else in the query string belongs to the shell, not to
   // this page — ?fixture= in particular, which the smoke suite hands
   // through to the mock. The hash rides along untouched.
   params.delete('shell');
   const qs = params.toString();
-  window.location.replace(SHELLS[id] + (qs ? '?' + qs : '') + window.location.hash);
+  const target = (id) => SHELLS[id] + (qs ? '?' + qs : '') + window.location.hash;
+
+  if (asked && !known(asked)) {
+    // This runs in <head>, before the page it fills in exists.
+    document.addEventListener('DOMContentLoaded', () => {
+      const pick = document.getElementById('shell-pick');
+      if (pick) {
+        // textContent: the value is whatever was in the URL.
+        pick.textContent = 'There is no shell called "' + asked + '". Pick one:';
+        pick.setAttribute('role', 'alert');
+      }
+      // The links keep the rest of the query string, as the redirect
+      // would have.
+      document.querySelectorAll('a[data-shell]').forEach((a) => {
+        const id = a.getAttribute('data-shell');
+        if (known(id)) a.setAttribute('href', target(id));
+      });
+    });
+    return;
+  }
+
+  const id = known(asked) ? asked : known(saved) ? saved : 'solo';
+  window.location.replace(target(id));
 })();

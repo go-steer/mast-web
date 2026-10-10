@@ -26,7 +26,9 @@
     <!-- Visible only if the redirect did not happen: scripting off, or
          shell-select.js failed to load. Both shells still work when
          reached directly, so the honest fallback is to say so and point
-         at them rather than to fail blank. -->
+         at them rather than to fail blank. Also shown, on purpose, for a
+         ?shell= the chooser doesn't recognise, with #shell-pick
+         rewritten to name it (#120). -->
     <main
       style="
         font:
@@ -37,10 +39,10 @@
       "
     >
       <h1 style="font-size: 1rem">mast-web</h1>
-      <p>Pick a shell:</p>
+      <p id="shell-pick">Pick a shell:</p>
       <ul>
-        <li><a href="solo.html">solo</a> — one terminal, full size</li>
-        <li><a href="spatial.html">spatial</a> — a room of terminals</li>
+        <li><a href="solo.html" data-shell="solo">solo</a> — one terminal, full size</li>
+        <li><a href="spatial.html" data-shell="spatial">spatial</a> — a room of terminals</li>
       </ul>
     </main>
   </body>

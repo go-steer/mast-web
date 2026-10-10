@@ -27,7 +27,20 @@ message.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The mock speaks attach protocol 1.20.0** (was 1.19.0), and its live
+  subagent roster, `GET /sessions/{sid}/agents`, now has the producer's shape:
+  `{agents: [{id, name, status, started_at, last_report?, next_wake_at?,
+  wake_detail?}]}`. It used to answer with the *configured* roster's
+  `{name, description}`, which is how v0.5 and v0.6 came to believe the live
+  roster carried no status (#106). A Go test pins the documented key set, since
+  no upstream capture covers this route. A fresh session's roster is empty.
+  `POST /_mock/subagent` creates or updates a row (start, report, sleep on a
+  scheduled wake, finish) and `DELETE /_mock/subagents` resets. (#138)
+- **The browser reads the live roster** on the status chain, beside
+  `/guardrails`: every 3 s while a subagent is running, every 10 s otherwise,
+  and not at all after a 404. Nothing draws it yet; that's the next PR. (#138)
 
 ## [0.6.0] - 2026-10-09
 

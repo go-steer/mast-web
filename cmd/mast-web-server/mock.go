@@ -43,7 +43,7 @@ const defaultMockFixture = "001-happy-turn"
 // parked sessions (#68). Nothing was wrong with any individual test.
 // The problem was that no test asserted the mock was current, so being
 // out of date was not a failure condition.
-const wireProtocolVersion = "1.19.0"
+const wireProtocolVersion = "1.20.0"
 
 // mockPublishedEvents are the SSE events the mock emits from its own
 // handlers rather than from fixture replay — the pause gate's
@@ -100,6 +100,9 @@ type mockHandler struct {
 	guardrails mockGuardrails
 	events     int
 	seq        int
+
+	// The live subagent roster (v0.7 #138). See mock_roster.go.
+	roster mockRoster
 }
 
 // countPost tallies one write against an endpoint name.
@@ -274,12 +277,6 @@ var (
 			{"name": "delegate", "description": "Hand work to a subagent", "source": "subagent", "gate_state": "prompted"},
 		},
 	}
-	stubAgents = map[string]any{
-		"agents": []map[string]any{
-			{"name": "researcher", "description": "Research + summarize"},
-			{"name": "implementer", "description": "Write + edit code"},
-		},
-	}
 	stubUsage = map[string]any{
 		"overall": map[string]any{"tokens_in": 45, "tokens_out": 8, "cost_usd": 0.00012, "turns": 1},
 		"per_model": map[string]any{
@@ -289,7 +286,7 @@ var (
 	}
 	// stubSubagentsCatalog backs GET /sessions/{sid}/subagents — the
 	// configured/spawnable roster (core-agent#627/#634), distinct from
-	// stubAgents (the live roster returned by GET .../agents).
+	// the live roster returned by GET .../agents (mock_roster.go).
 	// One row carries `tools` (v1.9.0, core-agent#768) and one does
 	// not, because the absent case is the one a client gets wrong.
 	// ABSENCE MEANS UNKNOWN, NOT NONE: the key is omitted by a
@@ -321,7 +318,7 @@ var (
 		},
 	}
 	// knownSubagentNames gates the subagent turn drill-down stub —
-	// mirrors the names in stubAgents / stubSubagentsCatalog so the
+	// mirrors the names in stubSubagentsCatalog so the
 	// 404 + `available` roster path (core-agent#638/#687) is
 	// exercisable against an unknown name too.
 	knownSubagentNames = []string{"researcher", "implementer"}
@@ -399,6 +396,9 @@ func registerMockRoutes(mux *http.ServeMux, h *mockHandler) {
 	// whatever a spec tripped. See mock_guardrails.go.
 	mux.HandleFunc("POST /_mock/guardrail-trip", h.raiseGuardrailTrip)
 	mux.HandleFunc("DELETE /_mock/guardrails", h.resetGuardrailState)
+	// The live subagent roster on demand (v0.7). See mock_roster.go.
+	mux.HandleFunc("POST /_mock/subagent", h.upsertSubagent)
+	mux.HandleFunc("DELETE /_mock/subagents", h.resetRoster)
 	// Whether an injected turn plays and ends, or stays open until
 	// something stops it. See mock_play.go.
 	mux.HandleFunc("GET /_mock/turns", h.setTurns)
@@ -573,7 +573,7 @@ func (h *mockHandler) sessionGet(w http.ResponseWriter, r *http.Request) {
 			h.subagentEvents(w, sid, tail[1])
 			return
 		}
-		writeJSON(w, http.StatusOK, stubAgents)
+		writeJSON(w, http.StatusOK, h.rosterWire(sid))
 	case "subagents":
 		// Configured/spawnable roster (core-agent#627/#634), distinct
 		// from the live roster above.
@@ -951,6 +951,23 @@ func normalizeTitle(s string) string {
 // existed, the operator aimed correctly, and there is nothing to
 // retry.
 func (h *mockHandler) stopSubagent(w http.ResponseWriter, sid, name string) {
+	// A live roster row a spec created (POST /_mock/subagent) answers
+	// for itself: a running one is stopped by this call, a finished one
+	// was not. The named fallbacks below cover the default, empty roster.
+	if row, ok := h.roster.find(sid, name); ok {
+		switch row.status {
+		case "running", "paused":
+			h.roster.setStatus(sid, name, "stopped")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"session": sid, "agent": name, "stopped": true, "status": "stopped",
+			})
+		default:
+			writeJSON(w, http.StatusOK, map[string]any{
+				"session": sid, "agent": name, "stopped": false, "status": row.status,
+			})
+		}
+		return
+	}
 	for _, known := range knownSubagentNames {
 		if name != known {
 			continue

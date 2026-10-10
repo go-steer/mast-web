@@ -106,6 +106,11 @@ now has the producer's shape, and a test holds it there. The plan is
   and shows its two-shell page, headed `There is no shell called "spacial".`
   The links on it keep the rest of the query string. An empty `?shell=` still
   means no value. (#120)
+- **The solo shell in light themes** drew its panel on the dark theme's
+  near-black surface, so everything around the transcript (the subagents bar,
+  the panel's status line) was dark ink on black. The light themes' panel and
+  backdrop colours were scoped to the spatial shell, which predates solo; they
+  now cover both. Spatial is unchanged. (#149)
 
 ### Known gaps
 

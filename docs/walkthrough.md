@@ -25,9 +25,9 @@ Then open <http://localhost:7778/>.
 Two things to know before you read a failure:
 
 - **Streaming is the thing a proxy breaks.** The mock sets `X-Accel-Buffering: no` and flushes every frame (`cmd/mast-web-server/mock.go`), but a buffering proxy in front will still collect the turn and deliver it in one block. If §1's text arrives all at once, suspect the hop before you suspect the client — and check it by running the mock locally once.
-- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§10](#15-known-not-to-work) on cross-origin backends.
+- **`localhost` exemptions do not apply.** The BFF's CSRF guard is proxy-mode only and the mock registers its routes bare, so writes are not refused. But if you later point this walkthrough at a *real* backend through a tunnel, that changes — see [§16](#16-known-not-to-work) on cross-origin backends.
 
-The mock speaks **protocol 1.19.0** by default (since v0.6's #110) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§10](#15-known-not-to-work).
+The mock speaks **protocol 1.20.0** by default (since v0.7's #138) and replays `001-happy-turn`. Three of its four sessions are pinned to older fixtures on purpose — see [§16](#16-known-not-to-work).
 
 **The two operators.** The mock reads a `mock_caller` cookie (`cmd/mast-web-server/mock_acl.go`) and answers `/sessions`, `/whoami` and the ACL routes accordingly. With no cookie you are `smoke@example.com`. To become the other one, open DevTools and run:
 
@@ -305,7 +305,7 @@ Every turn in this section is started from **outside** the browser on purpose. A
 
 **Steps**
 
-1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§10](#15-known-not-to-work) — and try it without the query once, on purpose.)
+1. As **smoke@** (no cookie, or the cookie set to `smoke@example.com`), open `/?shell=solo&fixture=001-happy-turn` and click `repo-indexer`. The fixture query matters: `repo-indexer` is otherwise pinned to a 1.4.0 capture and `/share` is correctly refused against it. (See [§16](#16-known-not-to-work) — and try it without the query once, on purpose.)
 2. Run `/share`.
 3. Run `/share viewer bob@example.com`.
 4. Switch to **bob@** (the console line above, which also reloads).
@@ -525,18 +525,54 @@ curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/j
 
 ---
 
-## 15. Known not to work
+## 15. Running subagents
+
+**Verifies:** #139, #138 (protocol 1.20.0, core-agent#1283). Reads `GET /sessions/{sid}/agents` on the status chain: every 3 s while a subagent is running, every 10 s otherwise.
+
+**Setup:** mock on :7778. The mock makes subagents on demand. Run these from a shell before step 1, so the first read on attach picks them up:
+
+```sh
+M=http://127.0.0.1:7778/_mock/subagent
+curl -s $M -d '{"session":"smoke-session","name":"researcher","started_ago_s":125,"last_report":"reading pkg/attach/state.go\nand the rest"}'
+curl -s $M -d '{"session":"smoke-session","name":"watcher","started_ago_s":900,"wake_in_s":240,"wake_detail":"poll the CI run again"}'
+```
+
+**Steps**
+
+1. Open `/?shell=solo&fixture=001-happy-turn` and click `smoke-session`. Look between the transcript and the prompt.
+2. Watch it for a few seconds.
+3. Make two more: `curl -s $M -d '{"session":"smoke-session","name":"implementer"}'`, then the same with `"name":"reviewer"`. Wait up to 10 s.
+4. Finish one: `curl -s $M -d '{"session":"smoke-session","name":"researcher","status":"failed","last_report":"quota exceeded"}'`. Wait a few seconds, then wait five more.
+5. Switch to the spatial shell (`/?shell=spatial&fixture=001-happy-turn`), click `smoke-session`, then press **Esc** to send the panel back.
+6. Clean up: `curl -s -X DELETE http://127.0.0.1:7778/_mock/subagents`.
+
+**Expected**
+
+| step | expected |
+|---|---|
+| 1 | Two rows, oldest first: **`◷ watcher · wakes in 3m5Xs · poll the CI run again`** then **`▶ researcher · 2m0Xs · reading pkg/attach/state.go`** (the first line of the report only; hover for all of it). The panel's status line and the window's status bar both read **`1 subagent running · 1 scheduled`**. |
+| 2 | researcher's time counts up and watcher's countdown counts down, once a second, between polls. |
+| 3 | Three rows at most: the last one reads **`+ 2 more · /subagents`**. The count reads `3 subagents running · 1 scheduled`. |
+| 4 | Within ~3 s researcher's row turns red and reads **`✗ researcher · failed · quota exceeded`**, and the count drops by one at once. The row is gone about five seconds later. |
+| 5 | In front, the bar is as in solo. Parked, the panel keeps **one** row (`3 subagents · /subagents`) and its status-line count. |
+| 6 | Within 10 s the bar is gone and the counts with it. |
+
+**Why this matters:** a hold or a STOP ends the parent's turn but not the background subagents, and until now nothing in mast-web showed they were there. core-tui has shown them for months. A sleeping subagent is counted as *scheduled*, not *running*, because "2 running" for two subagents asleep for ten minutes would be wrong. Only a subagent the bar watched finish gets the five-second row; a roster full of finished history on attach is not news.
+
+---
+
+## 16. Known not to work
 
 A walkthrough that only lists successes trains you to skim. These are gaps, not bugs — if you hit one, it is the doc working.
 
-- **`--auth-mode=oidc` is out of scope** (v0.7, [#86](https://github.com/go-steer/mast-web/issues/86)). Not blocked, not broken: not attempted. The mock's `mock_caller` cookie is the identity story this release has, and it is a development affordance, not an auth mechanism.
+- **`--auth-mode=oidc` is out of scope** (v0.8, [#86](https://github.com/go-steer/mast-web/issues/86)). Not blocked, not broken: not attempted. The mock's `mock_caller` cookie is the identity story this release has, and it is a development affordance, not an auth mechanism.
 - **`/share` is refused on `ops-triage`, `repo-indexer` and `docs-writer` by default.** Those three are pinned to old conformance fixtures (1.2.0–1.4.0) and the ACL routes arrived in 1.10.0, so the command correctly says the backend cannot serve it. Append `?fixture=001-happy-turn` to the shell URL to get a modern backend. This is the version gate working, and it is worth seeing once on purpose.
-- **There's no view of running subagents yet**: no tasks bar like core-tui's, and the hold banner doesn't count them. The data exists: `GET /agents` rows carry `status` and `started_at`, and 1.20.0 adds `last_report` and a wake countdown. An earlier version of this line said it didn't. That mistake came from the mock's `/agents`, which had the wrong shape. It's planned for v0.7 ([#106](https://github.com/go-steer/mast-web/issues/106)).
+- **The hold banner doesn't count running subagents yet.** The bar in §15 shows them; the banner's *"N subagents still running"* is [#106](https://github.com/go-steer/mast-web/issues/106), next in v0.7.
 - **No `by` on an approval does not mean nobody approved it.** It means the daemon verified no identity for whoever answered. The client says `unattributed` rather than inventing one; against a pre-1.10.0 backend it says nothing at all and notes that the backend cannot attribute.
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.
-- **Hosting is v0.7.** v0.6 became the protocol catch-up. Anything about deploying this somewhere with real users is not in this release.
-- **mast-web and the mock both speak protocol 1.19.0** (§10–§13). A refusal-storm row (`gate/refusal-storm`) isn't drawn on its own, because its metadata isn't documented upstream; the cancel it causes says `Turn canceled (cut by refusal_storm).`, which carries the same fact.
+- **Hosting is v0.8.** v0.6 became the protocol catch-up and v0.7 is about running subagents. Anything about deploying this somewhere with real users is not in this release.
+- **mast-web and the mock both speak protocol 1.20.0** (§10–§13, §15). A refusal-storm row (`gate/refusal-storm`) isn't drawn on its own, because its metadata isn't documented upstream; the cancel it causes says `Turn canceled (cut by refusal_storm).`, which carries the same fact.
 - **A real core-agent won't start token-less with `bash` any more** (core-agent#1266). `core-agent --attach-listen :7777` now exits 2 unless the listener is authenticated. This walkthrough is unaffected because it uses the mock. If you point it at a real daemon, pass a token (`--attach-token-file`) and give the same token to mast-web.
 
 ---

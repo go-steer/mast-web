@@ -207,6 +207,30 @@ window.MastStatusBar = (function () {
       if (halted) {
         fleet.appendChild(mk('span', 'status-halted', ' · ' + halted + ' halted'));
       }
+      // Background subagents across every open session (v0.7 #139),
+      // from each panel's live roster. Running and scheduled are kept
+      // apart, as core-tui keeps them: "2 running" for two subagents
+      // asleep for ten minutes would be wrong.
+      let subRunning = 0;
+      let subScheduled = 0;
+      open.forEach(function (t) {
+        subRunning += t.state.subagentsRunning || 0;
+        subScheduled += t.state.subagentsScheduled || 0;
+      });
+      const sub = [];
+      if (subRunning) {
+        sub.push(subRunning + (subRunning === 1 ? ' subagent' : ' subagents') + ' running');
+      }
+      if (subScheduled) {
+        sub.push(
+          subRunning
+            ? subScheduled + ' scheduled'
+            : subScheduled + (subScheduled === 1 ? ' subagent' : ' subagents') + ' scheduled'
+        );
+      }
+      if (sub.length) {
+        fleet.appendChild(mk('span', 'status-subagents', ' · ' + sub.join(' · ')));
+      }
     }
 
     function paintCost(open) {

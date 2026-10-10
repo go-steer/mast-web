@@ -1557,6 +1557,178 @@ describe('MastTerminal built-ins', () => {
     });
   });
 
+  // v0.7 #139: core-tui's running-tasks bar, from the live roster.
+  describe('the running-subagents bar', () => {
+    const T0 = Date.parse('2026-10-10T12:00:00Z');
+    const at = (s) => new Date(T0 + s * 1000).toISOString();
+    const bar = (term) => term.el.querySelector('.term-agents');
+    const rows = (term) =>
+      [...term.el.querySelectorAll('.term-agents .term-agent')].map((r) => r.textContent);
+
+    // A mounted panel with an idle server and a roster the test sets.
+    function withRoster(initial) {
+      const m = mount();
+      m.client.getStatus = async () => ({ state: 'idle' });
+      m.roster = initial || [];
+      m.client.listAgents = async () => m.roster;
+      m.read = async () => {
+        await m.term.refreshStatus();
+        await vi.advanceTimersByTimeAsync(0);
+      };
+      return m;
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(T0);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('stays hidden with nothing running, finished history included', async () => {
+      const m = withRoster([
+        { id: 'a1', name: 'old', status: 'completed', started_at: at(-600), last_report: 'done' },
+      ]);
+      await m.read();
+      expect(bar(m.term).hidden).toBe(true);
+      expect(m.term.el.querySelector('.term-subagents').hidden).toBe(true);
+    });
+
+    it('draws a running subagent with its elapsed time and report headline, ticking', async () => {
+      const m = withRoster([
+        {
+          id: 'a1',
+          name: 'researcher',
+          status: 'running',
+          started_at: at(-125),
+          last_report: '\n  reading pkg/attach\nthen more',
+        },
+      ]);
+      await m.read();
+      expect(bar(m.term).hidden).toBe(false);
+      expect(rows(m.term)).toEqual(['▶researcher2m05sreading pkg/attach']);
+      expect(m.term.el.querySelector('.term-agent').title).toBe('reading pkg/attach\nthen more');
+      // The column counts up between polls.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(rows(m.term)[0]).toContain('2m06s');
+      expect(m.term.el.querySelector('.term-subagents').textContent).toBe('1 subagent running');
+      expect(m.term.state.subagentsRunning).toBe(1);
+    });
+
+    it('counts a sleeping subagent down to its wake, then reads waking', async () => {
+      const m = withRoster([
+        {
+          id: 'a1',
+          name: 'watcher',
+          status: 'running',
+          started_at: at(-900),
+          last_report: 'checked the build',
+          next_wake_at: at(3),
+          wake_detail: 'poll the build again',
+        },
+      ]);
+      await m.read();
+      expect(rows(m.term)).toEqual(['◷watcherwakes in 3spoll the build again']);
+      expect(m.term.state.subagentsScheduled).toBe(1);
+      expect(m.term.state.subagentsRunning).toBe(0);
+      expect(m.term.el.querySelector('.term-subagents').textContent).toBe('1 subagent scheduled');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(rows(m.term)[0]).toContain('waking');
+      expect(rows(m.term)[0]).not.toContain('0s');
+    });
+
+    it('shows paused as paused, in neither count', async () => {
+      const m = withRoster([
+        { id: 'a1', name: 'held', status: 'paused', started_at: at(-10), next_wake_at: at(60) },
+      ]);
+      await m.read();
+      expect(rows(m.term)).toEqual(['‖heldpaused']);
+      expect(m.term.state.subagentsRunning).toBe(0);
+      expect(m.term.state.subagentsScheduled).toBe(0);
+    });
+
+    it('lingers a watched subagent for five seconds with how it ended', async () => {
+      const m = withRoster([
+        { id: 'a1', name: 'researcher', status: 'running', started_at: at(-5) },
+      ]);
+      await m.read();
+      m.roster = [
+        {
+          id: 'a1',
+          name: 'researcher',
+          status: 'failed',
+          started_at: at(-5),
+          last_report: 'quota',
+        },
+      ];
+      await m.read();
+      expect(rows(m.term)).toEqual(['✗researcherfailedquota']);
+      expect(m.term.el.querySelector('.term-agent').dataset.status).toBe('failed');
+      // The count is about what is still going, not what is lingering.
+      expect(m.term.el.querySelector('.term-subagents').hidden).toBe(true);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(bar(m.term).hidden).toBe(true);
+    });
+
+    // A roster that drops a running subagent said nothing about how it
+    // ended; the bar doesn't make up a "done".
+    it('drops a subagent that vanishes mid-run rather than lingering it', async () => {
+      const m = withRoster([
+        { id: 'a1', name: 'researcher', status: 'running', started_at: at(-5) },
+      ]);
+      await m.read();
+      m.roster = [];
+      await m.read();
+      expect(bar(m.term).hidden).toBe(true);
+    });
+
+    it('holds three rows, the last pointing at /subagents, in start order', async () => {
+      const m = withRoster(
+        ['d', 'c', 'b', 'a'].map((name, i) => ({
+          id: name,
+          name,
+          status: 'running',
+          started_at: at(-10 * (i + 1)),
+        }))
+      );
+      await m.read();
+      expect(rows(m.term)).toEqual(['▶a40s', '▶b30s', '+ 2 more · /subagents']);
+    });
+
+    // OQ 2: a parked spatial panel gets one row, and the count stays.
+    it('compact: one row, and a count when there is more than one', async () => {
+      const m = withRoster([
+        { id: 'a', name: 'a', status: 'running', started_at: at(-20) },
+        { id: 'b', name: 'b', status: 'running', started_at: at(-10) },
+      ]);
+      await m.read();
+      m.term.setCompact(true);
+      expect(rows(m.term)).toEqual(['2 subagents · /subagents']);
+      expect(m.term.el.querySelector('.term-subagents').textContent).toBe('2 subagents running');
+      m.roster = [m.roster[0]];
+      await m.read();
+      expect(rows(m.term)).toEqual(['▶a20s']);
+      m.term.setCompact(false);
+      expect(rows(m.term)).toEqual(['▶a20s']);
+    });
+
+    it('draws the name and report as text', async () => {
+      const m = withRoster([
+        {
+          id: 'a',
+          name: '<img src=x>',
+          status: 'running',
+          started_at: at(-1),
+          last_report: '<b>hi</b>',
+        },
+      ]);
+      await m.read();
+      expect(bar(m.term).querySelector('img, b')).toBeNull();
+      expect(rows(m.term)[0]).toContain('<img src=x>');
+    });
+  });
+
   // #93, spec v1.12.0. Until now "running" meant "this browser pressed
   // send": a mid-turn GET /status answered `idle` because the run loop
   // had no signal to read, so a session another operator was driving

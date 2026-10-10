@@ -486,6 +486,12 @@ window.MastTerminal = (function () {
     );
     haltBar.append(haltWhy, haltDetail, haltHint);
 
+    // The running-subagents bar (v0.7 #139). Under the hold and halt
+    // banners, over the prompt: what is still going on in the background
+    // of this session, without typing /subagents. See renderAgents().
+    const agentsBar = mk('div', 'term-agents');
+    agentsBar.hidden = true;
+
     const statusRow = mk('div', 'term-status');
     const sConn = mk('span', 'term-stat term-conn', '⬤ disconnected');
     const sModel = mk('span', 'term-stat', '—');
@@ -500,9 +506,13 @@ window.MastTerminal = (function () {
     const sRun = mk('span', 'term-stat term-inflight', '⟳ turn in flight');
     sRun.hidden = true;
     sRun.title = 'The agent is working on a turn this browser did not dispatch';
-    statusRow.append(sConn, sModel, sTurns, sCost, sElapsed, sRun);
+    // The subagent count (v0.7 #139): what survives when the bar is
+    // squeezed to one row in a parked spatial panel.
+    const sAgents = mk('span', 'term-stat term-subagents');
+    sAgents.hidden = true;
+    statusRow.append(sConn, sModel, sTurns, sCost, sElapsed, sRun, sAgents);
 
-    root.append(screen, holdBar, haltBar, inputRow, statusRow);
+    root.append(screen, holdBar, haltBar, agentsBar, inputRow, statusRow);
     setPrefix();
 
     // ── Rendering (ported from app.js, bound to `out`) ───────────────
@@ -1444,6 +1454,8 @@ window.MastTerminal = (function () {
           agentsPending = false;
           if (ui.destroyed) return null;
           session.applyAgents(rows);
+          observeAgents(sess().agents || [], Date.now());
+          renderAgents();
           onChange(api, 'agents');
           // The chain armed itself before this answer landed, on the
           // roster before it; re-arm on this one, so a subagent starting
@@ -1458,6 +1470,190 @@ window.MastTerminal = (function () {
           return null;
         }
       );
+    }
+
+    // ── The running-subagents bar (v0.7 #139) ───────────────────────
+    //
+    // A port of core-tui's tui/tasks_bar.go, which settled the hard
+    // choices first:
+    //
+    //   - One row per ACTIVE subagent (running or paused), in start
+    //     order: a glyph, the name, then how long it has been running —
+    //     or, asleep on a scheduled wake (1.20.0 next_wake_at), a
+    //     countdown to the wake, which reads "waking" once it is past
+    //     due, because the roster is a poll and a frozen 0s would draw
+    //     stale data as fact. Then the first line of its last report, or
+    //     of its wake_detail while it sleeps.
+    //   - A subagent the bar WATCHED running keeps its row for five
+    //     seconds after it finishes, showing how it ended. Only watched
+    //     ones: a roster read on attach can carry any number of
+    //     long-finished entries, and flashing them all up would announce
+    //     history as news. One that vanishes from the roster mid-run is
+    //     dropped, not lingered — the roster said nothing about how it
+    //     ended, and a "done" the bar made up would be a claim nobody made.
+    //   - At most three rows (one in a parked spatial panel, plan OQ 2).
+    //     When they don't fit, the last row says how many more and points
+    //     at /subagents, so the bar never passes for the whole roster.
+    //
+    // The columns tick every second between polls, as core-tui's do
+    // between snapshots; the ticker runs only while there are rows.
+    const AGENTS_LINGER_MS = 5000;
+    const AGENTS_MAX_ROWS = 3;
+    const agentsView = {
+      active: [], // in-flight rows from the latest read, in start order
+      running: new Set(), // names active on the previous read
+      finished: [], // lingering { row, at }, oldest first
+      compact: false,
+      timer: 0,
+    };
+
+    // Asleep until a scheduled wake. Only a running subagent counts: a
+    // paused one shows as paused whatever it had scheduled, because the
+    // gate is what the operator has to act on.
+    function agentScheduled(row) {
+      return row.status === 'running' && typeof row.next_wake_at === 'string' && !!row.next_wake_at;
+    }
+
+    function observeAgents(rows, now) {
+      const running = new Set();
+      const active = [];
+      rows.forEach((row) => {
+        if (agentActive(row)) {
+          active.push(row);
+          running.add(row.name);
+        } else if (agentsView.running.has(row.name)) {
+          agentsView.finished.push({ row, at: now });
+        }
+      });
+      // Stable, so rows with no parseable started_at keep the server's order.
+      const t = (row) => {
+        const ms = Date.parse(row.started_at || '');
+        return isNaN(ms) ? Infinity : ms;
+      };
+      active.sort((a, b) => (t(a) === t(b) ? 0 : t(a) < t(b) ? -1 : 1));
+      agentsView.finished = agentsView.finished.filter(
+        (f) => now - f.at < AGENTS_LINGER_MS && !running.has(f.row.name)
+      );
+      agentsView.active = active;
+      agentsView.running = running;
+    }
+
+    // Working, and asleep until a wake. Paused ones are on the bar but
+    // are neither. Read off the store rather than agentsView, because a
+    // store subscriber (the status bar) asks before observeAgents runs.
+    function agentCounts() {
+      let running = 0;
+      let scheduled = 0;
+      activeAgents().forEach((row) => {
+        if (agentScheduled(row)) scheduled += 1;
+        else if (row.status === 'running') running += 1;
+      });
+      return { running, scheduled };
+    }
+
+    // core-tui's formatTurnElapsed: 42s, 3m07s, 1h05m.
+    function formatAgentElapsed(ms) {
+      const s = Math.max(0, Math.floor(ms / 1000));
+      if (s >= 3600) return Math.floor(s / 3600) + 'h' + pad2(Math.floor((s % 3600) / 60)) + 'm';
+      if (s >= 60) return Math.floor(s / 60) + 'm' + pad2(s % 60) + 's';
+      return s + 's';
+    }
+    function pad2(n) {
+      return (n < 10 ? '0' : '') + n;
+    }
+
+    // The first non-blank line of a report.
+    function reportHeadline(s) {
+      if (typeof s !== 'string') return '';
+      const lines = s.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line) return line;
+      }
+      return '';
+    }
+
+    function agentRowEl(row, active, now) {
+      const el = mk('div', 'term-agent');
+      el.dataset.status = row.status || '';
+      let glyph;
+      let state = '';
+      let report = row.last_report;
+      if (active && agentScheduled(row)) {
+        el.dataset.scheduled = 'true';
+        glyph = '◷';
+        const until = Date.parse(row.next_wake_at) - now;
+        state = until >= 1000 ? 'wakes in ' + formatAgentElapsed(until) : 'waking';
+        // The reason it gave for sleeping is the best one-line account
+        // of what it is doing while it sleeps.
+        if (row.wake_detail) report = row.wake_detail;
+      } else if (row.status === 'paused') {
+        glyph = '‖';
+        state = 'paused';
+      } else if (active) {
+        glyph = '▶';
+        const started = Date.parse(row.started_at || '');
+        if (!isNaN(started)) state = formatAgentElapsed(now - started);
+      } else if (row.status === 'failed' || row.status === 'error') {
+        glyph = '✗';
+        state = row.status;
+      } else {
+        glyph = '✓';
+        state = row.status || 'finished';
+      }
+      el.appendChild(mk('span', 'term-agent-glyph', glyph));
+      el.appendChild(mk('span', 'term-agent-name', row.name));
+      if (state) el.appendChild(mk('span', 'term-agent-state', state));
+      const head = reportHeadline(report);
+      if (head) el.appendChild(mk('span', 'term-agent-report', head));
+      // Cut at the edge by CSS; the whole report is a hover away.
+      if (typeof report === 'string' && report.trim()) el.title = report.trim();
+      return el;
+    }
+
+    function subagentsLabel(c) {
+      const parts = [];
+      if (c.running === 1) parts.push('1 subagent running');
+      else if (c.running > 1) parts.push(c.running + ' subagents running');
+      if (c.scheduled > 0) {
+        parts.push(
+          c.running === 0
+            ? c.scheduled + (c.scheduled === 1 ? ' subagent' : ' subagents') + ' scheduled'
+            : c.scheduled + ' scheduled'
+        );
+      }
+      return parts.join(' · ');
+    }
+
+    function renderAgents() {
+      const now = Date.now();
+      agentsView.finished = agentsView.finished.filter((f) => now - f.at < AGENTS_LINGER_MS);
+      const all = agentsView.active
+        .map((row) => ({ row, active: true }))
+        .concat(agentsView.finished.map((f) => ({ row: f.row, active: false })));
+      const maxRows = agentsView.compact ? 1 : AGENTS_MAX_ROWS;
+      const shown = all.length > maxRows ? maxRows - 1 : all.length;
+      agentsBar.replaceChildren();
+      for (let i = 0; i < shown; i++) {
+        agentsBar.appendChild(agentRowEl(all[i].row, all[i].active, now));
+      }
+      if (shown < all.length) {
+        const more =
+          shown === 0 ? all.length + ' subagents' : '+ ' + (all.length - shown) + ' more';
+        agentsBar.appendChild(mk('div', 'term-agent term-agent-more', more + ' · /subagents'));
+      }
+      agentsBar.hidden = all.length === 0;
+
+      const label = subagentsLabel(agentCounts());
+      sAgents.textContent = label;
+      sAgents.hidden = !label;
+
+      if (all.length && !agentsView.timer && !ui.destroyed) {
+        agentsView.timer = setInterval(renderAgents, 1000);
+      } else if (!all.length && agentsView.timer) {
+        clearInterval(agentsView.timer);
+        agentsView.timer = 0;
+      }
     }
 
     // The trip, as its own block: which guardrail, and the producer's
@@ -3948,6 +4144,11 @@ window.MastTerminal = (function () {
           // running-or-paused ones, the only ones the bar draws.
           agents: s.agents,
           agentsActive: (s.agents || []).filter(agentActive).length,
+          // The status-bar count (#139), split the way core-tui splits
+          // it: "2 running" for two subagents asleep for ten minutes
+          // would be wrong. Paused ones are in neither.
+          subagentsRunning: agentCounts().running,
+          subagentsScheduled: agentCounts().scheduled,
           // The two halves of the pair, unfolded, for anything that
           // needs to tell them apart — the hold banner says "held, and
           // the turn it interrupted is still unwinding" and that
@@ -4051,6 +4252,14 @@ window.MastTerminal = (function () {
         scroll();
       },
 
+      // A parked spatial panel has room for one bar row, not three
+      // (v0.7 plan OQ 2). The count in the status row is what stays.
+      setCompact(on) {
+        agentsView.compact = !!on;
+        root.classList.toggle('term-compact', agentsView.compact);
+        renderAgents();
+      },
+
       destroy() {
         if (ui.destroyed) return;
         ui.destroyed = true;
@@ -4062,6 +4271,8 @@ window.MastTerminal = (function () {
         clearTimeout(replayView.timer);
         clearTimeout(statusTimer);
         statusTimer = 0;
+        clearInterval(agentsView.timer);
+        agentsView.timer = 0;
         stopElapsed();
         closePromptStream();
         try {

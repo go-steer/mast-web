@@ -971,6 +971,71 @@
   font-size: 10px;
 }
 
+/* The running-subagents bar (v0.7 #139), a port of core-tui's tasks bar.
+   Under the banners, over the prompt. Quiet on purpose: it's a glance at
+   what's in the background, not a barrier, so no border colour of its
+   own. One line per row, cut at the edge; the full report is the row's
+   title. */
+.term-agents {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 8px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px;
+}
+
+/* Same [hidden] fix as .term-hold, same reason. */
+.term-agents[hidden] {
+  display: none;
+}
+
+.term-agent {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
+.term-agent-glyph {
+  display: inline-block;
+  width: 1.4em;
+  color: var(--accent);
+}
+
+.term-agent[data-scheduled] .term-agent-glyph,
+.term-agent[data-status='paused'] .term-agent-glyph {
+  color: var(--text-dim);
+}
+
+.term-agent-name {
+  color: var(--text);
+}
+
+.term-agent-state::before,
+.term-agent-report::before {
+  content: ' · ';
+  color: var(--text-dim);
+}
+
+/* How it ended, while it lingers: red for a failure, dim otherwise. */
+.term-agent[data-status='failed'] .term-agent-glyph,
+.term-agent[data-status='failed'] .term-agent-state,
+.term-agent[data-status='error'] .term-agent-glyph,
+.term-agent[data-status='error'] .term-agent-state {
+  color: var(--red);
+}
+
+.term-agent[data-status='completed'] .term-agent-glyph,
+.term-agent[data-status='stopped'] .term-agent-glyph {
+  color: var(--text-dim);
+}
+
+.term-agent-more {
+  padding-left: 1.4em;
+}
+
 /* A guardrail trip in the transcript: which guardrail, then the
    producer's reason verbatim. The reason is the part to read, so it gets
    the body colour, not the dim italic of an ordinary system line. */

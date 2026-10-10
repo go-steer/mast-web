@@ -27,6 +27,18 @@ message.
 
 ## [Unreleased]
 
+### Added
+
+- **A running-subagents bar**, ported from core-tui's tasks bar, in both
+  shells between the banners and the prompt. One row per running subagent,
+  oldest first: its name, how long it has run, and the first line of its last
+  report. A subagent asleep on a scheduled wake (protocol 1.20.0) counts down
+  instead (`wakes in 3m58s`, then `waking`) and shows why it's sleeping. One
+  the bar watched finish keeps its row for five seconds with how it ended, red
+  if it failed. At most three rows, the last saying `+ N more · /subagents`. A
+  parked spatial panel keeps one row. The status bar, and each panel's status
+  line, count `N subagents running · M scheduled`. (#139)
+
 ### Changed
 
 - **The mock speaks attach protocol 1.20.0** (was 1.19.0), and its live

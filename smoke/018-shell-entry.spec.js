@@ -74,6 +74,38 @@ test.describe('smoke: 018-shell-entry', () => {
     );
   });
 
+  // #120: a typo used to land in solo, which reads as a broken link.
+  // The chooser stays put instead and says which value it didn't know.
+  test('an unknown ?shell= says so instead of landing anywhere', async ({ page }) => {
+    await page.goto('/?shell=spacial&fixture=001-happy-turn');
+    await expect(page).toHaveURL(/\/\?shell=spacial/);
+    await expect(page.locator('#shell-pick')).toHaveText(
+      'There is no shell called "spacial". Pick one:'
+    );
+    // The way out keeps the rest of the query string, as the redirect
+    // would have, and is still not a stored preference.
+    await page.locator('a[data-shell="spatial"]').click();
+    await expect(page).toHaveURL(/\/spatial\.html\?fixture=001-happy-turn$/);
+    expect(await stored(page)).toBeNull();
+  });
+
+  // The stored preference doesn't get to paper over the typo either,
+  // and the value is drawn as text, whatever it is.
+  test('an unknown ?shell= beats a stored preference', async ({ page }) => {
+    await page.goto('/solo.html');
+    await page.evaluate((k) => localStorage.setItem(k, 'spatial'), KEY);
+    await page.goto('/?shell=' + encodeURIComponent('<b>x</b>'));
+    await expect(page.locator('#shell-pick')).toHaveText(
+      'There is no shell called "<b>x</b>". Pick one:'
+    );
+    await expect(page.locator('#shell-pick b')).toHaveCount(0);
+  });
+
+  test('an empty ?shell= is no value', async ({ page }) => {
+    await page.goto('/?shell=');
+    await expect(page).toHaveURL(/\/solo\.html$/);
+  });
+
   test('the HUD link is what makes the trip stick', async ({ page }) => {
     await page.goto('/solo.html');
     // data-shell, not the id: the attribute is what shell.js binds to,

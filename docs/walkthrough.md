@@ -141,7 +141,7 @@ curl -X DELETE localhost:7778/_mock/guardrails       # guardrail trips (v0.6)
 
 ## 2. The chooser and the entry paths
 
-**Verifies:** v0.4 plan §1 (`web/shell-select.js`).
+**Verifies:** v0.4 plan §1 (`web/shell-select.js`), and #120 (step 6).
 
 **Setup:** `localStorage.clear(); location.reload();` in the console. This whole section is about what the browser remembers, so it has to start empty. (Not "Clear site data", which signs you out of any proxy in front of the mock.)
 
@@ -152,7 +152,8 @@ curl -X DELETE localhost:7778/_mock/guardrails       # guardrail trips (v0.6)
 3. Go back to `/` with no query.
 4. In the spatial shell, use the HUD's shell link to switch to solo.
 5. Open `/` again.
-6. Disable JavaScript and open `/`.
+6. Open `/?shell=spacial&fixture=001-happy-turn` (the typo is the point), then click **spatial** on the page you get.
+7. Disable JavaScript and open `/`.
 
 **Expected**
 
@@ -163,7 +164,8 @@ curl -X DELETE localhost:7778/_mock/guardrails       # guardrail trips (v0.6)
 | 3 | **solo** again. A `?shell=` deep link must *not* have become your stored preference — sending someone a link to the room should not re-home them there. |
 | 4 | solo, and the choice is stored (`localStorage['mast-web:shell']`). |
 | 5 | **solo**, from the stored preference this time rather than the default. |
-| 6 | A plain page naming both shells with working links — not a blank page, not a 403, not a directory listing. |
+| 6 | You stay on `/`, on a plain page that reads **`There is no shell called "spacial". Pick one:`** above links to both shells. It doesn't silently land in solo, which would look like a broken link. The **spatial** link goes to `spatial.html?fixture=001-happy-turn`, so the rest of the query string survives, and it doesn't change your stored preference. |
+| 7 | A plain page naming both shells with working links — not a blank page, not a 403, not a directory listing. |
 
 **Why this matters:** `/` is the front door and a static host has no server to rewrite with. The precedence rule is the only thing standing between "remember where I work" and "retype the query string every morning".
 

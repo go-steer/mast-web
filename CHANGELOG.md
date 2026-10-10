@@ -42,6 +42,14 @@ message.
   `/guardrails`: every 3 s while a subagent is running, every 10 s otherwise,
   and not at all after a 404. Nothing draws it yet; that's the next PR. (#138)
 
+### Fixed
+
+- **A mistyped `?shell=` says so.** `/?shell=spacial` used to land in solo
+  without a word, which reads as a broken link. The chooser now stays on `/`
+  and shows its two-shell page, headed `There is no shell called "spacial".`
+  The links on it keep the rest of the query string. An empty `?shell=` still
+  means no value. (#120)
+
 ## [0.6.0] - 2026-10-09
 
 **The protocol catch-up, done before anyone ships it: halts are visible

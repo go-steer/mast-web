@@ -29,6 +29,15 @@ message.
 
 ### Added
 
+- **The hold banner counts the subagents still going behind it**: *"2
+  subagents still running and 1 scheduled to wake: the hold does not stop
+  them (/subagents stop does)."* A hold parks the parent's loop, not its
+  background subagents, and that's the difference between "safe to walk away"
+  and "wait". It comes from the live roster the status chain already reads,
+  and it's left out while the roster is unknown, rather than shown as zero.
+  #70 promised this; v0.5 and v0.6 left it out believing the roster had no
+  status, which was wrong (#136). (#106)
+
 - **Inline `/` autocomplete.** Typing `/` in the prompt opens a list of the
   commands this terminal will dispatch, each with its help, filtered as you
   type (prefix matches first). It reads the same gated table as the palette

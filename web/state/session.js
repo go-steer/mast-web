@@ -175,6 +175,16 @@ window.MastState.createSession = (function () {
     // the per-guardrail `tripped` / `reason` say which and why.
     guardrails: null,
 
+    // Last GET /sessions/{sid}/agents rows — the LIVE subagent roster
+    // (v0.7 #138), not the configured one /subagents reads — or null
+    // until one is read. Each row is the producer's, verbatim:
+    //   { id, name, status, started_at, parent_session_id?,
+    //     last_report?, next_wake_at?, wake_detail? }
+    // `status` is running | completed | failed | stopped | deferred, and
+    // a row still `running` while it sleeps on a scheduled wake carries
+    // `next_wake_at` (1.20.0). Absent keys are unknown, as everywhere.
+    agents: null,
+
     // GET /whoami — who the backend thinks this caller is. Null until
     // someone asks; nobody asks automatically, because it is a second
     // round trip for a fact `capabilities.caller_id` already carries
@@ -405,6 +415,18 @@ window.MastState.createSession = (function () {
       store.set({ guardrails: body && typeof body === 'object' ? { ...body } : null });
     }
 
+    // applyAgents stores a live roster read. Anything that isn't a row
+    // with a name is dropped rather than drawn as a nameless subagent.
+    function applyAgents(rows) {
+      store.set({
+        agents: Array.isArray(rows)
+          ? rows
+              .filter((r) => r && typeof r === 'object' && typeof r.name === 'string' && r.name)
+              .map((r) => ({ ...r }))
+          : null,
+      });
+    }
+
     // recordGuardrailTrip consumes a `guardrail-trip` frame (v1.13.0
     // §2.10). Stored, not interpreted — see the note on lastGuardrailTrip.
     function recordGuardrailTrip(data) {
@@ -505,6 +527,7 @@ window.MastState.createSession = (function () {
       recordWake,
       recordGuardrailTrip,
       applyGuardrails,
+      applyAgents,
       setSessions,
       setCurrentSession,
       setCurrentModel,

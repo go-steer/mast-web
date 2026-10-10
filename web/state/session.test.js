@@ -350,6 +350,36 @@ describe('state/session', () => {
     });
   });
 
+  // v0.7 #138: the live roster, GET /sessions/{sid}/agents.
+  describe('applyAgents', () => {
+    it('starts unknown, not empty', () => {
+      expect(session.get().agents).toBeNull();
+    });
+
+    it('stores rows verbatim and drops ones with no name', () => {
+      const row = {
+        id: 'a1',
+        name: 'researcher',
+        status: 'running',
+        started_at: '2026-10-10T01:00:00Z',
+        next_wake_at: '2026-10-10T01:05:00Z',
+        wake_detail: 'poll the build',
+      };
+      session.applyAgents([row, null, { status: 'running' }, { name: '' }]);
+      expect(session.get().agents).toEqual([row]);
+      // A copy: mutating what the poll returned does not reach the store.
+      row.status = 'failed';
+      expect(session.get().agents[0].status).toBe('running');
+    });
+
+    it('an empty roster is empty; a non-array is unknown', () => {
+      session.applyAgents([]);
+      expect(session.get().agents).toEqual([]);
+      session.applyAgents(undefined);
+      expect(session.get().agents).toBeNull();
+    });
+  });
+
   // v1.12.0 §GET /status (core-agent#896). `state` has one slot and
   // pause outranks running in it, so "parked, and the turn you
   // cancelled is still unwinding" has no spelling without a second

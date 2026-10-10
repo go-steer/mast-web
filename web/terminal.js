@@ -1411,6 +1411,55 @@ window.MastTerminal = (function () {
       );
     }
 
+    // ── The live subagent roster (v0.7 #138) ─────────────────────────
+    //
+    // GET /sessions/{sid}/agents, read on the status chain beside
+    // /guardrails rather than at core-tui's 1 Hz: a room holds a panel
+    // per session, most with nothing running (plan OQ 1). An active
+    // subagent makes the chain run at its live rate, so a start or a
+    // finish shows within ~3 s. A 404 — a backend with no reporter
+    // behind the route — stops asking for the life of the panel; the
+    // roster just stays unknown.
+    let agentsUnsupported = false;
+    let agentsPending = false;
+    function rosterPolled() {
+      return !agentsUnsupported && typeof client.listAgents === 'function';
+    }
+
+    // Active is running or paused (core-tui counts paused too). Anything
+    // else is finished, with whatever word the server used.
+    function agentActive(row) {
+      return !!row && (row.status === 'running' || row.status === 'paused');
+    }
+
+    function activeAgents() {
+      return (sess().agents || []).filter(agentActive);
+    }
+
+    function refreshAgents() {
+      if (ui.destroyed || !rosterPolled() || agentsPending) return Promise.resolve(null);
+      agentsPending = true;
+      return client.listAgents().then(
+        (rows) => {
+          agentsPending = false;
+          if (ui.destroyed) return null;
+          session.applyAgents(rows);
+          onChange(api, 'agents');
+          // The chain armed itself before this answer landed, on the
+          // roster before it; re-arm on this one, so a subagent starting
+          // or finishing changes the rate on this tick and not the next.
+          scheduleStatusPoll();
+          return rows;
+        },
+        (e) => {
+          agentsPending = false;
+          if (e && e.status === 404) agentsUnsupported = true;
+          // Anything else is not news, as with the other polls.
+          return null;
+        }
+      );
+    }
+
     // The trip, as its own block: which guardrail, and the producer's
     // reason under it, verbatim. No advice of ours appended (spec §2.10) —
     // the reason already names the reset, and an affordance invented here
@@ -1483,8 +1532,9 @@ window.MastTerminal = (function () {
       if (ui.destroyed || !pollsStatus() || connection.getState() !== 'connected') return;
       const s = sess();
       // Halted counts as live: the reset is usually somebody else's,
-      // and the banner should come down within seconds of it.
-      const live = s.pause.paused || serverRunning(s) || isHalted();
+      // and the banner should come down within seconds of it. So does
+      // a running subagent, whose finish nothing else announces.
+      const live = s.pause.paused || serverRunning(s) || isHalted() || activeAgents().length > 0;
       statusTimer = setTimeout(refreshStatus, live ? STATUS_POLL_LIVE_MS : STATUS_POLL_MS);
     }
 
@@ -1517,8 +1567,10 @@ window.MastTerminal = (function () {
           if (ui.destroyed) return null;
           session.applyStatusSnapshot(st);
           // Same chain, second read: whether the session is halted lives
-          // on GET /guardrails and nowhere else (v0.6 #111).
+          // on GET /guardrails and nowhere else (v0.6 #111). Third: the
+          // live subagent roster (v0.7 #138).
           refreshGuardrails();
+          refreshAgents();
           renderHold();
           renderRunning();
           onChange(api, 'status');
@@ -3891,6 +3943,11 @@ window.MastTerminal = (function () {
           // Guardrail-halted, from GET /guardrails (v0.6 #111). Its own
           // count in the status bar, beside held, for the same reason.
           halted: isHalted(),
+          // The live subagent roster, or null until read (or on a backend
+          // whose /agents 404s). Rows verbatim; `agentsActive` is the
+          // running-or-paused ones, the only ones the bar draws.
+          agents: s.agents,
+          agentsActive: (s.agents || []).filter(agentActive).length,
           // The two halves of the pair, unfolded, for anything that
           // needs to tell them apart — the hold banner says "held, and
           // the turn it interrupted is still unwinding" and that

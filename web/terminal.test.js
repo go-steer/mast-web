@@ -105,6 +105,9 @@ function stubClient() {
       halted: false,
     }),
     resetGuardrails: record('resetGuardrails', { ok: true, reset: ['watchdog'] }),
+    // The live roster (v0.7 #138). Empty by default, as a fresh session's
+    // is; a test that wants subagents overwrites the method.
+    listAgents: record('listAgents', []),
     getUsage: record('getUsage', { overall: { turns: 1 } }),
     whoami: record('whoami', { identity: 'alice@example.com' }),
     // The hold's two routes, plus the poll the banner reads
@@ -1700,6 +1703,104 @@ describe('MastTerminal built-ins', () => {
         expect(seen.count).toBe(2);
         await vi.advanceTimersByTimeAsync(1500);
         expect(seen.count).toBe(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // v0.7 #138: the live roster rides the same chain.
+    it('reads the live roster on each tick', async () => {
+      const { term, client } = mount();
+      polling(client);
+      const row = {
+        id: 'a1',
+        name: 'researcher',
+        status: 'running',
+        started_at: '2026-10-10T01:00:00Z',
+      };
+      client.listAgents = async () => [
+        row,
+        { ...row, id: 'a2', name: 'implementer', status: 'completed' },
+      ];
+      client.conn('connected');
+      await flush();
+      await flush();
+      expect(term.state.agents.map((a) => a.name)).toEqual(['researcher', 'implementer']);
+      expect(term.state.agentsActive).toBe(1);
+    });
+
+    // A running subagent's finish is announced by nothing but the next
+    // read, so it puts the chain on its live rate.
+    it('polls at the live rate while a subagent runs', async () => {
+      vi.useFakeTimers();
+      try {
+        const { client } = mount();
+        const seen = polling(client);
+        let rows = [
+          { id: 'a1', name: 'researcher', status: 'running', started_at: '2026-10-10T01:00:00Z' },
+        ];
+        client.listAgents = async () => rows;
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(seen.count).toBe(1);
+        await vi.advanceTimersByTimeAsync(3500);
+        expect(seen.count).toBe(2);
+        await vi.advanceTimersByTimeAsync(3500);
+        expect(seen.count).toBe(3);
+
+        // The read that sees it finish is the one that slows the chain.
+        rows = [{ ...rows[0], status: 'completed' }];
+        await vi.advanceTimersByTimeAsync(3500);
+        const settled = seen.count;
+        expect(settled).toBe(4); // read at t=9 s, now t=10.5 s
+        await vi.advanceTimersByTimeAsync(8000);
+        expect(seen.count).toBe(settled);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(seen.count).toBe(settled + 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops asking for the roster on a 404, and says nothing', async () => {
+      vi.useFakeTimers();
+      try {
+        const { term, client, text } = mount();
+        const seen = polling(client);
+        let asked = 0;
+        client.listAgents = async () => {
+          asked += 1;
+          const e = new Error('GET /agents HTTP 404');
+          e.status = 404;
+          throw e;
+        };
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(asked).toBe(1);
+        await vi.advanceTimersByTimeAsync(10500);
+        expect(seen.count).toBe(2);
+        expect(asked).toBe(1);
+        expect(term.state.agents).toBeNull();
+        expect(text()).not.toContain('404');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps asking for the roster after any other failure', async () => {
+      vi.useFakeTimers();
+      try {
+        const { client } = mount();
+        polling(client);
+        let asked = 0;
+        client.listAgents = async () => {
+          asked += 1;
+          throw new Error('network');
+        };
+        client.conn('connected');
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(10500);
+        expect(asked).toBe(2);
       } finally {
         vi.useRealTimers();
       }

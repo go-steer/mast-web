@@ -27,7 +27,13 @@ message.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The solo shell in light themes** drew its panel on the dark theme's
+  near-black surface, so everything around the transcript (the subagents bar,
+  the panel's status line) was dark ink on black. The light themes' panel and
+  backdrop colours were scoped to the spatial shell, which predates solo; they
+  now cover both. Spatial is unchanged.
 
 ## [0.7.0] - 2026-10-10
 

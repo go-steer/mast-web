@@ -525,8 +525,14 @@ body[data-theme='pantheon-dark'] .panel {
    now floated light panels in a black void.
 
    Matched by the `-light` suffix rather than by name so a new light
-   theme joins by being named one; `paper` predates the convention. */
-body.spatial:is([data-theme$='-light'], [data-theme='paper']) {
+   theme joins by being named one; `paper` predates the convention.
+
+   Both shells. These blocks were written for spatial before solo
+   existed, and solo, which wears the same .panel, was left on the dark
+   default surface: dark ink on a near-black band under the transcript,
+   where the subagents bar and the status line sit. The room-only knobs
+   (fog, cast, recede) are inert in solo. */
+body:is(.spatial, .solo):is([data-theme$='-light'], [data-theme='paper']) {
   --room-core: var(--bg-surface);
   --room-mid: var(--bg);
   --room-edge: color-mix(in srgb, var(--text) 12%, var(--bg));
@@ -553,7 +559,7 @@ body.spatial:is([data-theme$='-light'], [data-theme='paper']) {
 /* Cloud's horizon is tinted with the brand blue rather than the
    neutral grey the block above derives from --text. Separate rule
    because that block would otherwise outrank the palette. */
-body.spatial[data-theme='cloud-light'] {
+body:is(.spatial, .solo)[data-theme='cloud-light'] {
   --room-edge: color-mix(in srgb, var(--accent) 14%, var(--bg));
   --room-vignette: color-mix(in srgb, var(--accent) 12%, transparent);
 
@@ -572,7 +578,7 @@ body.spatial[data-theme='cloud-light'] {
    are tuned for a flat hue per panel; the slice needs a little more
    room in the title bar and on the floor before the travel between one
    terminal's colour and the next reads at all. */
-body.spatial[data-theme='pantheon-light'] {
+body:is(.spatial, .solo)[data-theme='pantheon-light'] {
   --room-edge: color-mix(in srgb, var(--accent) 12%, var(--bg));
 
   /* No --room-on-hue here: the shared light block's white is what this
@@ -594,7 +600,7 @@ body.spatial[data-theme='pantheon-light'] {
    hue-tinted hairline, which is all the panel identity a light room
    needs once the glow is gone. Scoped to .panel because --hue only
    exists there. */
-body.spatial:is([data-theme$='-light'], [data-theme='paper']) .panel {
+body:is(.spatial, .solo):is([data-theme$='-light'], [data-theme='paper']) .panel {
   --panel-shadow:
     0 1px 2px rgb(60 64 67 / 30%), 0 6px 18px rgb(60 64 67 / 15%),
     0 0 0 1px color-mix(in srgb, var(--hue) 38%, var(--border));
@@ -607,7 +613,7 @@ body.spatial:is([data-theme$='-light'], [data-theme='paper']) .panel {
    it: this terminal's colour spills off the left of the card, the next
    one's off the right. Has to sit after the shared block above — same
    specificity, so source order is what decides it. */
-body.spatial[data-theme='pantheon-light'] .panel {
+body:is(.spatial, .solo)[data-theme='pantheon-light'] .panel {
   --panel-shadow:
     0 1px 2px rgb(60 64 67 / 26%), 0 10px 28px rgb(60 64 67 / 14%),
     -12px 6px 26px color-mix(in srgb, var(--hue) 32%, transparent),

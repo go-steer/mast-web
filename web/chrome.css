@@ -661,6 +661,12 @@ body.side-hidden #app-sidebar {
   color: var(--red);
 }
 
+/* Background subagents (v0.7 #139). Dim: work going on that nobody has
+   to act on, which is the opposite of held and halted. */
+.status-subagents {
+  color: var(--text-dim);
+}
+
 /* Dimmer than the rest of the bar until it is worth reading. Cost is
    the number you want to be able to find without it being the number
    you keep noticing. */

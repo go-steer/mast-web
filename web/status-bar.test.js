@@ -143,6 +143,25 @@ describe('MastStatusBar', () => {
     expect(slot('status-fleet').textContent).toBe('2 terminals · 1 held');
   });
 
+  // v0.7 #139. Background subagents across the window, running and
+  // scheduled kept apart.
+  it('counts subagents across the window, running apart from scheduled', () => {
+    const a = makeTerminal({ label: 'ops', subagentsRunning: 2, subagentsScheduled: 0 });
+    const b = makeTerminal({ label: 'docs', subagentsRunning: 0, subagentsScheduled: 1 });
+    open = [a, b];
+    mount();
+    expect(slot('status-fleet').textContent).toBe(
+      '2 terminals · 2 subagents running · 1 scheduled'
+    );
+
+    a.poke({ subagentsRunning: 0 });
+    expect(slot('status-fleet').textContent).toBe('2 terminals · 1 subagent scheduled');
+
+    b.poke({ subagentsScheduled: 0 });
+    a.poke({ subagentsRunning: 1 });
+    expect(slot('status-fleet').textContent).toBe('2 terminals · 1 subagent running');
+  });
+
   it('sums the cost across the window rather than reading one session', () => {
     open = [
       makeTerminal({ costUSD: 0.0123 }),

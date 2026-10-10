@@ -450,6 +450,7 @@
       return;
     }
     p.el.classList.add('active');
+    p.term.setCompact(false);
     p.parked = Object.assign({}, p.pos);
     const fromX = p.pos.x;
     p.pos = centeredPos();
@@ -476,6 +477,7 @@
 
   function park(p) {
     p.el.classList.remove('active');
+    p.term.setCompact(true);
     const fromX = p.pos.x;
     if (p.parked) p.pos = Object.assign({}, p.parked);
     p.panel.style.setProperty('--pw', PANEL_W + 'px');
@@ -661,6 +663,8 @@
       },
     });
     body.appendChild(term.el);
+    // Born parked: one row of the subagents bar until it's in front.
+    term.setCompact(true);
 
     p = {
       key: key,

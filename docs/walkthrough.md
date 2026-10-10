@@ -527,7 +527,7 @@ curl -X POST localhost:7778/_mock/guardrail-trip -H 'Content-Type: application/j
 
 ## 15. Running subagents
 
-**Verifies:** #139, #138 (protocol 1.20.0, core-agent#1283). Reads `GET /sessions/{sid}/agents` on the status chain: every 3 s while a subagent is running, every 10 s otherwise.
+**Verifies:** #139, #106, #138 (protocol 1.20.0, core-agent#1283). Reads `GET /sessions/{sid}/agents` on the status chain: every 3 s while a subagent is running, every 10 s otherwise.
 
 **Setup:** mock on :7778. The mock makes subagents on demand. Run these from a shell before step 1, so the first read on attach picks them up:
 
@@ -542,9 +542,10 @@ curl -s $M -d '{"session":"smoke-session","name":"watcher","started_ago_s":900,"
 1. Open `/?shell=solo&fixture=001-happy-turn` and click `smoke-session`. Look between the transcript and the prompt.
 2. Watch it for a few seconds.
 3. Make two more: `curl -s $M -d '{"session":"smoke-session","name":"implementer"}'`, then the same with `"name":"reviewer"`. Wait up to 10 s.
-4. Finish one: `curl -s $M -d '{"session":"smoke-session","name":"researcher","status":"failed","last_report":"quota exceeded"}'`. Wait a few seconds, then wait five more.
-5. Switch to the spatial shell (`/?shell=spatial&fixture=001-happy-turn`), click `smoke-session`, then press **Esc** to send the panel back.
-6. Clean up: `curl -s -X DELETE http://127.0.0.1:7778/_mock/subagents`.
+4. Type `/pause lunch` and read the hold banner. Then `/continue`.
+5. Finish one: `curl -s $M -d '{"session":"smoke-session","name":"researcher","status":"failed","last_report":"quota exceeded"}'`. Wait a few seconds, then wait five more.
+6. Switch to the spatial shell (`/?shell=spatial&fixture=001-happy-turn`), click `smoke-session`, then press **Esc** to send the panel back.
+7. Clean up: `curl -s -X DELETE http://127.0.0.1:7778/_mock/subagents`.
 
 **Expected**
 
@@ -553,9 +554,10 @@ curl -s $M -d '{"session":"smoke-session","name":"watcher","started_ago_s":900,"
 | 1 | Two rows, oldest first: **`◷ watcher · wakes in 3m5Xs · poll the CI run again`** then **`▶ researcher · 2m0Xs · reading pkg/attach/state.go`** (the first line of the report only; hover for all of it). The panel's status line and the window's status bar both read **`1 subagent running · 1 scheduled`**. |
 | 2 | researcher's time counts up and watcher's countdown counts down, once a second, between polls. |
 | 3 | Three rows at most: the last one reads **`+ 2 more · /subagents`**. The count reads `3 subagents running · 1 scheduled`. |
-| 4 | Within ~3 s researcher's row turns red and reads **`✗ researcher · failed · quota exceeded`**, and the count drops by one at once. The row is gone about five seconds later. |
-| 5 | In front, the bar is as in solo. Parked, the panel keeps **one** row (`3 subagents · /subagents`) and its status-line count. |
-| 6 | Within 10 s the bar is gone and the counts with it. |
+| 4 | The banner adds **`3 subagents still running and 1 scheduled to wake: the hold does not stop them (/subagents stop does).`** A hold parks the parent's loop and nothing else. The bar keeps ticking underneath. |
+| 5 | Within ~3 s researcher's row turns red and reads **`✗ researcher · failed · quota exceeded`**, and the count drops by one at once. The row is gone about five seconds later. |
+| 6 | In front, the bar is as in solo. Parked, the panel keeps **one** row (`3 subagents · /subagents`) and its status-line count. |
+| 7 | Within 10 s the bar is gone and the counts with it. |
 
 **Why this matters:** a hold or a STOP ends the parent's turn but not the background subagents, and until now nothing in mast-web showed they were there. core-tui has shown them for months. A sleeping subagent is counted as *scheduled*, not *running*, because "2 running" for two subagents asleep for ten minutes would be wrong. Only a subagent the bar watched finish gets the five-second row; a roster full of finished history on attach is not news.
 
@@ -597,7 +599,6 @@ A walkthrough that only lists successes trains you to skim. These are gaps, not 
 
 - **`--auth-mode=oidc` is out of scope** (v0.8, [#86](https://github.com/go-steer/mast-web/issues/86)). Not blocked, not broken: not attempted. The mock's `mock_caller` cookie is the identity story this release has, and it is a development affordance, not an auth mechanism.
 - **`/share` is refused on `ops-triage`, `repo-indexer` and `docs-writer` by default.** Those three are pinned to old conformance fixtures (1.2.0–1.4.0) and the ACL routes arrived in 1.10.0, so the command correctly says the backend cannot serve it. Append `?fixture=001-happy-turn` to the shell URL to get a modern backend. This is the version gate working, and it is worth seeing once on purpose.
-- **The hold banner doesn't count running subagents yet.** The bar in §15 shows them; the banner's *"N subagents still running"* is [#106](https://github.com/go-steer/mast-web/issues/106), next in v0.7.
 - **No `by` on an approval does not mean nobody approved it.** It means the daemon verified no identity for whoever answered. The client says `unattributed` rather than inventing one; against a pre-1.10.0 backend it says nothing at all and notes that the backend cannot attribute.
 - **A cross-origin remote backend is not a supported shape.** Neither core-agent nor mast emits CORS headers. Loopback, or same-origin behind proxy mode. See [the deployment guide](./site/content/docs/deployment.md).
 - **Session switching from inside a terminal is deliberately absent.** `/sessions` is read-only; the sidebar row is the switch gesture, because the shell is what knows the binding between a panel and a session.

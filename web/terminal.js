@@ -1293,25 +1293,52 @@ window.MastTerminal = (function () {
     // running, which is exactly how a hold banner ends up sitting over
     // another four minutes of turn (core-agent#896).
     //
-    // #70 asked for a third line — how many background subagents are
-    // still going — and it is not here, because there is nowhere
-    // truthful to read it from yet. The live roster (GET .../agents)
-    // carries no status, and the one number we do get, interrupt's
-    // `running_subagents`, only arrives on a Stop, which does not hold.
-    // #94 is where subagent status becomes honest (v1.12.0 #897); the
-    // line belongs with it rather than as a zero that is always a zero.
-    function describeHold(p, inFlight) {
+    // And the third, which #70 asked for and v0.5/v0.6 left out on the
+    // false belief that the live roster carried no status (#106, #136):
+    // how many background subagents are still going. A hold stops the
+    // parent's loop, not its subagents (neither does a Stop; that's
+    // /subagents stop), and that is the difference between "safe to walk
+    // away" and "wait". From the roster the status chain already reads,
+    // so it costs nothing. Said only when there are some, and not at all
+    // while the roster is unknown — a "0" from a backend we never heard
+    // from would be a guess.
+    function describeHold(p, inFlight, subs) {
       const bits = [];
       if (p.interrupted && inFlight) bits.push('The turn it interrupted is still unwinding.');
       else if (p.interrupted) bits.push('The turn it interrupted was cancelled.');
       else if (inFlight) bits.push('A turn is still running behind the gate.');
       else bits.push('Nothing was in flight.');
       bits.push('No new turn starts until this is released.');
+      const busy = describeHoldSubagents(subs);
+      if (busy) bits.push(busy);
       if (p.since) {
         const t = new Date(p.since);
         if (!isNaN(t.getTime())) bits.push('Held since ' + t.toLocaleTimeString('en-GB') + '.');
       }
       return bits.join(' ');
+    }
+
+    // "2 subagents still running", "1 subagent scheduled to wake", or
+    // both, then what a hold does and doesn't do about them.
+    function describeHoldSubagents(subs) {
+      if (!subs || (!subs.running && !subs.scheduled)) return '';
+      const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+      const parts = [];
+      if (subs.running) parts.push(n(subs.running, 'subagent', 'subagents') + ' still running');
+      if (subs.scheduled) {
+        parts.push(
+          subs.running
+            ? subs.scheduled + ' scheduled to wake'
+            : n(subs.scheduled, 'subagent', 'subagents') + ' scheduled to wake'
+        );
+      }
+      const them = subs.running + subs.scheduled === 1 ? 'it' : 'them';
+      return (
+        parts.join(' and ').replace(/^./, (c) => c.toUpperCase()) +
+        ': the hold does not stop ' +
+        them +
+        ' (/subagents stop does).'
+      );
     }
 
     function renderHold() {
@@ -1334,7 +1361,11 @@ window.MastTerminal = (function () {
           : 'ask, instruct, or /command…';
       if (!p.paused) return;
       holdWhy.textContent = p.reason ? 'HELD — ' + p.reason : 'HELD';
-      holdDetail.textContent = describeHold(p, s.status.turnInFlight);
+      holdDetail.textContent = describeHold(
+        p,
+        s.status.turnInFlight,
+        s.agents ? agentCounts() : null
+      );
       const controls = available({ feature: 'pause' });
       contBtn.hidden = !controls;
       abandonBtn.hidden = !controls;
@@ -1467,6 +1498,7 @@ window.MastTerminal = (function () {
           session.applyAgents(rows);
           observeAgents(sess().agents || [], Date.now());
           renderAgents();
+          renderHold(); // its subagent count (#106)
           onChange(api, 'agents');
           // The chain armed itself before this answer landed, on the
           // roster before it; re-arm on this one, so a subagent starting

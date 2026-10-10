@@ -1141,6 +1141,81 @@ describe('MastTerminal built-ins', () => {
   describe('the hold', () => {
     const paused = (over) => ({ type: 'pause', data: { state: 'paused', ...over } });
 
+    // #106: a hold stops the parent's loop, not its subagents.
+    describe('the subagents still going behind it', () => {
+      const row = (name, over) => ({
+        id: name,
+        name,
+        status: 'running',
+        started_at: '2026-10-10T12:00:00Z',
+        ...over,
+      });
+
+      async function heldWith(roster) {
+        const m = mount({ features: { pause: true } });
+        m.client.getStatus = async () => ({ state: 'paused', paused: true });
+        m.client.listAgents = async () => roster;
+        m.client.feed(paused({ reason: 'lunch' }));
+        await m.term.refreshStatus();
+        await flush();
+        return m;
+      }
+
+      it('counts the running ones and says the hold does not stop them', async () => {
+        const { hold } = await heldWith([row('a'), row('b'), row('c', { status: 'completed' })]);
+        expect(hold().textContent).toContain(
+          '2 subagents still running: the hold does not stop them (/subagents stop does).'
+        );
+      });
+
+      it('keeps scheduled apart from running, and singular is singular', async () => {
+        const { hold } = await heldWith([
+          row('a'),
+          row('w', { next_wake_at: '2026-10-10T13:00:00Z' }),
+        ]);
+        expect(hold().textContent).toContain(
+          '1 subagent still running and 1 scheduled to wake: the hold does not stop them'
+        );
+        const only = await heldWith([row('w', { next_wake_at: '2026-10-10T13:00:00Z' })]);
+        expect(only.hold().textContent).toContain(
+          '1 subagent scheduled to wake: the hold does not stop it'
+        );
+      });
+
+      it('says nothing when none are going', async () => {
+        const { hold } = await heldWith([row('done', { status: 'completed' })]);
+        expect(hold().hidden).toBe(false);
+        expect(hold().textContent).not.toContain('subagent');
+      });
+
+      // Unknown is not zero: a backend whose /agents 404s says nothing.
+      it('says nothing while the roster is unknown', async () => {
+        const m = mount({ features: { pause: true } });
+        m.client.getStatus = async () => ({ state: 'paused', paused: true });
+        m.client.listAgents = async () => {
+          const e = new Error('404');
+          e.status = 404;
+          throw e;
+        };
+        m.client.feed(paused({ reason: 'lunch' }));
+        await m.term.refreshStatus();
+        await flush();
+        expect(m.hold().hidden).toBe(false);
+        expect(m.hold().textContent).not.toContain('subagent');
+      });
+
+      it('updates when one finishes', async () => {
+        const roster = [row('a'), row('b')];
+        const m = await heldWith(roster);
+        roster[1] = row('b', { status: 'completed' });
+        await m.term.refreshStatus();
+        await flush();
+        expect(m.hold().textContent).toContain(
+          '1 subagent still running: the hold does not stop it'
+        );
+      });
+    });
+
     it('/pause holds, carries the reason, and names the ways out', async () => {
       const { term, client, text, hold } = mount({ features: { pause: true } });
       await term.submit('/pause looking at the diff');

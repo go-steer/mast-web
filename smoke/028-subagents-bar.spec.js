@@ -38,10 +38,12 @@ async function subagent(page, body) {
 
 test.beforeEach(async ({ page }) => {
   await page.request.delete('/_mock/subagents');
+  await page.request.delete('/_mock/pause-gates');
 });
 
 test.afterEach(async ({ page }) => {
   await page.request.delete('/_mock/subagents');
+  await page.request.delete('/_mock/pause-gates');
 });
 
 test.describe('smoke: 028-subagents-bar', () => {
@@ -105,6 +107,31 @@ test.describe('smoke: 028-subagents-bar', () => {
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(2)).toHaveText('+ 2 more · /subagents');
     await expect(page.locator('#status-fleet')).toContainText('4 subagents running');
+  });
+
+  // #106: a hold stops the parent's loop, not its subagents, and the
+  // banner says so. The difference between "safe to walk away" and "wait".
+  test('the hold banner counts the subagents it did not stop', async ({ page }) => {
+    await subagent(page, { name: 'researcher', started_ago_s: 30 });
+    await subagent(page, { name: 'watcher', started_ago_s: 300, wake_in_s: 600 });
+    await openSoloSession(page);
+    const term = page.locator('#solo-body .term:visible');
+    await expect(term.locator('.term-agents .term-agent')).toHaveCount(2);
+
+    const prompt = term.locator('.term-prompt');
+    await prompt.fill('/pause lunch');
+    await prompt.press('Enter');
+    const banner = term.locator('.term-hold');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText(
+      '1 subagent still running and 1 scheduled to wake: the hold does not stop them (/subagents stop does).'
+    );
+
+    // One finishes behind the gate; the banner follows on the next read.
+    await subagent(page, { name: 'researcher', status: 'completed' });
+    await expect(banner).toContainText('1 subagent scheduled to wake: the hold does not stop it', {
+      timeout: 6000,
+    });
   });
 
   // Plan OQ 2: the panel in front gets the bar; a parked one gets one row.

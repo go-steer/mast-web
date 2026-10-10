@@ -934,6 +934,55 @@
   font-size: 10px;
 }
 
+/* Inline / autocomplete (v0.7 #43). Opens upward from the prompt, over
+   the transcript, because below the prompt is the panel's edge. Anchored
+   on .term-input, which is position: relative for it. */
+.term-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  max-height: 18em; /* SUGGEST_MAX rows at this line height */
+  overflow-y: auto;
+  line-height: 1.6;
+  z-index: 5;
+  padding: 3px 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  font-size: 12px;
+}
+
+.term-suggest[hidden] {
+  display: none;
+}
+
+.term-suggest-item {
+  display: flex;
+  gap: 10px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.term-suggest-item[aria-selected='true'],
+.term-suggest-item:hover {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated));
+}
+
+.term-suggest-cmd {
+  flex: none;
+  color: var(--accent);
+}
+
+.term-suggest-help {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
 /* The guardrail halt (v0.6 #111). The hold's shape, in red: a hold waits
    for a verb, a halt refuses every turn until a reset, and the two must
    not be mistaken for each other at a glance. */
@@ -1056,6 +1105,7 @@
 }
 
 .term-input {
+  position: relative; /* the anchor for .term-suggest */
   flex: none;
   display: flex;
 }

@@ -444,6 +444,17 @@ window.MastTerminal = (function () {
     shell.append(prefix, caret, input, sendBtn, stopBtn);
     inputRow.appendChild(shell);
 
+    // Inline / autocomplete (v0.7 #43). Anchored to the prompt and
+    // opening upward, over the transcript: below the prompt is the
+    // status line and then the panel's edge, which would clip it.
+    const suggest = mk('div', 'term-suggest');
+    suggest.hidden = true;
+    suggest.setAttribute('role', 'listbox');
+    suggest.id = 'term-suggest-' + Math.random().toString(36).slice(2, 10);
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', suggest.id);
+    inputRow.appendChild(suggest);
+
     // The hold banner (v1.5.0 §2.8, #70). Between the transcript and
     // the prompt, because that is the order the questions arrive in —
     // what happened, what you can do about it, where you type — and
@@ -4040,16 +4051,155 @@ window.MastTerminal = (function () {
       }
     }
 
+    // ── Inline / autocomplete (v0.7 #43) ────────────────────────────
+    //
+    // While the prompt is a bare `/word` (no space yet: past the name
+    // it's arguments, and a list in the way of those is noise), a list
+    // of the commands that match sits over the prompt. Its rows are
+    // api.commands, the same gated table the palette (Ctrl/Cmd+P) reads,
+    // so it can't offer a command this terminal would refuse.
+    //
+    // Nothing is selected until Up or Down says so. That keeps Enter
+    // meaning "send" for anyone who typed the whole command, which is
+    // everyone who already knows it; Enter accepts only a row you moved
+    // to. Tab accepts the selected row, or the first. Esc closes the list
+    // and does nothing else (the next Esc is the shell's again). An
+    // accepted row is put in the prompt with a trailing space, not run,
+    // the way the palette does it: most commands take arguments.
+    const SUGGEST_MAX = 8;
+    const suggestState = { rows: [], sel: -1, dismissedFor: null };
+
+    // Prefix matches first, then substring, then the palette's
+    // subsequence match, each in table order.
+    function rankCommands(q) {
+      const seen = new Set();
+      const prefix = [];
+      const sub = [];
+      const fuzzy = [];
+      api.commands.forEach((c) => {
+        if (seen.has(c.name)) return;
+        seen.add(c.name);
+        const n = c.name.toLowerCase();
+        if (n.startsWith(q)) prefix.push(c);
+        else if (n.includes(q)) sub.push(c);
+        else if (subsequence(n, q)) fuzzy.push(c);
+      });
+      return prefix.concat(sub, fuzzy).slice(0, SUGGEST_MAX);
+    }
+    function subsequence(s, q) {
+      let i = 0;
+      for (let j = 0; j < s.length && i < q.length; j++) if (s[j] === q[i]) i += 1;
+      return i === q.length;
+    }
+
+    function closeSuggest() {
+      suggestState.rows = [];
+      suggestState.sel = -1;
+      suggest.hidden = true;
+      suggest.replaceChildren();
+      input.removeAttribute('aria-activedescendant');
+      input.setAttribute('aria-expanded', 'false');
+    }
+
+    function refreshSuggest() {
+      const v = input.value;
+      if (!/^\/\S*$/.test(v) || v === suggestState.dismissedFor) {
+        closeSuggest();
+        return;
+      }
+      suggestState.dismissedFor = null;
+      const rows = rankCommands(v.slice(1).toLowerCase());
+      if (!rows.length) {
+        closeSuggest();
+        return;
+      }
+      suggestState.rows = rows;
+      suggestState.sel = -1;
+      paintSuggest();
+    }
+
+    function paintSuggest() {
+      suggest.replaceChildren();
+      suggestState.rows.forEach((c, i) => {
+        const row = mk('div', 'term-suggest-item');
+        row.id = suggest.id + '-' + i;
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', String(i === suggestState.sel));
+        row.appendChild(mk('span', 'term-suggest-cmd', '/' + c.name));
+        if (c.help) row.appendChild(mk('span', 'term-suggest-help', c.help));
+        if (c.usage) row.title = c.usage;
+        // mousedown, not click: a click would blur the prompt first,
+        // and the blur closes the list before the click lands.
+        row.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          acceptSuggest(i);
+        });
+        suggest.appendChild(row);
+      });
+      suggest.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      if (suggestState.sel >= 0) {
+        input.setAttribute('aria-activedescendant', suggest.id + '-' + suggestState.sel);
+        const el = suggest.children[suggestState.sel];
+        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+    }
+
+    function acceptSuggest(i) {
+      const c = suggestState.rows[i];
+      if (!c) return;
+      input.value = '/' + c.name + ' ';
+      closeSuggest();
+      syncInput();
+      input.selectionStart = input.selectionEnd = input.value.length;
+    }
+
+    // The list's share of the prompt's keys. True when it took the key.
+    function suggestKey(e) {
+      if (suggest.hidden || e.altKey || e.ctrlKey || e.metaKey) return false;
+      const n = suggestState.rows.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        suggestState.sel =
+          suggestState.sel < 0 ? (step > 0 ? 0 : n - 1) : (suggestState.sel + step + n) % n;
+        paintSuggest();
+        return true;
+      }
+      if (e.key === 'Tab' && !e.shiftKey) {
+        acceptSuggest(suggestState.sel < 0 ? 0 : suggestState.sel);
+        return true;
+      }
+      if (e.key === 'Enter' && !e.shiftKey && suggestState.sel >= 0) {
+        acceptSuggest(suggestState.sel);
+        return true;
+      }
+      if (e.key === 'Escape') {
+        suggestState.dismissedFor = input.value;
+        closeSuggest();
+        return true;
+      }
+      return false;
+    }
+
     // ── Input wiring ─────────────────────────────────────────────────
 
     function syncInput() {
       shell.classList.toggle('has-text', input.value.length > 0);
       input.style.height = 'auto';
       input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+      refreshSuggest();
     }
 
     input.addEventListener('input', syncInput);
+    input.addEventListener('blur', closeSuggest);
     input.addEventListener('keydown', (e) => {
+      if (suggestKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         const text = input.value;

@@ -1,6 +1,8 @@
 # mast-web
 
-Operator-facing web UI for [mast](https://github.com/go-steer/mast) and any [attach-mode](https://github.com/go-steer/core-agent/blob/main/docs/attach-mode-design.md)-compatible [core-agent](https://github.com/go-steer/core-agent) variant. Thin client over the attach protocol; no agent loop in the browser.
+Operator-facing web UI for [core-agent](https://github.com/go-steer/core-agent) — and for [mast](https://github.com/go-steer/mast) while it remains in service — over the [attach protocol](https://github.com/go-steer/core-agent/blob/main/docs/attach-mode-design.md). Thin client; no agent loop in the browser.
+
+> **core-agent is the primary backend (2026-10-30).** go-steer consolidated on one agent harness: mast is folding into core-agent and is frozen ([go-steer/mast#596](https://github.com/go-steer/mast/issues/596), [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411)). core-agent already embeds a pinned mast-web release and serves it at `/ui` (`--ui`), so nothing changes in how this UI is built or deployed; what changes is which backend's protocol evolution it follows first. mast keeps working as a backend until it is archived. The name of this repository is a separate decision and is unchanged for now.
 
 **📚 Full documentation: [go-steer.github.io/mast-web](https://go-steer.github.io/mast-web/)** *(deploys after first push to main)*
 
@@ -133,8 +135,8 @@ dev/tools/mock-backend     # SPA + fake attach backend on :7778
 
 ## Related
 
-- [mast](https://github.com/go-steer/mast) — the agent runtime this UI talks to (post-fork; until then, [core-agent](https://github.com/go-steer/core-agent) works equivalently)
-- [core-agent](https://github.com/go-steer/core-agent) — the parent project from which mast forks
+- [core-agent](https://github.com/go-steer/core-agent) — the agent runtime this UI talks to; it embeds a pinned mast-web release behind `--ui`
+- [mast](https://github.com/go-steer/mast) — the former sibling runtime, now folding into core-agent ([go-steer/mast#596](https://github.com/go-steer/mast/issues/596)); still a supported backend until it is archived
 - [core-tui](https://github.com/go-steer/core-tui) — terminal TUI alternative for developer/experimentation workflows
 - [cogo-wasm2](https://github.com/mastersingh24/cogo-wasm2) — the project this borrows rendering surface from
 
